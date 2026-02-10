@@ -4,6 +4,131 @@ https://www.geeksforgeeks.org/java/java/
 https://www.geeksforgeeks.org/advance-java/advanced-java/
 https://www.geeksforgeeks.org/advance-java/spring-boot/
 
+## Index
+1. [Core Java Fundamentals](#core-java-fundamentals)
+    - [JVM, JRE, JDK](#jvm-jre-jdk)
+    - [Compilation vs Execution](#compilation-vs-execution)
+2. [Object Oriented Programming](#object-oriented-programming)
+    - [Encapsulation](#encapsulation)
+    - [Inheritance](#inheritance)
+    - [Polymorphism](#polymorphism)
+        - [Compile-time Polymorphism](#compile-time-polymorphism)
+        - [Runtime Polymorphism](#runtime-polymorphism)
+        - [Parametric Polymorphism (TODO)](#parametric-polymorphism)
+    - [Abstraction](#abstraction)
+        - [Interfaces](#interfaces)
+        - [Abstract Classes](#abstract-classes)
+3. [Collections Framework (IMPROVE)](#collections-framework)
+    - [List](#list)
+        - [ArrayList](#arraylist)
+        - [LinkedList](#linkedlist)
+    - [Set](#set)
+        - [HashSet](#hashset)
+        - [LinkedHashSet (TODO)](#linkedhashset)
+    - [Map (TODO)](#map)
+        - [HashMap](#hashmap)
+        - [TreeMap](#treemap)
+        - [LinkedHashMap (TODO)](#compile-time-polymorphism)
+    - [Queue (TODO)](#queue)
+        - [PriorityQueue (TODO)](#priorityqueue)
+    - [Iterator (TODO)](#iterator)
+    - [Comparator (TODO)](#comparator)
+    - [HashMap vs TreeMap (TODO)](#hashmap-vs-treemap)
+4. [Exception Handling (IMPROVE)](#exception-handling)
+    - [Checked vs Unchecked Exceptions](#checked-vs-unchecked-exceptions)
+    - [try-catch-finally](#try-catch-finally)
+    - [throw vs throws](#throw-vs-throws)
+    - [Custom Exceptions](#custom-exceptions)
+5. [Java 8+ features (IMPROVE)](#java-8-features)
+    - [Functional Interfaces](#functional-interfaces)
+    - [Lambda Expressions](#lambda-expressions)
+    - [Method References (TODO)](#method-references)
+    - [Streams (IMPROVE)](#streams)
+    - [Optional](#optional)
+6. [Concurrency & Parallelism (IMPROVE)](#concurrency-and-parallelism)
+    - [Concurrency vs Parallelism (TODO)](#concurrency-vs-parallelism)
+    - [Thread vs Runnable](#thread-vs-runnable)
+    - [Callable vs Runnable](#callable-vs-runnable)
+    - [Java Memory Model](#java-memory-model)
+    - [Volatile (IMPROVE)](#volatile)
+    - [Synchronization (IMPROVE)](#synchronization)
+    - [Race Condition (TODO)](#race-conditions)
+    - [Deadlocks (TODO)](#deadlocks)
+    - [Locks (TODO)](#locks)
+    - [Thread Pools (TODO)](#thread-pools)
+    - [Atomics (TODO)](#atomics)
+7. [Java Memory Management (IMPROVE)](#java-memory-management)
+    - [Stack](#stack)
+    - [Heap](#heap)
+    - [Garbage Collection (EXPAND)](#garbage-collection)
+        - [Generational Garbage Collection (TODO)](#generational-garbage-collection)
+        - [Memory Leaks (IMPROVE)](#memory-leaks)
+8. [Immutability (IMPROVE)](#immutability)
+    - [Immutable Variables (IMPROVE)](#immutable-variables)
+    - [Immutable Methods (TODO)](#immutable-methods)
+    - [Immutable Classes (IMPROVE)](#immutable-classes)
+        - [String Immutability](#string-immutability)
+        - [Benefits and Pitfalls](#benefits-and-pitfalls)
+9. [Equals & Hashcode Contract](#equals-and-hashcode-contract)
+10. [SOLID](#solid)
+11. [Design Patterns](#design-patterns)
+    - [Creational Patterns](#creational-patterns)
+        - [Singleton](#singleton)
+        - [Factory](#factory)
+        - [Builder](#builder)
+    - [Structural Patterns (TODO)](#structural-patterns)
+        - [Decorator (TODO)](#decorator)
+        - [Facade (TODO)](#facade)
+        - [Composite (TODO)](#composite)
+        - [Proxy (TODO)](#proxy)
+    - [Behavioral Patterns (EXPAND)](#behavioral-patterns)
+        - [Strategy](#strategy)
+        - [Observer](#observer)
+        - [Command (TODO)](#command)
+        - [State (TODO)](#state)
+12. [Serialization](#serialization)
+    - [Serializable vs Externalizable](#serializable-vs-externalizable)
+    - [transient](#transient)
+    - [Versioning](#versioning)
+13. [I/O & NIO](#io-and-nio)
+    - [System I/O](#system-io)
+    - [Streams vs Readers/Writers](#streams-vs-readers-and-writers)
+    - [File Handling](#file-handling)
+        - [Java IO](#java-io)
+        - [Java NIO](#java-nio)
+14. [Networking (TODO)](#networking)
+    - [](#)
+    - [](#)
+    - [](#)
+    - [](#)
+15. [Spring Framework](#spring-framework)
+    - [Dependency Injection](#dependency-injection)
+    - [Inversion of Control](#inversion-of-control)
+    - [Aspect-Oriented Programming](#aspect-oriented-programming)
+    - [Maven](#maven)
+    - [Bean lifecycle (TODO)](#bean-lifecycle)
+    - [Annotations (TODO)](#annotations)
+16. [Spring Boot (TODO)](#spring-boot)
+    - [](#)
+    - [](#)
+    - [](#)
+    - [](#)
+    - [](#)
+17. [JDBC (TODO)](#jdbc)
+    - [Connections (TODO)](#connections)
+    - [Prepared Statements (TODO)](#prepared-statements)
+    - [SQL Injection Prevention (TODO)](#sql-injection-prevention)
+    - [Transactions (TODO)](#transactions)
+18. [Testing & Best Practices (TODO)](#testing-and-best-practices)
+    - [Unit Testing Basics (TODO)](#unit-testing-basics)
+    - [Clean Code Principles (TODO)](#clean-code-principles)
+    - [Common Java Pitfalls (TODO)](#common-java-pitfalls)
+19. [Interview Questions & Anwers (TODO)](#interview-questions-and-answers)
+    - [](#)
+    - [](#)
+    - [](#)
+    - [](#)
+
 ## Core Java Fundamentals
 ### JVM, JRE, JDK
 The JVM is the runtime engine that executes Java bytecode.
@@ -139,7 +264,10 @@ Note:
 - Return types must be the same or covariant
 - Cannot override static methods
 
-#### Abstraction
+#### Parametric Polymorphism
+Generics are a form of compile-time polymorphism called "parametric polymorphism".
+
+### Abstraction
 
 Abstraction focuses on hiding the complex implementation details and showing only the essential features of an object. In java abstraction is mainly achieved using either interfaces or abstract classes.
 
@@ -188,10 +316,7 @@ class Car extends Vehicle {
 }
 ```
 
-### Generics (TODO)
-Generics are a form of compile-time polymorphism called "parametric polymorphism".
-
-## Collections Framework (IMPROVE)
+## Collections Framework
 https://www.geeksforgeeks.org/java/java/#:~:text=Memory%20Leaks-,Collections,-Java%20Collections%20provide
 Java Collection Framework (JCF) is a set of classes and interfaces that provide ready-made data structures to store and manipulate groups of objects efficiently.
 The java.util package contains the Collections class in Java. The Java Collections class is used with the static methods that operate on the collections or return the collection. All the methods of this class throw a NullPointerException if the collection or object passed to the methods is null.
@@ -306,7 +431,7 @@ HashSet<Type> set = new HashSet<>(int initialCapacity, float loadFactor);
 Creates a new HashSet containing the elements of the specified collection (removes duplicates automatically).
 HashSet<Type> set = new HashSet<>(c);
 
-#### LinkedHashSet (TODO)
+#### LinkedHashSet
 https://www.geeksforgeeks.org/java/linkedhashset-in-java-with-examples/
 Maintains insertion order (uses a separate linked list to keep insertion order)
 More space required compared to HashSet
@@ -318,7 +443,7 @@ Does not allow null
 Backed by a Red-Black Tree
 O(log n) operations
 
-### Map (TODO)
+### Map
 https://www.geeksforgeeks.org/java/map-interface-in-java/
 Map is an interface part of the Java Collections Framework and represents but it is not a subtype of Collection.
 A Map represents a key-value data structure, where:
@@ -385,22 +510,24 @@ Use case
 Fast Operations
 Ordered data / range operations
 
-### Queue (TODO)
+### Queue
 https://www.geeksforgeeks.org/java/queue-interface-java/
 Queue is an interface in Java and is part of the Collections Framework.
 A Queue in Java is a linear data structure that follows the FIFO (First-In, First-Out) principle, the first element added is the first one removed.
 There is also PriorityQueue which is an implementation of Queue based on a Heap and does not follow FIFO principle but orders the elements based on natural ordering or using a comparator.
 
-#### PriorityQueue (TODO)
+#### PriorityQueue
 https://www.geeksforgeeks.org/java/priority-queue-in-java/
 
-### Iterator (TODO)
+### Iterator
 https://www.geeksforgeeks.org/java/iterators-in-java/
 
-### Comparator (TODO)
+### Comparator
 https://www.geeksforgeeks.org/java/java-comparator-interface/
 
-## Exception Handling (IMPROVE)
+### HashMap vs TreeMap
+
+## Exception Handling
 
 https://www.geeksforgeeks.org/java/java/#:~:text=Employee%20Management%20System-,Exception%20Handling,-Java%20Exception%20Handling
 Exception handling is Java's mechanism for dealing with runtime errors in a controlled way, without crashing the application.
@@ -413,7 +540,7 @@ Object
            ├── Checked Exceptions
            └── RuntimeException (Unchecked Exceptions)
 
-### Checked vs Unchecked exceptions
+### Checked vs Unchecked Exceptions
 
 Checked exceptions are checked at compile time, handle them using try-catch, or declare them using throws. Examples: IOException, SQLException, ClassNotFoundException.
 
@@ -470,7 +597,7 @@ public void readFile() throws IOException {
 
 Note: using throws you can declare multiple exceptions.
 
-#### Custom exceptions
+#### Custom Exceptions
 
 Custom exceptions allow you to model domain-specific failures.
 
@@ -525,7 +652,7 @@ Never:
     ```
 - overriding custom exception constructors wrongly
 
-## Java 8+ Features (IMPROVE)
+## Java 8 Features
 
 ### Functional interfaces
 A Functional Interface in Java is an interface that contains exactly one abstract method. It represents a single unit of behavior, making it the foundation of lambda expressions and functional programming in Java (introduced in Java 8).
@@ -543,7 +670,7 @@ interface Logger {
 
 Default or static methods don't break the functional interface.
 
-### Lambda expressions
+### Lambda Expressions
 
 https://www.geeksforgeeks.org/java/lambda-expressions-java-8/
 Lambda expressions represent anonymous functions, pieces of behavior you can pass around as data.
@@ -583,12 +710,12 @@ Function<Integer, Integer> f = x -> x * factor; // OK
 // factor = 3; ❌ not allowed
 ```
 
-### Method References (TODO)
+### Method References
 https://www.geeksforgeeks.org/java/java-method-references/
 
-### Streams API (IMPROVE)
+### Streams
 https://www.geeksforgeeks.org/java/java-8-stream-tutorial/
-The Streams API is a high-level abstraction for processing collections of data in a functional, declarative way. It lets you express what you want to do with data rather than how to do it.
+The Java Streams are a high-level abstraction for processing collections of data in a functional, declarative way. It lets you express what you want to do with data rather than how to do it.
 A Stream is a sequence of elements that are processed lazily, support functional style operations and can be sequential or parallel. Streams are not data structures, once consumed they are gone and it does not mutate the source collection.
 Think of a stream as a pipeline of operations applied to data.
 A stream pipeline has three parts: Source → Intermediate Operations → Terminal Operation.
@@ -694,35 +821,35 @@ return Optional.ofNullable(user).map(User::getAddress)
 .map(Address::getCity()).orElse("Unknown")
 ```
 
-## Multithreading, Concurrency & Parallelism (IMPROVE)
-https://www.geeksforgeeks.org/java/java-multithreading-tutorial/
-https://www.geeksforgeeks.org/java/java-threads/
-https://www.geeksforgeeks.org/java/difference-between-thread-start-and-thread-run-in-java/
-https://www.geeksforgeeks.org/java/thread-sleep-method-in-java-with-examples/
-https://www.geeksforgeeks.org/java/daemon-thread-java/
-https://www.geeksforgeeks.org/java/synchronization-in-java/
-https://www.geeksforgeeks.org/java/thread-safety-and-how-to-achieve-it-in-java/
-https://www.geeksforgeeks.org/java/how-to-use-locks-in-multi-threaded-java-program/
-https://www.geeksforgeeks.org/java/difference-between-lock-and-monitor-in-java-concurrency/
-https://www.geeksforgeeks.org/java/lock-framework-vs-thread-synchronization-in-java/
-https://www.geeksforgeeks.org/java/reentrant-lock-in-java/
-https://www.geeksforgeeks.org/java/deadlock-in-java-multithreading/
-https://www.geeksforgeeks.org/java/thread-pools-java/
-https://www.geeksforgeeks.org/java/what-is-java-executor-framework/
-https://www.geeksforgeeks.org/java/java-lang-thread-class-java/
-https://www.geeksforgeeks.org/java/lifecycle-and-states-of-a-thread-in-java/
-https://www.geeksforgeeks.org/java/java-thread-priority-multithreading/
-https://www.geeksforgeeks.org/java/main-thread-java/
-https://www.geeksforgeeks.org/java/java-util-concurrent-package/
-https://www.geeksforgeeks.org/java/java-util-concurrent-executor-interface-with-examples/
-https://www.geeksforgeeks.org/java/java-util-concurrent-executorservice-interface-with-examples/
-https://www.geeksforgeeks.org/java/runnable-interface-in-java/
-https://www.geeksforgeeks.org/java/callable-future-java/
-https://www.geeksforgeeks.org/java/difference-between-callable-and-runnable-in-java/
+## Concurrency and Parallelism
+- https://www.geeksforgeeks.org/java/java-multithreading-tutorial/
+- https://www.geeksforgeeks.org/java/java-threads/
+- https://www.geeksforgeeks.org/java/difference-between-thread-start-and-thread-run-in-java/
+- https://www.geeksforgeeks.org/java/thread-sleep-method-in-java-with-examples/
+- https://www.geeksforgeeks.org/java/daemon-thread-java/
+- https://www.geeksforgeeks.org/java/synchronization-in-java/
+- https://www.geeksforgeeks.org/java/thread-safety-and-how-to-achieve-it-in-java/
+- https://www.geeksforgeeks.org/java/how-to-use-locks-in-multi-threaded-java-program/
+- https://www.geeksforgeeks.org/java/difference-between-lock-and-monitor-in-java-concurrency/
+- https://www.geeksforgeeks.org/java/lock-framework-vs-thread-synchronization-in-java/
+- https://www.geeksforgeeks.org/java/reentrant-lock-in-java/
+- https://www.geeksforgeeks.org/java/deadlock-in-java-multithreading/
+- https://www.geeksforgeeks.org/java/thread-pools-java/
+- https://www.geeksforgeeks.org/java/what-is-java-executor-framework/
+- https://www.geeksforgeeks.org/java/java-lang-thread-class-java/
+- https://www.geeksforgeeks.org/java/lifecycle-and-states-of-a-thread-in-java/
+- https://www.geeksforgeeks.org/java/java-thread-priority-multithreading/
+- https://www.geeksforgeeks.org/java/main-thread-java/
+- https://www.geeksforgeeks.org/java/java-util-concurrent-package/
+- https://www.geeksforgeeks.org/java/java-util-concurrent-executor-interface-with-examples/
+- https://www.geeksforgeeks.org/java/java-util-concurrent-executorservice-interface-with-examples/
+- https://www.geeksforgeeks.org/java/runnable-interface-in-java/
+- https://www.geeksforgeeks.org/java/callable-future-java/
+- https://www.geeksforgeeks.org/java/difference-between-callable-and-runnable-in-java/
 
-### Concurrency vs Parallelism (TODO)
+### Concurrency vs Parallelism
 
-### Threads vs Runnable
+### Thread vs Runnable
 A thread is the smallest unit of execution within a process. It represents a single flow of control that the CPU can schedule and run independently.
 - Lightweight: creating a thread is cheaper than creating a process.
 - Shared Resources: threads share heap memory, files, and objects of the process. Each thread has its own stack (local variables and call frames).
@@ -785,7 +912,7 @@ public interface Callable<V> {
 }
 ```
 
-### Memory Model Basics
+### Java Memory Model
 The Java Memory Model defines how and when threads can see and modify shared data.
 In short: JMM defines correctness rules for multithreaded Java programs.
 
@@ -814,7 +941,7 @@ No synchronization means no guarantee of visibility
 ### Volatile
 The volatile keyword ensures that a variable is visible (a write can be seen by all other threads) as well as order of operations (reads/writes cannot be reordered across volatile operations), however it does not guarantee mutual exclusion.
 
-### Synchronization (IMPROVE)
+### Synchronization
 With multiple threads, you can get:
 Race conditions: two threads interleave operations and produce wrong results.
 Visibility issues: one thread updates a value, another thread keeps seeing an old value.
@@ -837,9 +964,9 @@ When a thread exits it releases the lock, all writes done inside the block are f
 
 Every Java object has an intrinsic (monitor) lock, a thread must acquire that lock before entering a synchronized block.
 ```Java
-synchronized void increment() { }          // method-level
-synchronized(this) { }                     // block-level
-synchronized(MyClass.class) { }            // class-level
+synchronized void increment() { } // method-level
+synchronized(this) { } // block-level
+synchronized(MyClass.class) { } // class-level
 ```
 
 It is used to protect critical sections where shared mutable state is modified, it creates simple concurrency control without advanced locking needs.
@@ -853,8 +980,11 @@ It is used to protect critical sections where shared mutable state is modified, 
 - No timeout, no fairness control
 - Can hurt performance under contention
 
+### Race Conditions
 
-### Locks (TODO)
+### Deadlocks
+
+### Locks
 Lock gives advanced features that synchronized doesn't:
 Try lock without blocking (tryLock)
 Timed acquisition (tryLock(timeout))
@@ -864,6 +994,7 @@ Fairness policies (queueing fairness)
 Some locks are optimized for read-heavy workloads (ReadWriteLock)
 
 A ReentrantLock is like synchronized but explicit:
+```Java
 Lock lock = new ReentrantLock();
 
 lock.lock();
@@ -872,51 +1003,58 @@ try {
 } finally {
   lock.unlock();
 }
+```
 
 Note: always unlock it in finally, this is not optional.
 
 Use synchronized when:
-need simple mutual exclusion
-want the simplest, hardest-to-misuse solution
-don't need timed/interruptible locking
+- need simple mutual exclusion
+- want the simplest, hardest-to-misuse solution
+- don't need timed/interruptible locking
 
 Use Lock / ReentrantLock when:
-need tryLock, timeouts, fairness, interruptible locking
-need multiple conditions
-implementing advanced concurrency primitives
+- need tryLock, timeouts, fairness, interruptible locking
+- need multiple conditions
+- implementing advanced concurrency primitives
 
 Use volatile when:
-need visibility for a simple flag/state
-doing safe publication of immutable objects or references
-don't need atomic compound updates
+- need visibility for a simple flag/state
+- doing safe publication of immutable objects or references
+- don't need atomic compound updates
 
-### Thread pools, ExecutorService and Race Conditions
+### Thread Pools
 A Thread Pool is a collection of pre-created, reusable threads that are kept ready to perform tasks. Instead of creating a new thread every time you need to run something (which is costly in terms of memory and CPU), a thread pool maintains a fixed number of threads. When a task is submitted:
-If a thread is free, it immediately picks up the task and runs it.
-If all threads are busy, the task waits in a queue until a thread becomes available.
-After finishing a task, the thread does not die. It goes back to the pool and waits for the next task.
+1. If a thread is free, it immediately picks up the task and runs it.
+2. If all threads are busy, the task waits in a queue until a thread becomes available.
+3. After finishing a task, the thread does not die. It goes back to the pool and waits for the next task.
 
 Generally speaking, ExecutorService automatically provides a pool of threads and an API for assigning tasks to it.
 
 Executor Interface is the root interface of the framework that is used to execute submitted tasks without explicitly creating threads. Defines a single method:
+```Java
 Executor executor = command -> new Thread(command).start();
 executor.execute(() -> System.out.println("Task executed"));
+```
 
 The ExecutorService extends the Executor interface and provides advanced methods for task management, such as submitting tasks that return results and controlling executor shutdown.
 Supports both Runnable and Callable tasks.
 Provides lifecycle management (shutdown, awaitTermination).
 Can execute multiple tasks simultaneously.
+```Java
 ExecutorService service = Executors.newFixedThreadPool(2);
 service.submit(() -> System.out.println("Running a task"));
 service.shutdown();
+```
 
 ThreadPoolExecutor is the most commonly used implementation of ExecutorService. It manages a pool of worker threads to execute tasks efficiently, reusing threads to reduce overhead.
 Controls core pool size, maximum pool size, and queue capacity.
 Supports custom thread factory and rejection policies.
+```Java
 ExecutorService executor = Executors.newFixedThreadPool(3);
 executor.execute(task);
+```
 
-### Atomicity (TODO)
+### Atomics
 https://medium.com/@qingedaig/java-volatile-vs-atomic-classes-7599eb70a661
 
 ## Java Memory Management
@@ -925,7 +1063,7 @@ When your Java program runs on the JVM, memory is divided into several logical a
 The ones you care about most for interviews:
 Heap: where objects and arrays live
 Stack(s): each thread has its own stack, where method calls and local variables live
-Metaspace: where class metadata lives)
+Metaspace: where class metadata lives
 Native memory: used by JVM internals, direct buffers, JNI, etc.
 
 ### Stack
@@ -934,10 +1072,13 @@ Local primitive variables and references to objects on the heap
 The operand stack (for bytecode operations)
 Return address
 The stack is LIFO which means that frames are pushed on method call and popped on return. It's fast because it's purely pointer moves with no GC involved. The stack data lives only until the method returns and it's not shared between threads.
+
+```Java
 public void foo() {
     int x = 10;          // x is on the stack (primitive)
     Person p = new Person("Alice"); // p is on the stack, Person object is on the heap
 }
+```
 
 x is on the foo stack
 p reference is on the foo stack
@@ -949,6 +1090,7 @@ StackOverflowError: usually caused by deep or infinite recursion; the thread/met
 The heap is a shared area where all objects and arrays are allocated (instances of classes), it also contains the fields of those objects both primitive and reference fields.
 The heap is shared by all threads and requires synchronization for shared mutable state. It is managed by the garbage collector which means that it has slower allocation and deallocation than the stack.
 
+```Java
 public class Person {
     String name;      // field, stored inside the object on the heap
     int age;
@@ -959,6 +1101,7 @@ public void bar() {
     p.name = "Bob";   // modifying object on heap
     p.age = 30;
 }
+```
 
 The reference of p is on the stack.
 The Person object and its fields name, age are on the heap.
@@ -966,34 +1109,51 @@ The Person object and its fields name, age are on the heap.
 OutOfMemoryError: Java heap space is full and GC cannot free enough memory.
 
 Semantically, objects are on the heap; the JVM may optimize some allocations away using escape analysis and placing them on the stack.
-Garbage Collection (EXPAND)
+
+### Garbage Collection
 Java uses automatic memory management, the engineer only allocates objects with new and does not explicitly free them. The GC periodically frees objects that are no longer reachable.
-Memory leaks
+
+#### Memory leaks
 Memory leaks happen when holding references to objects you no longer actually need, preventing GC from collecting them.
-Examples
+
+*Examples*
+
 Unbounded Collections: cache is a static field and nothing removes elements from cache which means that it will grow until OutOfMemoryError.
+
+```Java
 private static final List<byte[]> cache = new ArrayList<>();
 
 public void leak() {
     byte[] block = new byte[1024 * 1024];
     cache.add(block);  // never removed
 }
-
+```
 If a Listener registers and never unregisters, and the Publisher outlives it, the Publisher holds a reference to Listener, even if nobody else cares about Listener, it stays reachable via Publisher.listeners.
+
+```Java
 class Publisher {
     private final List<Listener> listeners = new ArrayList<>();
     void register(Listener l) { listeners.add(l); }
 }
+```
 
-Generational Garbage Collection (TODO)
+#### Generational Garbage Collection
 https://newrelic.com/blog/apm/java-garbage-collection#:~:text=During%20the%20garbage%20collection%20process,up%20memory%20in%20the%20heap.
-Immutability
+
+## Immutability
 An object is immutable if, after it's been constructed, its observable state can never change for any caller.
-Using final on a variable means "this variable can't be reassigned", it does not mean the object referenced is immutable.
 Immutable objects are naturally thread-safe because they can't change.
-How to create immutable classes
+
+### Immutable Variables
+Using final on a variable means "this variable can't be reassigned", it does not mean the object referenced is immutable.
+
+### Immutable Methods
+
+### Immutable Classes
 An immutable class must have all the fields set as private, does not provide any setters or other state-modifying methods, does not allow subclasses (either because the class is final or make the constructor private and use a factory), all fields are initialized in the constructor, do not pass this to other objects that might mutate the state.
-Example
+
+*Example*
+```Java
 public final class Person {
     private final String name;
     private final int age; // primitive, so fine
@@ -1018,8 +1178,9 @@ public final class Person {
         return new Person(this.name, newAge);
     }
 }
-
+```
 This is not immutable because you expose the values map which can lead to state modification:
+```Java
 public final class Config {
     private final Map<String, String> values;
 
@@ -1031,58 +1192,66 @@ public final class Config {
         return values; // exposes mutable map
     }
 }
-
+```
 Instead you should return a copy of the values map.
-String immutability
+
+#### String immutability
 String is one of the most important immutable classes in Java.
+```Java
 public final class String implements Serializable, Comparable<String>, CharSequence {
     private final char[] value;
     private final int hash; // cached hash code, computed lazily
     // ...
 }
-
+```
 The value is a character array, but it's private final, and never exposed, no method in String ever mutates that array; all "modifying" methods (substring, toUpperCase, replace, etc.) return new String objects.
 Because strings are immutable, Java can safely reuse instances in the String pool.
+```Java
 String a = "hello";
 String b = "hello";
 System.out.println(a == b); // true -- same instance from pool
+```
 
 If strings were mutable, this would be unsafe because changing a would implicitly change b.
-Benefits and pitfalls
-Pros:
-Once created, the object never changes, no debugging.
-No need to think about object lifecycle beyond construction.
-No partial or inconsistent state after construction.
-Immutable objects are inherently thread-safe
-You can safely cache and reuse immutable objects
-Methods equals & hashCode are stable over time
-Methods that return new immutable objects instead of mutating arguments fit functional programming style
-Easier to test; no need to reset state between tests.
-Cons:
-Performance and memory overhead: every state change requires a new instance
 
-Equals & HashCode Contract
+#### Benefits and pitfalls
+
+*Pros*
+- Once created, the object never changes, no debugging.
+- No need to think about object lifecycle beyond construction.
+- No partial or inconsistent state after construction.
+- Immutable objects are inherently thread-safe
+- You can safely cache and reuse immutable objects
+- Methods equals & hashCode are stable over time
+- Methods that return new immutable objects instead of mutating arguments fit functional programming style
+- Easier to test; no need to reset state between tests.
+
+*Cons*
+- Performance and memory overhead: every state change requires a new instance
+
+## Equals and HashCode Contract
 Identity and Equality are 2 distinct concepts:
-identity means same object reference in memory and is checked this way a == b
-equality means same value according to some logical definition you choose and is checked this way a.equals(b)
+- identity means same object reference in memory and is checked this way `a == b`
+- equality means same value according to some logical definition you choose and is checked this way a.equals(b)
 By default, the equals method performs an identity check (==). To define logical equality (e.g., two User objects with the same id are "equal"), you must override equals() and also hashCode().
 
 Any implementation of the equals method must satisfy these rules:
-Reflexive: x.equals(x) is always true.
-Symmetric: if x.equals(y) is true, then y.equals(x) must also be true.
-Transitive: if x.equals(y) and y.equals(z) are true, then x.equals(z) must be true.
-Consistent: multiple calls with the same values should give the same result, as long as the objects don't change.
-Non-null: x.equals(null) must always return false.
+- Reflexive: x.equals(x) is always true.
+- Symmetric: if x.equals(y) is true, then y.equals(x) must also be true.
+- Transitive: if x.equals(y) and y.equals(z) are true, then x.equals(z) must be true.
+- Consistent: multiple calls with the same values should give the same result, as long as the objects don't change.
+- Non-null: x.equals(null) must always return false.
 
 The hashCode method is an int used to quickly group objects into buckets in hash-based collections.
 
 Any implementation of the hashCode method must satisfy these rules:
-Consistency: during a single execution, if the object's fields used in equals method don't change, x.hashCode() must always return the same value.
-Equal objects have equal hash codes: if x.equals(y) is true, then x.hashCode() == y.hashCode() must be true.
-Unequal objects may have equal hash codes: different objects can have the same hash code (hash collisions are allowed), but fewer collisions are better for performance.
+- Consistency: during a single execution, if the object's fields used in equals method don't change, x.hashCode() must always return the same value.
+- Equal objects have equal hash codes: if x.equals(y) is true, then x.hashCode() == y.hashCode() must be true.
+- Unequal objects may have equal hash codes: different objects can have the same hash code (hash collisions are allowed), but fewer collisions are better for performance.
 The critical rule is number 2. If you override equals but not hashCode, you almost certainly violate it.
 
 Let's say we have a Person class where two persons are considered equal if they have the same id:
+```Java
 public class Person {
     private final int id;
     private final String name;
@@ -1108,45 +1277,52 @@ public class Person {
         return Integer.hashCode(id);
     }
 }
+```
 
 Note:
-The equals(Object o) method must take an Object, not Person. Otherwise it doesn't override correctly.
+- The equals(Object o) method must take an Object, not Person. Otherwise it doesn't override correctly.
 getClass() != o.getClass() ensures symmetry when dealing with inheritance.
-Only use fields that define logical equality in this case, just id.
+- Only use fields that define logical equality in this case, just id.
 hashCode() uses the same fields as equals()
-If you add the name field to equals(), you must also include it in hashCode(), example:
-@Override
-public boolean equals(Object o) {
-    if (this == o) return true;
-    if (!(o instanceof Person)) return false;
-    Person person = (Person) o;
-    return id == person.id &&
-           Objects.equals(name, person.name);
-}
+- If you add the name field to equals(), you must also include it in hashCode(), example:
+    ```Java
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Person)) return false;
+        Person person = (Person) o;
+        return id == person.id &&
+            Objects.equals(name, person.name);
+    }
 
-@Override
-public int hashCode() {
-    return Objects.hash(id, name);
-}
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, name);
+    }
+    ```
 
-
-SOLID
+## SOLID
 SOLID is a set of five core Object-Oriented Design principles that help you write maintainable, flexible, and scalable software, SOLID stands for:
-Single Responsibility: a class should only have one responsibility.
-Open/Closed: classes should be open for extension but closed for modification.
-Liskov Substitution: if class A is a subtype of class B, we should be able to replace B with A without disrupting the behavior of our program.
-Interface Segregation: larger interfaces should be split into smaller ones. By doing so, we can ensure that implementing classes only need to be concerned about the methods that are of interest to them.
-Dependency Inversion: The principle of dependency inversion refers to the decoupling of software modules. This way, instead of high-level modules depending on low-level modules, both will depend on abstractions.
-Design Patterns
+- Single Responsibility: a class should only have one responsibility.
+- Open/Closed: classes should be open for extension but closed for modification.
+- Liskov Substitution: if class A is a subtype of class B, we should be able to replace B with A without disrupting the behavior of our program.
+- Interface Segregation: larger interfaces should be split into smaller ones. By doing so, we can ensure that implementing classes only need to be concerned about the methods that are of interest to them.
+- Dependency Inversion: The principle of dependency inversion refers to the decoupling of software modules. This way, instead of high-level modules depending on low-level modules, both will depend on abstractions.
+
+## Design Patterns
 Design patterns are proven, reusable solutions to common software design problems.
 They are not code you copy-paste, but rather general templates for solving recurring issues in object-oriented programming.
 
 There are different types of design patterns:
-Creational patterns deal with object creation: how, when, and by whom objects should be instantiated, some examples are: Singleton, Factory Method, Abstract Factory and Builder.
+- Creational patterns deal with object creation: how, when, and by whom objects should be instantiated, some examples are: Singleton, Factory Method, Abstract Factory and Builder.
 Structural patterns deal with class composition: how objects fit together to form larger structures, some examples are: Adapter, Decorator, Facade, Composite and Proxy.
-Behavioral patterns handle communication and responsibility distribution between objects, some examples are: Observer, Command, Iterator, Template, State, Chain of Responsibility.
-Singleton
+- Behavioral patterns handle communication and responsibility distribution between objects, some examples are: Observer, Command, Iterator, Template, State, Chain of Responsibility.
+
+### Creational Patterns
+
+#### Singleton
 In object-oriented programming, a Java singleton class is a class that can have only one object (an instance of the class) at a time. After the first time, if we try to instantiate the Java Singleton classes, the new variable also points to the first instance created. So, whatever modifications we do to any variable inside the class through any instance, affect the variable of the single instance created and are visible if we access that variable through any variable of that class type defined.
+```Java
 public class SingletonObject {
     private static SingletonObject instance;
 
@@ -1159,19 +1335,23 @@ public class SingletonObject {
         return instance;
     }
 }
+```
 
 The primary purpose of a Java Singleton class is to restrict the limit of the number of object creations to only one. This often ensures that there is access control to resources, for example, a socket or a database connection.
 
 It is memory efficient as the object creation will take place only once instead of creating it each time a new request is made, which reduces the overhead and makes it memory efficient.
 
 It is thread-safe: only a single thread at a time can access the instance.
-Factory
+
+#### Factory
 A Factory Method is a creational design pattern in object-oriented programming (including Java) that provides a way to create objects without specifying the exact class of the object that will be created.
 
 Instead of calling a constructor directly (new SomeClass()), you call a factory method that decides which concrete implementation to instantiate.
 This allows a class to delegate object creation to subclasses or helper classes.
 
 Without factory method:
+```Java
+// without Factory Method:
 public class NotificationService {
     public void send(String message) {
         EmailNotification notification = new EmailNotification();
@@ -1179,8 +1359,7 @@ public class NotificationService {
     }
 }
 
-
-With Factory Method:
+// with Factory Method:
 public interface Notification {
     void send(String message);
 }
@@ -1212,18 +1391,20 @@ public class SmsFactory extends NotificationFactory {
         return new SmsNotification();
     }
 }
+```
 
-Builder
+#### Builder
 The Builder pattern is a creational design pattern used to construct complex objects step-by-step. It separates the construction process from the final representation, making it easier to build objects with many optional or configurable fields.
 
 Use it when:
-A class has many constructor parameters (especially optional ones).
-You want the object to be immutable after creation.
-You want a readable, fluent way to create configurations.
-You want to avoid "telescoping constructors".
+- A class has many constructor parameters (especially optional ones).
+- You want the object to be immutable after creation.
+- You want a readable, fluent way to create configurations.
+- You want to avoid "telescoping constructors".
 
 To use the Builder pattern create a static nested Builder class inside your main class, the builder class contains the same fields as the parent class, all the methods in the builder set fields and return the builder (fluent interface) a build() method creates the final immutable object.
 
+```Java
 public class User {
 
     private final String firstName;
@@ -1269,18 +1450,32 @@ public class User {
         }
     }
 }
+```
 
-Strategy
+### Structural Patterns
+
+#### Decorator
+
+#### Facade
+
+#### Composite
+
+#### Proxy
+
+### Behavioral Patterns
+
+#### Strategy
 The Strategy Pattern is a behavioral design pattern that lets you define a family of algorithms, encapsulate each algorithm in its own class, and switch between them at runtime.
 
 Use it when:
-You have multiple ways to perform an action.
-You want to choose the algorithm at runtime.
-You want to avoid long if–else or switch statements.
-You want to follow the Open/Closed Principle (easy to add new behaviors without modifying existing code).
+- You have multiple ways to perform an action.
+- You want to choose the algorithm at runtime.
+- You want to avoid long if–else or switch statements.
+- You want to follow the Open/Closed Principle (easy to add new behaviors without modifying existing code).
 
 To use the Strategy pattern create "Strategy Interface" that defines a common method for all algorithms, create different classes called "Concrete Strategies" that implement different variations of the interface then define a "context" that uses a strategy and allows changing it dynamically.
 
+```Java
 public interface PaymentStrategy {
     void pay(double amount);
 }
@@ -1317,15 +1512,16 @@ public class CheckoutContext {
         strategy.pay(amount);
     }
 }
+```
 
-Observer
+#### Observer
 The Observer Pattern is a behavioral design pattern that defines a one-to-many relationship between objects. When one object (the Subject) changes its state, all the dependent objects (the Observers) are automatically notified.
 
 Use the Observer pattern when:
 One object's change should update others automatically.
 You want to avoid tight coupling between objects.
 You need a reactive update system.
-
+```Java
 interface Subject {
     void register(Observer o);
     void unregister(Observer o);
@@ -1376,56 +1572,66 @@ class TVDisplay implements Observer {
         System.out.println("TV display updated: " + temperature + "°C");
     }
 }
+```
 
+#### Command
 
+#### State
 
-Serialization
+## Serialization
 Serialization is the process of converting a Java object into a byte stream so it can be saved in the disk, sent over a network, cached, etc.
 
 Deserialization is the reverse process: reconstructing the object from the byte stream.
-Serializable vs Externalizable
+
+### Serializable vs Externalizable
 Serializable is a marker interface (an interface with no methods), the JVM automatically handles serialization of the object using reflection. It's not really efficient because it stores class metadata and does not offer control on which fields are serialized.
 
 Externalizable is a sub-interface of Serializable, it introduces 2 mandatory methods:
+```Java
 void writeExternal(ObjectOutput out) throws IOException;
 void readExternal(ObjectInput in) throws IOException, ClassNotFoundException;
+```
 
 This method allows control of how the object is serialized/deserialized.
-transient
-In a Serializable or Externalizable Object, fields marked with transient keywords will not be serialized.
 
+### transient
+In a Serializable or Externalizable Object, fields marked with transient keywords will not be serialized.
+```Java
 class User implements Serializable {
     private String username;
     private transient String password; // will not be serialized
 }
+```
 
-Versioning (serialVersionUID)
+### Versioning
 Java serialization uses serialVersionUID to verify version compatibility between the class that produced the serialized object and the class that is trying to read it.
 A serialVersionUID is declared as follows:
+```Java
 private static final long serialVersionUID = 1L;
-
+```
 If you don't, JVM generates one automatically based on class structure. Small changes (like adding a field or changing method visibility) can change the generated UID which can break backward compatibility.
 
 The best practice is to always explicitly define serialVersionUID in Serializable classes to control compatibility.
 
 Changing a Serializable class is safe if you:
-Add new fields they are set to default values when reading old data
-Remove transient keyword
-Change method logic
+- Add new fields they are set to default values when reading old data
+- Remove transient keyword
+- Change method logic
 
 It is unsafe if you:
-Remove a non-transient field
-Change field type
-Change class hierarchy (e.g., removing Serializable)
-Change serialVersionUID manually
-I/O & NIO
+- Remove a non-transient field
+- Change field type
+- Change class hierarchy (e.g., removing Serializable)
+- Change serialVersionUID manually
+
+## IO and NIO
 https://www.geeksforgeeks.org/java/java/#:~:text=Project%3A%20Snake%20Game-,File%20Handling,-Java%20File%20Handling
 Java I/O (Input/Output) is a collection of classes and streams in the java.io package that handle reading data from sources (like files, keyboard, or network) and writing data to destinations (like files, console or sockets). It provides both byte and character streams to support all types of data.
 Java I/O is the traditional, stream-based, blocking I/O API this means that:
 data is read/written 1 byte or char at a time
 when calling read() or write(), the thread stops and waits until the operation finishes
 
-System I/O
+### System IO
 System.in: This is the standard input stream that is used to read characters from the keyboard or any other standard input device, it implements the following methods:
 int read(): reads one byte of data.
 int read(byte[] b): reads bytes into an array.
@@ -1438,7 +1644,7 @@ println(String s): This method in Java is also used to display a text on the con
 printf(String s, T… args): The printf() method in Java is used for formatted output and can take multiple arguments, making it more flexible than print() or println().
 System.err: This is the standard error stream that is used to display error messages separately from normal output.
 
-Streams vs Readers/Writers
+### Streams vs Readers and Writers
 Depending on the type of operations, streams can be divided into two primary classes:
 Input Stream: These streams are used to read data that must be taken as an input from a source array or file or any peripheral device. i.e.: FileInputStream, BufferedInputStream, ByteArrayInputStream.
 Output Stream: These streams are used to write data as outputs into an array or file or any output peripheral device. i.e.: FileOutputStream, BufferedOutputStream, ByteArrayOutputStream.
@@ -1446,10 +1652,12 @@ Output Stream: These streams are used to write data as outputs into an array or 
 Streams can be divided into two primary classes:
 Byte Stream: are used to perform input and output of 8-bit bytes. They are suitable for handling raw binary data such as images, audio, and video, using classes like InputStream and OutputStream.
 Character Stream: are used to perform input and output of 16-bit Unicode characters. They are best suited for handling text data, using classes like Reader and Writer which automatically handle character encoding and decoding.
-File handling
-Java I/O
+### File handling
+
+#### Java I/O
 File represents a pathname to a file or directory. It does not read/write file contents, but manages metadata and operations.
 
+```Java
 File file = new File("example.txt");
 
 file.exists();
@@ -1459,9 +1667,10 @@ file.isDirectory();
 file.isFile();
 file.length();      // size in bytes
 file.getAbsolutePath();
-
+```
 
 To read and write bytes:
+```Java
 try (FileInputStream fis = new FileInputStream("input.bin")) {
     int data;
     while ((data = fis.read()) != -1) {
@@ -1485,16 +1694,20 @@ try (BufferedReader br = new BufferedReader(new FileReader("input.txt"))) {
 try (PrintWriter pw = new PrintWriter(new FileWriter("output.txt"))) {
     pw.println("Hello World");
 }
+```
 
 Copying files:
+```Java
 try (InputStream in = new FileInputStream("in.txt");
      OutputStream out = new FileOutputStream("out.txt")) {
     in.transferTo(out);
 }
+```
 
-Java NIO
+#### Java NIO
 The modern API uses Path, Files, and offers better performance, error handling, and ease of use.
 
+```Java
 Path path = Paths.get("example.txt");
 
 Files.exists(path);
@@ -1516,66 +1729,67 @@ Files.write(path, "Hello".getBytes());
 Files.write(path, List.of("One", "Two")); // text lines
 
 Files.copy(Paths.get("in.txt"), Paths.get("out.txt"));
+```
 
 
 
-Networking
+## Networking
 https://www.geeksforgeeks.org/java/java/#:~:text=Project%3A%C2%A0Text%20Editor-,Networking,-Java%20Networking%20enables
 
-
-
-Spring Framework
+## Spring Framework
 https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=6.1%20Basics%20of%20Spring%20Framework
 
 The Spring Framework is a lightweight Java framework used to build scalable, maintainable enterprise applications. It offers a programming and configuration model for modern Java development.
 
-Dependency Injection (DI)
+### Dependency Injection
 Dependency Injection is a design pattern used in software development to implement Inversion of Control. It allows a class to receive its dependencies from an external source rather than creating them within the class. This reduces the dependency between classes and makes the system more maintainable.
 
 
-Inversion of Control (IoC)
+### Inversion of Control
 Inversion of Control (IoC) is a design principle used in object-oriented programming where the control of object creation and dependency management is transferred from the application code to an external framework or container. This reduces the complexity of managing dependencies manually and allows for more modular and flexible code.
 
 Spring IoC (Inversion of Control) Container is the core of the Spring Framework. It creates and manages objects (beans), injects dependencies and manages their life cycles. It uses Dependency Injection (DI), based on configurations from XML files, Java-based configuration, annotations or POJOs. Since the container, not the developer, controls object creating and wiring, it's called Inversion of Control (IoC).
 
 There are two types of IoC containers in Spring:
-BeanFactory: is the most basic version of the IoC container. It provides basic support for dependency injection and bean lifecycle management. It is suitable for lightweight applications where advanced features are not required. 
-ApplicationContext: is an extension of BeanFactory with more enterprise features like event propagation, internationalization and more. It is the preferred choice for most Spring applications due to its advanced capabilities.
+- BeanFactory: is the most basic version of the IoC container. It provides basic support for dependency injection and bean lifecycle management. It is suitable for lightweight applications where advanced features are not required. 
+- ApplicationContext: is an extension of BeanFactory with more enterprise features like event propagation, internationalization and more. It is the preferred choice for most Spring applications due to its advanced capabilities.
 
-Aspect-Oriented Programming (AOP)
+### Aspect-Oriented Programming
 AOP allows developers to separate cross-cutting concerns (such as logging, security and transaction management) from the business logic.
 
-Maven
+### Maven
 Maven allows us to manage dependencies automatically, we don't have to download JAR files manually. Maven does it automatically. When we add dependencies in the pom.xml, Maven downloads the important libraries from the central repository and keeps them up to date.
 
 
-Bean lifecycle, annotations
+### Bean lifecycle
+
+### Annotations
 
 
-Spring Boot
+## Spring Boot
 https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=following%20article%3A%20Spring-,6.2%20Spring%20Boot,-Spring%20Boot%20simplifies
 
+## JDBC
 
-JDBC & Database Basics
-Advanced Java Tutorial | Mastery in Java Programming - GeeksforGeeks
-Connections, prepared statements
+### Connections
 
-SQL injection prevention
+### Prepared Statements
 
-Transactions
+### SQL Injection Prevention
 
-Testing & Best Practices
+### Transactions
+
+## Testing and Best Practices
 https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=article%3A%20Java%20Microservices-,7.%20JUnit,-JUnit%20is%20a
 
-Unit testing basics (JUnit)
+### Unit Testing Basics
 
-Clean code principles
+### Clean Code Principles
 
-Common Java pitfalls
+### Common Java Pitfalls
 
 
-
-Interview Questions and Answers
+## Interview Questions and Answers
 What are the differences between JVM, JRE, and JDK, and how do they work together when running a Java application?
 
 Explain the Java compilation process and how it differs from the execution process at runtime.
