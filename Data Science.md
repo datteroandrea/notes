@@ -23,6 +23,11 @@
         - [...]()
     - [Large Language Models](#llm) (TODO)
         - [...]()
+4. [Interview Questions & Anwers (TODO)](#interview-questions-and-answers)
+    - [](#)
+    - [](#)
+    - [](#)
+    - [](#)
 
 ## Introduction
 This course focuses on Data Science and Analysis using Python.
@@ -1996,3 +2001,5 @@ Few-shot: Providing one or more input/output examples to show the model what's e
 Hallucinations: are when a large language model (LLM) perceives patterns or objects that are nonexistent, creating nonsensical or inaccurate outputs.
 
 LLM token limits: define the maximum amount of text (input prompt + output response) a model can process in one go, known as the context window, with limits varying widely (e.g., 4k, 32k, 128k+ tokens), and exceeding this causes errors or truncated information, impacting cost, complexity, and model capability; tokens are roughly 0.75 words, but depend on the model's tokenizer.
+
+### Interview Questions and Answers
