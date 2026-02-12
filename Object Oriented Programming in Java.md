@@ -2076,3 +2076,71 @@ https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=article%3A%20J
 ### JDBC
 
 ### Testing and Best Practices
+
+#### Exercises
+List of exercises: https://codingdojo.org/kata/
+
+##### 1. FizzBuzz
+
+##### 2. CSV Parser
+
+##### 2. Roman Numeral Converter
+
+##### 3. Expression Evaluator (mini calculator with + - * /)
+
+##### 4. Bowling Game Kata
+
+##### 5. Prime Factors Kata
+
+##### 6. Anagram Finder
+
+##### 7. String Calculator Kata Exercise
+Write a method:
+```Java
+int add(String input)
+```
+that parses a string containing numbers separated by delimiters and returns their sum. The function must correctly handle default delimiters, custom delimiters, and edge cases.
+1. Basic Case: the input will contain zero or more integers separated by commas:
+    ```Java
+    "" → return 0
+
+    "1" → 1
+
+    "1,2,3" → 6
+    ```
+2. Support Newline as a Delimiter: the string can also contain newline (\n) characters as valid delimiters:
+    ```Java
+    "1\n2,3" → 6
+    ```
+3. Custom Delimiters: the input may specify one or more custom delimiters at the start using this format:
+    ```Java
+        //<delimiter>\n<numbers>
+    ```
+    Examples:
+    ```Java
+    "//;\n1;2;3" → delimiters = ;, sum = 6
+
+    "//|\n5|6|7" → 18
+    ```
+4. Custom Delimiters of Any Length: if the delimiter is wrapped in brackets, it can be longer than one character:
+    ```Java
+    "//[***]\n1***2***3" → 6
+    ```
+5. Multiple Custom Delimiters: you may also receive multiple delimiters, each wrapped in brackets:
+    ```Java
+    "//[*][%]\n1*2%3" → 6
+
+    "//[&&][|||]\n4&&5|||6" → 15
+    ```
+6. Negative Numbers: if a negative number appears, throw an exception:
+    ```Java
+    "1,-2,3" → throw IllegalArgumentException("Negatives not allowed: -2")
+    ```
+    If multiple negatives:
+    ```Java
+    "1,-2,-5" → "Negatives not allowed: -2, -5"
+    ```
+7. Ignore Numbers > 1000: numbers larger than 1000 must be ignored.
+    ```Java
+    "2,1001,3" → 5
+    ```
