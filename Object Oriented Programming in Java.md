@@ -5,19 +5,19 @@ https://www.geeksforgeeks.org/advance-java/advanced-java/
 https://www.geeksforgeeks.org/advance-java/spring-boot/
 
 ## Index
-1. [Core Java Fundamentals](#core-java-fundamentals)
+1. [1. Core Java Fundamentals](#1-core-java-fundamentals)
     - [JVM, JRE, JDK](#jvm-jre-jdk)
     - [Compilation vs Execution](#compilation-vs-execution)
-2. [Object Oriented Programming](#object-oriented-programming)
+2. [2. Object Oriented Programming](#2-object-oriented-programming)
     - [Encapsulation](#encapsulation)
     - [Inheritance](#inheritance)
     - [Polymorphism (REWRITE)](#polymorphism)
         - [Compile-time Polymorphism](#compile-time-polymorphism)
-        - [Runtime Polymorphism](#runtime-polymorphism)
+        - [Runtime Polymorphism (IMPROVE)](#runtime-polymorphism)
     - [Abstraction](#abstraction)
         - [Interfaces](#interfaces)
         - [Abstract Classes](#abstract-classes)
-3. [Collections Framework (IMPROVE)](#collections-framework)
+3. [3. Collections Framework (IMPROVE)](#3-collections-framework)
     - [List](#list)
         - [ArrayList](#arraylist)
         - [LinkedList](#linkedlist)
@@ -33,18 +33,18 @@ https://www.geeksforgeeks.org/advance-java/spring-boot/
     - [Iterator (TODO)](#iterator)
     - [Comparator (TODO)](#comparator)
     - [HashMap vs TreeMap (TODO)](#hashmap-vs-treemap)
-4. [Exception Handling (IMPROVE)](#exception-handling)
+4. [4. Exception Handling (IMPROVE)](#4-exception-handling)
     - [Checked vs Unchecked Exceptions](#checked-vs-unchecked-exceptions)
     - [try-catch-finally](#try-catch-finally)
     - [throw vs throws](#throw-vs-throws)
     - [Custom Exceptions](#custom-exceptions)
-5. [Java 8+ features (IMPROVE)](#java-8-features)
+5. [5. Java 8+ features (IMPROVE)](#5-java-8-features)
     - [Functional Interfaces](#functional-interfaces)
     - [Lambda Expressions](#lambda-expressions)
     - [Method References (TODO)](#method-references)
     - [Streams (IMPROVE)](#streams)
     - [Optional](#optional)
-6. [Concurrency & Parallelism (IMPROVE)](#concurrency-and-parallelism)
+6. [6. Concurrency & Parallelism (IMPROVE)](#6-concurrency-and-parallelism)
     - [Concurrency vs Parallelism (TODO)](#concurrency-vs-parallelism)
     - [Thread vs Runnable](#thread-vs-runnable)
     - [Callable vs Runnable](#callable-vs-runnable)
@@ -56,21 +56,21 @@ https://www.geeksforgeeks.org/advance-java/spring-boot/
     - [Locks (TODO)](#locks)
     - [Thread Pools (TODO)](#thread-pools)
     - [Atomics (TODO)](#atomics)
-7. [Java Memory Management (IMPROVE)](#java-memory-management)
+7. [7. Java Memory Management (IMPROVE)](#7-java-memory-management)
     - [Stack](#stack)
     - [Heap](#heap)
     - [Garbage Collection (EXPAND)](#garbage-collection)
         - [Generational Garbage Collection (TODO)](#generational-garbage-collection)
         - [Memory Leaks (IMPROVE)](#memory-leaks)
-8. [Immutability (IMPROVE)](#immutability)
+8. [8. Immutability (IMPROVE)](#8-immutability)
     - [Immutable Variables (IMPROVE)](#immutable-variables)
     - [Immutable Methods (TODO)](#immutable-methods)
     - [Immutable Classes (IMPROVE)](#immutable-classes)
         - [String Immutability](#string-immutability)
         - [Benefits and Pitfalls](#benefits-and-pitfalls)
-9. [Equals & Hashcode Contract](#equals-and-hashcode-contract)
-10. [SOLID](#solid)
-11. [Design Patterns](#design-patterns)
+9. [9. Equals & Hashcode Contract](#9-equals-and-hashcode-contract)
+10. [10. SOLID](#10-solid)
+11. [11. Design Patterns](#11-design-patterns)
     - [Creational Patterns](#creational-patterns)
         - [Singleton](#singleton)
         - [Factory](#factory)
@@ -85,50 +85,50 @@ https://www.geeksforgeeks.org/advance-java/spring-boot/
         - [Observer](#observer)
         - [Command (TODO)](#command)
         - [State (TODO)](#state)
-12. [Serialization](#serialization)
+12. [12. Serialization](#12-serialization)
     - [Serializable vs Externalizable](#serializable-vs-externalizable)
     - [transient](#transient)
     - [Versioning](#versioning)
-13. [I/O & NIO](#io-and-nio)
+13. [13. I/O & NIO](#13-io-and-nio)
     - [System I/O](#system-io)
     - [Streams vs Readers/Writers](#streams-vs-readers-and-writers)
     - [File Handling](#file-handling)
         - [Java IO](#java-io)
         - [Java NIO](#java-nio)
-14. [Networking (TODO)](#networking)
+14. [14. Networking (TODO)](#14-networking)
     - [](#)
     - [](#)
     - [](#)
     - [](#)
-15. [Spring Framework](#spring-framework)
+15. [15. Spring Framework](#15-spring-framework)
     - [Dependency Injection](#dependency-injection)
     - [Inversion of Control](#inversion-of-control)
     - [Aspect-Oriented Programming](#aspect-oriented-programming)
     - [Maven](#maven)
     - [Bean lifecycle (TODO)](#bean-lifecycle)
     - [Annotations (TODO)](#annotations)
-16. [Spring Boot (TODO)](#spring-boot)
+16. [16. Spring Boot (TODO)](#16-spring-boot)
     - [](#)
     - [](#)
     - [](#)
     - [](#)
     - [](#)
-17. [JDBC (TODO)](#jdbc)
+17. [17. JDBC (TODO)](#17-jdbc)
     - [Connections (TODO)](#connections)
     - [Prepared Statements (TODO)](#prepared-statements)
     - [SQL Injection Prevention (TODO)](#sql-injection-prevention)
     - [Transactions (TODO)](#transactions)
-18. [Testing & Best Practices (TODO)](#testing-and-best-practices)
+18. [18. Testing & Best Practices (TODO)](#18-testing-and-best-practices)
     - [Unit Testing Basics (TODO)](#unit-testing-basics)
     - [Clean Code Principles (TODO)](#clean-code-principles)
     - [Common Java Pitfalls (TODO)](#common-java-pitfalls)
-19. [Interview Questions & Anwers (TODO)](#interview-questions-and-answers)
+19. [19. Interview Questions & Anwers (TODO)](#19-interview-questions-and-answers)
     - [](#)
     - [](#)
     - [](#)
     - [](#)
 
-## Core Java Fundamentals
+## 1. Core Java Fundamentals
 ### JVM, JRE, JDK
 The JVM is the runtime engine that executes Java bytecode.
 Java source code (.java) is compiled into bytecode (.class)
@@ -170,7 +170,7 @@ In Java:
 3. The program instructions are executed on the CPU
 
 
-## Object-Oriented Programming
+## 2. Object-Oriented Programming
 
 Note: in Java methods, objects are passed by reference, which means that modifying the object passed as a parameter will affect the original object.
 
@@ -557,7 +557,7 @@ class Car extends Vehicle {
 }
 ```
 
-## Collections Framework
+## 3. Collections Framework
 https://www.geeksforgeeks.org/java/java/#:~:text=Memory%20Leaks-,Collections,-Java%20Collections%20provide
 Java Collection Framework (JCF) is a set of classes and interfaces that provide ready-made data structures to store and manipulate groups of objects efficiently.
 The java.util package contains the Collections class in Java. The Java Collections class is used with the static methods that operate on the collections or return the collection. All the methods of this class throw a NullPointerException if the collection or object passed to the methods is null.
@@ -768,7 +768,7 @@ https://www.geeksforgeeks.org/java/java-comparator-interface/
 
 ### HashMap vs TreeMap
 
-## Exception Handling
+## 4. Exception Handling
 
 https://www.geeksforgeeks.org/java/java/#:~:text=Employee%20Management%20System-,Exception%20Handling,-Java%20Exception%20Handling
 Exception handling is Java's mechanism for dealing with runtime errors in a controlled way, without crashing the application.
@@ -893,7 +893,7 @@ Never:
     ```
 - overriding custom exception constructors wrongly
 
-## Java 8 Features
+## 5. Java 8+ Features
 
 ### Functional interfaces
 A Functional Interface in Java is an interface that contains exactly one abstract method. It represents a single unit of behavior, making it the foundation of lambda expressions and functional programming in Java (introduced in Java 8).
@@ -1062,7 +1062,7 @@ return Optional.ofNullable(user).map(User::getAddress)
 .map(Address::getCity()).orElse("Unknown")
 ```
 
-## Concurrency and Parallelism
+## 6. Concurrency and Parallelism
 - https://www.geeksforgeeks.org/java/java-multithreading-tutorial/
 - https://www.geeksforgeeks.org/java/java-threads/
 - https://www.geeksforgeeks.org/java/difference-between-thread-start-and-thread-run-in-java/
@@ -1298,7 +1298,7 @@ executor.execute(task);
 ### Atomics
 https://medium.com/@qingedaig/java-volatile-vs-atomic-classes-7599eb70a661
 
-## Java Memory Management
+## 7. Java Memory Management
 https://www.geeksforgeeks.org/java/java/#:~:text=and%20Pattern%20Matching-,Memory%20Allocation,-Java%20Memory%20Allocation
 When your Java program runs on the JVM, memory is divided into several logical areas.
 The ones you care about most for interviews:
@@ -1381,7 +1381,7 @@ class Publisher {
 #### Generational Garbage Collection
 https://newrelic.com/blog/apm/java-garbage-collection#:~:text=During%20the%20garbage%20collection%20process,up%20memory%20in%20the%20heap.
 
-## Immutability
+## 8. Immutability
 An object is immutable if, after it's been constructed, its observable state can never change for any caller.
 Immutable objects are naturally thread-safe because they can't change.
 
@@ -1470,7 +1470,7 @@ If strings were mutable, this would be unsafe because changing a would implicitl
 *Cons*
 - Performance and memory overhead: every state change requires a new instance
 
-## Equals and HashCode Contract
+## 9. Equals and HashCode Contract
 Identity and Equality are 2 distinct concepts:
 - identity means same object reference in memory and is checked this way `a == b`
 - equality means same value according to some logical definition you choose and is checked this way a.equals(b)
@@ -1542,7 +1542,7 @@ hashCode() uses the same fields as equals()
     }
     ```
 
-## SOLID
+## 10. SOLID
 SOLID is a set of five core Object-Oriented Design principles that help you write maintainable, flexible, and scalable software, SOLID stands for:
 - Single Responsibility: a class should only have one responsibility.
 - Open/Closed: classes should be open for extension but closed for modification.
@@ -1550,7 +1550,7 @@ SOLID is a set of five core Object-Oriented Design principles that help you writ
 - Interface Segregation: larger interfaces should be split into smaller ones. By doing so, we can ensure that implementing classes only need to be concerned about the methods that are of interest to them.
 - Dependency Inversion: The principle of dependency inversion refers to the decoupling of software modules. This way, instead of high-level modules depending on low-level modules, both will depend on abstractions.
 
-## Design Patterns
+## 11. Design Patterns
 Design patterns are proven, reusable solutions to common software design problems.
 They are not code you copy-paste, but rather general templates for solving recurring issues in object-oriented programming.
 
@@ -1819,7 +1819,7 @@ class TVDisplay implements Observer {
 
 #### State
 
-## Serialization
+## 12. Serialization
 Serialization is the process of converting a Java object into a byte stream so it can be saved in the disk, sent over a network, cached, etc.
 
 Deserialization is the reverse process: reconstructing the object from the byte stream.
@@ -1865,7 +1865,7 @@ It is unsafe if you:
 - Change class hierarchy (e.g., removing Serializable)
 - Change serialVersionUID manually
 
-## IO and NIO
+## 13. IO and NIO
 https://www.geeksforgeeks.org/java/java/#:~:text=Project%3A%20Snake%20Game-,File%20Handling,-Java%20File%20Handling
 Java I/O (Input/Output) is a collection of classes and streams in the java.io package that handle reading data from sources (like files, keyboard, or network) and writing data to destinations (like files, console or sockets). It provides both byte and character streams to support all types of data.
 Java I/O is the traditional, stream-based, blocking I/O API this means that:
@@ -1974,10 +1974,10 @@ Files.copy(Paths.get("in.txt"), Paths.get("out.txt"));
 
 
 
-## Networking
+## 14. Networking
 https://www.geeksforgeeks.org/java/java/#:~:text=Project%3A%C2%A0Text%20Editor-,Networking,-Java%20Networking%20enables
 
-## Spring Framework
+## 15. Spring Framework
 https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=6.1%20Basics%20of%20Spring%20Framework
 
 The Spring Framework is a lightweight Java framework used to build scalable, maintainable enterprise applications. It offers a programming and configuration model for modern Java development.
@@ -2007,10 +2007,10 @@ Maven allows us to manage dependencies automatically, we don't have to download 
 ### Annotations
 
 
-## Spring Boot
+## 16. Spring Boot
 https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=following%20article%3A%20Spring-,6.2%20Spring%20Boot,-Spring%20Boot%20simplifies
 
-## JDBC
+## 17. JDBC
 
 ### Connections
 
@@ -2020,7 +2020,7 @@ https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=following%20ar
 
 ### Transactions
 
-## Testing and Best Practices
+## 18. Testing and Best Practices
 https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=article%3A%20Java%20Microservices-,7.%20JUnit,-JUnit%20is%20a
 
 ### Unit Testing Basics
@@ -2030,7 +2030,9 @@ https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=article%3A%20J
 ### Common Java Pitfalls
 
 
-## Interview Questions and Answers
+## 19. Interview Questions and Answers
+
+### Core Java Fundamentals
 1. What are the differences between JVM, JRE, and JDK, and how do they work together when running a Java application?
 
 2. Explain the Java compilation process and how it differs from the execution process at runtime.
@@ -2040,3 +2042,37 @@ https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=article%3A%20J
 4. Describe the basic Java memory model. What are the main memory areas used by the JVM?
 
 5. How does Java achieve platform independence, and what role does the JVM play in this?
+
+### Object Oriented Programming
+
+### Collections Framework
+
+### Exception Handling
+
+### Java 8+ Features
+
+### Concurrency and Parallelism
+
+### Java Memory Management
+
+### Immutability
+
+### Equals and HashCode Contract
+
+### SOLID
+
+### Design Patterns
+
+### Serialization
+
+### IO and NIO
+
+### Networking
+
+### Spring Framework
+
+### Spring Boot
+
+### JDBC
+
+### Testing and Best Practices
