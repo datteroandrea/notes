@@ -11,10 +11,9 @@ https://www.geeksforgeeks.org/advance-java/spring-boot/
 2. [Object Oriented Programming](#object-oriented-programming)
     - [Encapsulation](#encapsulation)
     - [Inheritance](#inheritance)
-    - [Polymorphism](#polymorphism)
+    - [Polymorphism (REWRITE)](#polymorphism)
         - [Compile-time Polymorphism](#compile-time-polymorphism)
         - [Runtime Polymorphism](#runtime-polymorphism)
-        - [Parametric Polymorphism (TODO)](#parametric-polymorphism)
     - [Abstraction](#abstraction)
         - [Interfaces](#interfaces)
         - [Abstract Classes](#abstract-classes)
@@ -173,6 +172,8 @@ In Java:
 
 ## Object-Oriented Programming
 
+Note: in Java methods, objects are passed by reference, which means that modifying the object passed as a parameter will affect the original object.
+
 ### Encapsulation
 
 Encapsulation is about bundling data and behavior together and restricting direct access to internal state.
@@ -231,15 +232,245 @@ Note: A class implementing an interface is not an example of inheritance.
 
 ### Polymorphism
 
-Polymorphism is the ability of different types to respond to the same operation in different ways.
+Polymorphism is the ability of different types to respond to the same operation in different ways, this is achieved in different ways:
+- Coercion is an operation that serves multiple types through implicit-type conversion. For example, you divide an integer by another integer or a floating-point value by another floating-point value. If one operand is an integer and the other operand is a floating-point value, the compiler coerces (implicitly converts) the integer to a floating-point value to prevent a type error. Another example is passing a subclass object reference to a method's superclass parameter. The compiler coerces the subclass type to the superclass type to restrict operations to those of the superclass.
+- Overloading refers to using the same operator symbol or method name in different contexts. For example, you might use + to perform integer addition, floating-point addition, or string concatenation, depending on the types of its operands. Also, multiple methods having the same name can appear in a class (through declaration and/or inheritance).
+- Parametric polymorphism stipulates that within a class declaration, a field name can associate with different types and a method name can associate with different parameter and return types. The field and method can then take on different types in each class instance (object). For example, a field might be of type `Double` (a member of Java's standard class library that wraps a double value) and a method might return a `Double` in one object, and the same field might be of type `String` and the same method might return a `String` in another object.
+- Subtype means that a type can serve as another type's subtype. When a subtype instance appears in a supertype context, executing a supertype operation on the subtype instance results in the subtype's version of that operation executing. For example, consider a fragment of code that draws arbitrary shapes. You can express this drawing code more concisely by introducing a Shape class with a `draw()` method; by introducing `Circle`, `Rectangle`, and other subclasses that override `draw()`; by introducing an array of type Shape whose elements store references to Shape subclass instances; and by calling Shape's `draw()` method on each instance. When you call `draw()`, it's the `Circle`'s, `Rectangle`'s or other `Shape` instances `draw()` method that gets called. We say that there are many forms of `Shape`'s `draw()` method.
+
+Subtype polymorphism relies on upcasting and late binding. Upcasting is a form of casting where you cast up the inheritance hierarchy from a subtype to a supertype. No cast operator is involved because the subtype is a specialization of the supertype. For example, `Shape s = new Circle()`; upcasts from `Circle` to `Shape`. This makes sense because a circle is a kind of shape.
+
+After upcasting `Circle` to `Shape`, you cannot call Circle-specific methods, such as a `getRadius()` method that returns the circle's radius, because Circle-specific methods are not part of Shape's interface. Losing access to subtype features after narrowing a subclass to its superclass seems pointless, but is necessary for achieving subtype polymorphism.
+
+Suppose that Shape declares a `draw()` method, its Circle subclass overrides this method, `Shape s = new Circle();` has just executed, and the next line specifies `s.draw()`;. Which `draw()` method is called: `Shape`'s `draw()` method or `Circle`'s `draw()` method? The compiler doesn't know which `draw()` method to call. All it can do is verify that a method exists in the superclass, and verify that the method call's arguments list and return type match the superclass's method declaration. However, the compiler also inserts an instruction into the compiled code that, at runtime, fetches and uses whatever reference is in s to call the correct `draw()` method. This task is known as late binding.
+
+Moving up the class hierarchy, via upcasting, entails losing access to subtype features. For example, assigning a Circle object to Shape variable s means that you cannot use s to call Circle's `getRadius()` method. However, it's possible to once again access `Circle`'s `getRadius()` method by performing an explicit cast operation like this one: `Circle c = (Circle) s;`.
+
+This assignment is known as downcasting because you are casting down the inheritance hierarchy from a supertype to a subtype (from the `Shape` superclass to the `Circle` subclass). Although an upcast is always safe (the superclass's interface is a subset of the subclass's interface), a downcast isn't always safe.
 
 #### Compile-Time Polymorphism
 
-Compile-Time Polymorphism in Java is also known as static polymorphism and also known as method overloading. This happens when multiple methods in the same class have the same name but different parameters. Methods can be overloaded by changes in the number of arguments or/and a change in the type of arguments.
+Compile-Time Polymorphism in Java is also known as static polymorphism, overloading or Ad-Hoc polymorphism. Compile-time polymorphism in Java is the umbrella term for forms of polymorphic behavior that the compiler resolves without needing dynamic dispatch at runtime.
+
+It helps to be precise about what "resolved at compile time" means. Java compilation includes a phase where the compiler performs:
+1. Overload resolution: chooses which method signature to call from a set of same-named methods.
+2. Type inference: deduces generic type arguments (e.g., <T> or <K, V>).
+3. Conversions: inserts/permits primitive widening, boxing/unboxing, reference widening, and (sometimes) selects an overload because one conversion is “better” than another.
+4. Static binding for certain constructs (e.g., static methods, private methods, constructors), though those aren’t typically what people mean by compile-time polymorphism—they’re just statically bound.
+
+##### Coercion
+In type theory, coercion is when an expression of one type is used where another type is expected, and the language defines a conversion/interpretation. Java has several coercion-like mechanisms:
+- Primitive numeric promotion / widening: int → long → float → double (with rules).
+- Boxing/unboxing: int ↔ Integer.
+- Reference widening: ArrayList → List → Collection → Object.
+- String conversion in concatenation: "x=" + someObj uses String.valueOf(...)
+
+In practice Coercion happens when Java automatically converts one type to another so an operation can proceed.
+```Java
+int a = 10;
+double b = 5.5;
+
+double result = a + b;  // int is coerced to double
+```
+
+##### Method Overloading
+
+Method overloading is when multiple methods in the same class have the same name but different parameters. Methods can be overloaded by changes in the number of arguments or/and a change in the type of arguments.
 
 Signature: name + number, order and types of the parameters.
 
-Note: in Java methods objects are passed by reference, which means that modifying the object passed as a parameter will affect the original object.
+Overloading is ad hoc because behavior varies based on the static types of the arguments at the call site. The compiler picks the most specific applicable signature using JLS rules:
+1. Collect applicable methods (can the arguments be converted to the parameters?).
+2. Prefer methods requiring less severe conversions (exact match beats boxing; boxing beats varargs; etc.).
+3. Pick the most specific among applicable candidates.
+4. If ambiguous, compilation fails.
+```Java
+public final class OverloadDemo {
+    static void f(int x)     { System.out.println("int"); }
+    static void f(long x)    { System.out.println("long"); }
+    static void f(Integer x) { System.out.println("Integer"); }
+    static void f(Object x)  { System.out.println("Object"); }
+
+    public static void main(String[] args) {
+        f(1);                 // ?
+        Integer i = 1;
+        f(i);                 // ?
+        Object o = 1;
+        f(o);                 // ?
+    }
+}
+```
+
+- Call 1: Compile-time decision is to bind to f(int).
+- Call 2: Compile-time decision is to bind to f(Integer).
+- Call 3: Compile-time decision is to bind to f(Object).
+
+So compile-time polymorphism here is purely driven by static types at the call site and legal conversions.
+
+Now let’s layer in inheritance (runtime polymorphism) and show the interaction. A classic trap:
+```Java
+class Parent {
+    void g(Object x) { System.out.println("Parent.g(Object)"); }
+}
+
+class Child extends Parent {
+    @Override
+    void g(Object x) { System.out.println("Child.g(Object)"); }
+
+    void g(String x) { System.out.println("Child.g(String)"); } // overload
+}
+
+public class MixDemo {
+    public static void main(String[] args) {
+        Parent p = new Child();
+        p.g("hello");
+    }
+}
+```
+
+At first glance, you might think `"hello"` is a `String` so `Child.g(String)` should run. It doesn’t.
+
+Here’s the two-step mental model:
+1. Compile time (overload resolution): The compiler looks at the declared type of `p`, which is Parent. In Parent, the only visible `g` is `g(Object)`. So the call is compiled as `Parent.g(Object)`.
+2. Runtime (override dispatch): The selected signature is g(Object)—and that method is overridden in Child. So at runtime, dynamic dispatch chooses `Child.g(Object)`.
+
+Result printed: `Child.g(Object)`.
+
+This is the cleanest illustration of the boundary:
+1. Overloading is chosen at compile time based on the static type of the reference and arguments.
+2. Overriding is chosen at runtime based on the runtime class of the receiver (for instance methods).
+
+If you change the static type:
+```Java
+Child c = new Child();
+c.g("hello"); // now overload resolution sees both g(Object) and g(String); picks g(String)
+```
+Now you get `Child.g(String)`.
+
+Let's now have a look at coercion and method overloading together:
+```Java
+public final class CoercionDemo {
+    static void h(long x)    { System.out.println("long"); }
+    static void h(Integer x) { System.out.println("Integer"); }
+    static void h(int... xs) { System.out.println("varargs"); }
+
+    public static void main(String[] args) {
+        h(1);    // which?
+    }
+}
+```
+h(1) chooses h(long), not h(Integer) and not varargs, because: int → long is primitive widening, int → Integer is boxing, varargs is lower priority than fixed arity. In overload resolution, Java prefers widening over boxing, and fixed arity over varargs.
+
+Now consider:
+```Java
+static void k(Long x)   { System.out.println("Long"); }
+static void k(Integer x){ System.out.println("Integer"); }
+
+k(null); // ambiguous!
+```
+
+`null` is compatible with any reference type, so both are applicable and neither is more specific (they’re unrelated). The compiler rejects it. The fix is to cast: `k((Long) null)`.
+
+Numeric literals and constant folding can change applicability:
+```Java
+static void m(byte x) { System.out.println("byte"); }
+static void m(int x)  { System.out.println("int"); }
+
+m(1); // prints "int"
+```
+Even though 1 could fit in a byte, Java does not automatically narrow int literal to byte for overload selection unless it’s a constant and the target is a byte parameter and the method is otherwise applicable—here both are applicable? Actually m(byte) is applicable only if the compiler can convert the constant 1 to byte without a cast; for constant expressions, it can. Yet m(byte) is more specific than m(int) because byte can convert to int, but not vice versa. So this can compile to m(byte) in some cases. Where it gets tricky is when you introduce more overloads and promotions; you start relying on subtle ranking rules. In practice: avoid overload sets that depend on constant narrowing.
+
+Overload selection happens at compile time, but the chosen overload might unbox at runtime:
+```Java
+static void n(int x) { System.out.println("int"); }
+static void n(Object x) { System.out.println("Object"); }
+
+Integer x = null;
+n(x); // chooses n(int) via unboxing? Actually Integer->int requires unboxing, so n(int) is applicable; n(Object) is also applicable via widening reference.
+      // Which is chosen? n(int) can be considered more specific in some contexts; result: unboxing occurs -> NullPointerException at runtime.
+```
+This is a classic “compile-time polymorphism caused a runtime crash” scenario: the compiler legally selects the overload, then unboxing happens and blows up. A robust API design avoids overloads that force unboxing when an Object overload is present, or avoids nullable wrappers in such overload sets.
+
+##### Parametric Polymorphism
+Parametric Polymorphism abstracts the types that the code uses to perform operations.
+Instead of writing separate implementations for String, Integer, or a custom domain type, we write the algorithm once and let the type parameter represent the unknown type, constrained as needed.
+Parametrically polymorphic functions and data types are sometimes called generic functions and generic datatypes, respectively, and they form the basis of generic programming.
+```Java
+public class Box<T> {
+    private T value;
+
+    public Box(T value) {
+        this.value = value;
+    }
+
+    public T get() {
+        return value;
+    }
+
+    public void set(T value) {
+        this.value = value;
+    }
+}
+```
+Here, T is a type parameter. At compile time, the compiler enforces type safety: `Box<String>` cannot accept an Integer. The important nuance is that this type information exists only at compile time. Java implements generics via type erasure, meaning that at runtime `Box<String>` and `Box<Integer>` are both just `Box`. The compiler inserts casts where necessary and ensures correctness beforehand. This design preserves backward compatibility with pre-generics bytecode but introduces limitations, such as the inability to create `new T()` or maintain runtime type distinctions between different parameterizations.
+
+Generic methods are equally powerful and often more flexible than generic classes:
+```Java
+public static <T> T identity(T value) {
+    return value;
+}
+```
+
+The `<T>` before the return type declares a method-level type parameter. The compiler infers `T` from the call site:
+```Java
+String s = identity("hello");
+Integer i = identity(42);
+```
+
+This demonstrates parametric polymorphism in its purest form: the same compiled method works for different types without casting at the call site.
+
+Covariance describes a type relationship where a generic type preserves the subtype relationship of its type parameter for safe reading. In Java, this is expressed with `? extends T`. If `Integer` is a subtype of `Number`, then `List<Integer>` can be treated as `List<? extends Number>`. This allows elements to be read safely as `Number`, but disallows inserting elements (except `null`) because the exact subtype is unknown and writing could violate type safety.
+
+Contravariance describes a type relationship where a generic type reverses the subtype relationship of its type parameter for safe writing. In Java, this is expressed with ? super T. If `Integer` is a subtype of `Number`, then `List<Number>` can be treated as `List<? super Integer>`. This allows inserting `Integer` values safely, but when reading, the only guaranteed type is `Object`, since the specific supertype used is unknown.
+
+Bounds allow us to constrain the range of acceptable types. Suppose we need comparison logic:
+```Java
+public static <T extends Comparable<T>> T max(T a, T b) {
+    return a.compareTo(b) >= 0 ? a : b;
+}
+```
+
+Here, `T extends Comparable<T>` is an upper bound. It guarantees at compile time that `compareTo` is available. This is different from subtype polymorphism because we are not saying "T is a subclass of X to enable overriding," but rather "T must satisfy this structural contract so the algorithm compiles." Multiple bounds are also possible: `<T extends Number & Comparable<T>>`.
+
+Wildcards address variance, which is where many developers struggle. Java generics are invariant, meaning `List<Integer>` is not a subtype of `List<Number>`. To express covariance or contravariance, we use wildcards:
+```Java
+public static double sum(List<? extends Number> numbers) {
+    double total = 0.0;
+    for (Number n : numbers) {
+        total += n.doubleValue();
+    }
+    return total;
+}
+```
+The `? extends Number` wildcard allows us to accept `List<Integer>`, `List<Double>`, etc. We can read safely as `Number`, but we cannot add elements because the exact subtype is unknown. Conversely:
+```Java
+public static void addIntegers(List<? super Integer> list) {
+    list.add(1);
+    list.add(2);
+}
+```
+
+Here, `? super Integer` enables contravariant behavior; we can safely insert `Integer` values. The common rule is PECS: Producer Extends, Consumer Super. This is not subtype polymorphism in the classical sense; it is variance control over parameterized types enforced at compile time.
+
+Comparing parametric polymorphism to subtype polymorphism clarifies the distinction. With subtype polymorphism:
+```Java
+Animal a = new Dog();
+a.makeSound();
+```
+
+The behavior varies dynamically via method overriding and virtual dispatch at runtime. With parametric polymorphism, the behavior does not change based on subtype; instead, the algorithm is written generically and checked statically. The variation lies in the type argument supplied, not in overridden behavior. In other words, subtype polymorphism is runtime dispatch over a hierarchy; parametric polymorphism is compile-time abstraction over types.
+
+However, type erasure imposes limitations. You cannot use instanceof `List<String>` because generic type arguments are erased. You cannot create arrays of parameterized types (`new List<String>[10]`). Reflection becomes more complex when retrieving generic type information. Another common pitfall involves mixing raw types with parameterized types, which disables compile-time checks and reintroduces runtime risks. Developers also frequently misunderstand variance, leading to incorrect assumptions about assignability between `List<Subclass>` and `List<Superclass>`.
 
 #### Runtime Polymorphism
 
@@ -263,9 +494,19 @@ class Child extends Parent {
 Note:
 - Return types must be the same or covariant
 - Cannot override static methods
-
-#### Parametric Polymorphism
-Generics are a form of compile-time polymorphism called "parametric polymorphism".
+- Overloading is based on static types, not runtime values. If you pass a subtype through a supertype reference, overload selection won’t “see” the subtype.
+- Type erasure limits expressiveness. You can’t overload only by generic type parameter:
+    ```Java
+    void doIt(List<String> x) {}
+    void doIt(List<Integer> x) {} // illegal: same erasure
+    ```
+    Similarly, you can’t do instanceof `List<String>`.
+- If you “override” but accidentally change the parameter type, you create an overload:
+    ```Java
+    class Base { void process(Object o) {} }
+    class Sub extends Base { void process(String s) {} } // not an override
+    ```
+    Now polymorphism doesn’t work as intended when referenced as Base. Always use @Override; the compiler will catch this.
 
 ### Abstraction
 
@@ -1790,12 +2031,12 @@ https://www.geeksforgeeks.org/advance-java/advanced-java/#:~:text=article%3A%20J
 
 
 ## Interview Questions and Answers
-What are the differences between JVM, JRE, and JDK, and how do they work together when running a Java application?
+1. What are the differences between JVM, JRE, and JDK, and how do they work together when running a Java application?
 
-Explain the Java compilation process and how it differs from the execution process at runtime.
+2. Explain the Java compilation process and how it differs from the execution process at runtime.
 
-What is bytecode in Java, and why does Java use bytecode instead of directly compiling to machine code?
+3. What is bytecode in Java, and why does Java use bytecode instead of directly compiling to machine code?
 
-Describe the basic Java memory model. What are the main memory areas used by the JVM?
+4. Describe the basic Java memory model. What are the main memory areas used by the JVM?
 
-How does Java achieve platform independence, and what role does the JVM play in this?
+5. How does Java achieve platform independence, and what role does the JVM play in this?
