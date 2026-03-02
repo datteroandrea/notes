@@ -5,10 +5,10 @@ https://www.geeksforgeeks.org/advance-java/advanced-java/
 https://www.geeksforgeeks.org/advance-java/spring-boot/
 
 ## Index
-1. [1. Core Java Fundamentals](#1-core-java-fundamentals)
+1. [1. Core Java Fundamentals (CHECK)](#1-core-java-fundamentals)
     - [JVM, JRE, JDK](#jvm-jre-jdk)
     - [Compilation vs Execution](#compilation-vs-execution)
-2. [2. Object Oriented Programming](#2-object-oriented-programming)
+2. [2. Object Oriented Programming (CHECK)](#2-object-oriented-programming)
     - [Encapsulation](#encapsulation)
     - [Inheritance](#inheritance)
     - [Polymorphism (REWRITE)](#polymorphism)
@@ -27,7 +27,7 @@ https://www.geeksforgeeks.org/advance-java/spring-boot/
     - [Map (TODO)](#map)
         - [HashMap](#hashmap)
         - [TreeMap](#treemap)
-        - [LinkedHashMap (TODO)](#compile-time-polymorphism)
+        - [LinkedHashMap (TODO)](#linkedhashmap)
     - [Queue (TODO)](#queue)
         - [PriorityQueue (TODO)](#priorityqueue)
     - [Iterator (TODO)](#iterator)
@@ -75,21 +75,21 @@ https://www.geeksforgeeks.org/advance-java/spring-boot/
         - [Singleton](#singleton)
         - [Factory](#factory)
         - [Builder](#builder)
-    - [Structural Patterns (TODO)](#structural-patterns)
-        - [Decorator (TODO)](#decorator)
-        - [Facade (TODO)](#facade)
-        - [Composite (TODO)](#composite)
-        - [Proxy (TODO)](#proxy)
+    - [Structural Patterns](#structural-patterns)
+        - [Decorator](#decorator)
+        - [Facade](#facade)
+        - [Composite](#composite)
+        - [Proxy](#proxy)
     - [Behavioral Patterns (EXPAND)](#behavioral-patterns)
         - [Strategy](#strategy)
         - [Observer](#observer)
         - [Command (TODO)](#command)
         - [State (TODO)](#state)
-12. [12. Serialization](#12-serialization)
+12. [12. Serialization (CHECK)](#12-serialization)
     - [Serializable vs Externalizable](#serializable-vs-externalizable)
     - [transient](#transient)
     - [Versioning](#versioning)
-13. [13. I/O & NIO](#13-io-and-nio)
+13. [13. I/O & NIO (CHECK)](#13-io-and-nio)
     - [System I/O](#system-io)
     - [Streams vs Readers/Writers](#streams-vs-readers-and-writers)
     - [File Handling](#file-handling)
@@ -1560,9 +1560,13 @@ Structural patterns deal with class composition: how objects fit together to for
 - Behavioral patterns handle communication and responsibility distribution between objects, some examples are: Observer, Command, Iterator, Template, State, Chain of Responsibility.
 
 ### Creational Patterns
+Creational patterns deal with the mechanisms of object creation. At first glance, creating an object seems trivial — you just call new. But as systems grow, naive instantiation scatters construction logic across the codebase, tightly couples callers to concrete classes, makes testing harder, and offers no control over how many instances exist or how they're configured. Creational patterns solve these problems by abstracting and centralizing the instantiation process.
+There are five classic creational patterns: Singleton, Factory Method, Abstract Factory, Builder, and Prototype. Each addresses a different dimension of the object creation problem.
 
 #### Singleton
-In object-oriented programming, a Java singleton class is a class that can have only one object (an instance of the class) at a time. After the first time, if we try to instantiate the Java Singleton classes, the new variable also points to the first instance created. So, whatever modifications we do to any variable inside the class through any instance, affect the variable of the single instance created and are visible if we access that variable through any variable of that class type defined.
+The Singleton pattern ensures that a class has exactly one instance and provides a global access point to it. The motivating use cases are things like configuration managers, connection pools, logging systems, or caches — resources that must be shared and where multiple instances would cause inconsistency or waste.
+
+The naive implementation is well-known but dangerously broken in concurrent environments:
 ```Java
 public class SingletonObject {
     private static SingletonObject instance;
@@ -1578,11 +1582,60 @@ public class SingletonObject {
 }
 ```
 
+The double-checked locking fix is commonly cited, but it requires volatile to prevent the JVM from reordering object construction steps:
+```Java
+public class SingletonObject {
+    private static volatile SingletonObject instance;
+
+    private SingletonObject() {}
+
+    public static synchronized SingletonObject getInstance() {
+        if(!instance) {
+            synchronized(SingletonObject.class) {
+                if (instance == null) {
+                    instance = new SingletonObject();
+                }
+            }
+        }
+        return instance;
+    }
+}
+```
+
+However, the cleanest, most idiomatic Java approach is the initialization-on-demand holder idiom, which leverages the JVM's class loading guarantees to achieve thread safety without synchronization overhead:
+```Java
+public class ConfigManager {
+    private ConfigManager() {}
+
+    private static class Holder {
+        static final ConfigManager INSTANCE = new ConfigManager();
+    }
+
+    public static ConfigManager getInstance() {
+        return Holder.INSTANCE;
+    }
+}
+```
+
+The Holder class is not loaded until getInstance() is called for the first time, and the JVM guarantees that static initializers run exactly once. This is lazy, thread-safe, and carries no synchronization cost after initialization.
+If you need serialization safety as well, the enum singleton is the most robust approach — Joshua Bloch advocates for this in Effective Java:
+```Java
+public enum ConfigManager {
+    INSTANCE;
+
+    private final Map<String, String> config = new HashMap<>();
+
+    public String get(String key) { return config.get(key); }
+    public void set(String key, String value) { config.put(key, value); }
+}
+```
+
 The primary purpose of a Java Singleton class is to restrict the limit of the number of object creations to only one. This often ensures that there is access control to resources, for example, a socket or a database connection.
 
 It is memory efficient as the object creation will take place only once instead of creating it each time a new request is made, which reduces the overhead and makes it memory efficient.
 
-It is thread-safe: only a single thread at a time can access the instance.
+Enums are inherently serialization-safe and reflection-proof — two attack vectors that can break other singleton implementations.
+The honest truth about Singleton is that it's the most controversial pattern in this group. Global state makes unit testing painful because you can't easily inject a mock or reset state between tests. It also introduces hidden dependencies — a class that calls `ConfigManager.getInstance()` doesn't advertise that dependency in its constructor, making the dependency graph opaque. In modern Java development, the pattern has been largely superseded by dependency injection containers like Spring, where you declare a bean as `@Singleton` scoped (the default) and the container manages the single instance while still allowing injection and testability.
 
 #### Factory
 A Factory Method is a creational design pattern in object-oriented programming (including Java) that provides a way to create objects without specifying the exact class of the object that will be created.
@@ -1633,6 +1686,7 @@ public class SmsFactory extends NotificationFactory {
     }
 }
 ```
+The key advantage is decoupling: callers depend on the Notification interface, not any concrete class. When you add a PushNotification channel, only the factory changes. The limitation is that the subclassing approach can lead to a parallel hierarchy — for every new product type you often need a new creator subclass, which can become unwieldy. The static factory approach avoids this but sacrifices extensibility without modification.
 
 #### Builder
 The Builder pattern is a creational design pattern used to construct complex objects step-by-step. It separates the construction process from the final representation, making it easier to build objects with many optional or configurable fields.
@@ -1645,63 +1699,364 @@ Use it when:
 
 To use the Builder pattern create a static nested Builder class inside your main class, the builder class contains the same fields as the parent class, all the methods in the builder set fields and return the builder (fluent interface) a build() method creates the final immutable object.
 
+The motivating problem is telescoping constructors — when a class has many optional parameters, you end up with a combinatorial explosion of constructor overloads, or one massive constructor where callers must pass null for parameters they don't care about:
 ```Java
-public class User {
+// The problem — which nulls mean what?
+new HttpRequest("GET", "https://api.example.com", null, null, 30, true, null);
+```
+The Builder solves this by making construction readable and flexible:
+```Java
+public class HttpRequest {
+    private final String method;
+    private final String url;
+    private final Map<String, String> headers;
+    private final String body;
+    private final int timeoutSeconds;
+    private final boolean followRedirects;
 
-    private final String firstName;
-    private final String lastName;
-    private final int age;
-    private final boolean emailVerified;
-
-    private User(Builder builder) {
-        this.firstName = builder.firstName;
-        this.lastName = builder.lastName;
-        this.age = builder.age;
-        this.emailVerified = builder.emailVerified;
+    private HttpRequest(Builder builder) {
+        this.method = builder.method;
+        this.url = builder.url;
+        this.headers = Collections.unmodifiableMap(builder.headers);
+        this.body = builder.body;
+        this.timeoutSeconds = builder.timeoutSeconds;
+        this.followRedirects = builder.followRedirects;
     }
 
     public static class Builder {
-        private String firstName;
-        private String lastName;
-        private int age;
-        private boolean emailVerified;
+        // Required parameters
+        private final String method;
+        private final String url;
 
-        public Builder firstName(String firstName) {
-            this.firstName = firstName;
+        // Optional parameters with defaults
+        private Map<String, String> headers = new HashMap<>();
+        private String body = null;
+        private int timeoutSeconds = 30;
+        private boolean followRedirects = true;
+
+        public Builder(String method, String url) {
+            this.method = method;
+            this.url = url;
+        }
+
+        public Builder header(String key, String value) {
+            this.headers.put(key, value);
             return this;
         }
 
-        public Builder lastName(String lastName) {
-            this.lastName = lastName;
+        public Builder body(String body) {
+            this.body = body;
             return this;
         }
 
-        public Builder age(int age) {
-            this.age = age;
+        public Builder timeout(int seconds) {
+            this.timeoutSeconds = seconds;
             return this;
         }
 
-        public Builder emailVerified(boolean emailVerified) {
-            this.emailVerified = emailVerified;
+        public Builder followRedirects(boolean follow) {
+            this.followRedirects = follow;
             return this;
         }
 
-        public User build() {
-            return new User(this);
+        public HttpRequest build() {
+            // Validation belongs here, before the object is created
+            if (body != null && method.equals("GET")) {
+                throw new IllegalStateException("GET requests cannot have a body");
+            }
+            return new HttpRequest(this);
         }
+    }
+}
+
+// Usage — reads almost like natural language
+HttpRequest request = new HttpRequest.Builder("POST", "https://api.example.com/users")
+    .header("Authorization", "Bearer token123")
+    .header("Content-Type", "application/json")
+    .body("{\"name\": \"Alice\"}")
+    .timeout(60)
+    .build();
+```
+
+Notice that `HttpRequest` is immutable — its fields are all final. The Builder is the only way to construct it, and validation happens in `build()` before the object comes into existence. This is a significant advantage over setters, which allow objects to exist in partially-constructed, invalid states.
+In the Java ecosystem, Lombok's `@Builder` annotation generates this boilerplate for you, which is why you see it ubiquitously in Spring Boot codebases. Libraries like `OkHttp`'s `Request.Builder`, `Hibernate`'s `CriteriaBuilder`, and `Spring`'s `UriComponentsBuilder` all use this pattern. `Guava`'s `ImmutableList.builder()` and `ImmutableMap.builder()` are textbook examples.
+The Lombok caveat: while `@Builder` is convenient, it generates builders with all fields optional, meaning there's no compile-time enforcement of required parameters. For critical domain objects, a hand-written builder that puts required parameters in the constructor (as shown above) is safer.
+
+### Structural Patterns
+Structural patterns are concerned with how classes and objects are composed to form larger structures. Unlike creational patterns (which deal with object instantiation) or behavioral patterns (which deal with communication between objects), structural patterns focus on the relationships between entities — how they fit together to build flexible, maintainable architectures. The four patterns we'll cover — Decorator, Facade, Composite, and Proxy — each solve a distinct structural problem, yet they share a common philosophy: prefer composition over inheritance.
+
+#### Decorator
+The Decorator pattern allows you to attach additional responsibilities to an object dynamically, without modifying its class or creating an explosion of subclasses. It wraps an object inside another object that shares the same interface, adding behavior before or after delegating to the wrapped instance.
+```Java
+// The component interface
+public interface TextProcessor {
+    String process(String text);
+}
+
+// Concrete component
+public class PlainTextProcessor implements TextProcessor {
+    @Override
+    public String process(String text) {
+        return text;
+    }
+}
+
+// Base decorator — holds a reference to the wrapped component
+public abstract class TextProcessorDecorator implements TextProcessor {
+    protected final TextProcessor wrapped;
+
+    public TextProcessorDecorator(TextProcessor wrapped) {
+        this.wrapped = wrapped;
+    }
+
+    @Override
+    public String process(String text) {
+        return wrapped.process(text);
+    }
+}
+
+// Concrete decorators
+public class UpperCaseDecorator extends TextProcessorDecorator {
+    public UpperCaseDecorator(TextProcessor wrapped) {
+        super(wrapped);
+    }
+
+    @Override
+    public String process(String text) {
+        return super.process(text).toUpperCase();
+    }
+}
+
+public class TrimDecorator extends TextProcessorDecorator {
+    public TrimDecorator(TextProcessor wrapped) {
+        super(wrapped);
+    }
+
+    @Override
+    public String process(String text) {
+        return super.process(text).trim();
+    }
+}
+
+// Usage
+TextProcessor processor = new UpperCaseDecorator(new TrimDecorator(new PlainTextProcessor()));
+System.out.println(processor.process("  hello world  ")); // "HELLO WORLD"
+```
+What makes this powerful is that you compose behaviors at runtime. You can stack any number of decorators in any order without touching existing code — a clean embodiment of the Open/Closed Principle.
+
+The main pitfall is over-decoration. When you stack many decorators, debugging becomes painful because a stack trace will zigzag through multiple wrapper classes. Also, since each decorator must implement the full interface, if that interface grows, maintenance overhead compounds across all decorators. This pattern works best when the component interface is stable and relatively small.
+
+#### Facade
+The Facade pattern provides a simplified, unified interface to a complex subsystem. It doesn't add new functionality — it orchestrates existing functionality in a way that reduces the cognitive load on the caller. The subsystem classes remain accessible if needed, but most clients only need to interact with the facade.
+Think of a home theater system. To watch a movie you need to: power on the projector, set the input source, dim the lights, power on the amplifier, set the volume, start the Blu-ray player. A HomeTheaterFacade hides all that behind a single watchMovie() method.
+
+```Java
+// Subsystem classes
+public class ProjectorSystem {
+    public void on() { System.out.println("Projector ON"); }
+    public void setInput(String source) { System.out.println("Input: " + source); }
+}
+
+public class SoundSystem {
+    public void on() { System.out.println("Sound system ON"); }
+    public void setVolume(int level) { System.out.println("Volume: " + level); }
+}
+
+public class StreamingService {
+    public void connect() { System.out.println("Streaming service connected"); }
+    public void play(String title) { System.out.println("Playing: " + title); }
+}
+
+// The Facade
+public class HomeTheaterFacade {
+    private final ProjectorSystem projector;
+    private final SoundSystem sound;
+    private final StreamingService streaming;
+
+    public HomeTheaterFacade(ProjectorSystem projector, SoundSystem sound, StreamingService streaming) {
+        this.projector = projector;
+        this.sound = sound;
+        this.streaming = streaming;
+    }
+
+    public void watchMovie(String title) {
+        projector.on();
+        projector.setInput("HDMI");
+        sound.on();
+        sound.setVolume(20);
+        streaming.connect();
+        streaming.play(title);
+    }
+
+    public void endMovie() {
+        System.out.println("Shutting down home theater...");
     }
 }
 ```
 
-### Structural Patterns
-
-#### Decorator
-
-#### Facade
+At the architecture level, a service layer in a layered application (Controller → Service → Repository) is a facade: the service class coordinates repositories, domain logic, and external integrations so that the controller doesn't need to know about any of it.
+The limitation to watch for is that a facade can become a "God class" if it absorbs too much responsibility. When a facade starts containing significant business logic rather than just delegating and coordinating, it's been misused. It should remain a thin orchestration layer.
 
 #### Composite
+The Composite pattern lets you compose objects into tree structures to represent part-whole hierarchies, and then treat individual objects and compositions of objects uniformly. The key insight is that both a leaf node and a composite node implement the same interface, so the client code doesn't need to distinguish between them.
+The most intuitive example is a file system. A File and a Directory are both "file system entries." A directory can contain files or other directories, yet you can call getSize() on either and the correct behavior cascades through the tree.
+```Java
+// Component interface
+public interface FileSystemEntry {
+    String getName();
+    long getSize();
+    void print(String indent);
+}
+
+// Leaf
+public class File implements FileSystemEntry {
+    private final String name;
+    private final long size;
+
+    public File(String name, long size) {
+        this.name = name;
+        this.size = size;
+    }
+
+    @Override public String getName() { return name; }
+    @Override public long getSize() { return size; }
+
+    @Override
+    public void print(String indent) {
+        System.out.println(indent + "📄 " + name + " (" + size + " bytes)");
+    }
+}
+
+// Composite
+public class Directory implements FileSystemEntry {
+    private final String name;
+    private final List<FileSystemEntry> children = new ArrayList<>();
+
+    public Directory(String name) { this.name = name; }
+
+    public void add(FileSystemEntry entry) { children.add(entry); }
+    public void remove(FileSystemEntry entry) { children.remove(entry); }
+
+    @Override public String getName() { return name; }
+
+    @Override
+    public long getSize() {
+        return children.stream().mapToLong(FileSystemEntry::getSize).sum();
+    }
+
+    @Override
+    public void print(String indent) {
+        System.out.println(indent + "📁 " + name);
+        children.forEach(child -> child.print(indent + "  "));
+    }
+}
+
+// Usage
+Directory root = new Directory("root");
+Directory src = new Directory("src");
+src.add(new File("Main.java", 2048));
+src.add(new File("Utils.java", 1024));
+
+Directory resources = new Directory("resources");
+resources.add(new File("config.yml", 512));
+
+root.add(src);
+root.add(resources);
+root.add(new File("README.md", 256));
+
+root.print("");
+System.out.println("Total size: " + root.getSize() + " bytes");
+```
+
+The primary tension in the Composite pattern is deciding whether to declare child-management methods (add, remove) in the component interface or only in the composite class. Declaring them in the interface gives uniformity but forces leaf nodes to either implement meaningless operations or throw UnsupportedOperationException. Declaring them only in Directory preserves type safety but forces clients to cast when they need to manipulate the tree structure. There's no universally correct answer — it depends on whether transparency or safety is more important in your context.
 
 #### Proxy
+The Proxy pattern provides a surrogate or placeholder for another object to control access to it. The proxy implements the same interface as the real subject, intercepts calls, and decides whether and how to forward them. This interception point is where you inject cross-cutting concerns: lazy initialization, access control, logging, caching, remote communication, or transaction management.
+
+There are several distinct flavors worth knowing:
+
+- Virtual Proxy: defers expensive object creation until actually needed (lazy loading).
+- Protection Proxy: controls access based on permissions.
+- Remote Proxy: represents an object in a different address space (RMI stubs are classic examples).
+- Caching Proxy: stores results of expensive operations and returns cached responses.
+
+```Java
+// Subject interface
+public interface ImageLoader {
+    void display();
+}
+
+// Real subject — expensive to create
+public class HighResolutionImage implements ImageLoader {
+    private final String filePath;
+
+    public HighResolutionImage(String filePath) {
+        this.filePath = filePath;
+        loadFromDisk(); // Expensive operation
+    }
+
+    private void loadFromDisk() {
+        System.out.println("Loading image from disk: " + filePath);
+    }
+
+    @Override
+    public void display() {
+        System.out.println("Displaying: " + filePath);
+    }
+}
+
+// Virtual Proxy — defers loading until display() is actually called
+public class ImageProxy implements ImageLoader {
+    private final String filePath;
+    private HighResolutionImage realImage;
+
+    public ImageProxy(String filePath) {
+        this.filePath = filePath; // Cheap — no disk I/O yet
+    }
+
+    @Override
+    public void display() {
+        if (realImage == null) {
+            realImage = new HighResolutionImage(filePath); // Load on first access
+        }
+        realImage.display();
+    }
+}
+```
+Now, in modern Java development, you rarely write static proxies by hand. Java's dynamic proxy mechanism (`java.lang.reflect.Proxy`) lets you create proxies at runtime for any interface:
+```Java
+public class LoggingHandler implements InvocationHandler {
+    private final Object target;
+
+    public LoggingHandler(Object target) {
+        this.target = target;
+    }
+
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        System.out.println("Calling: " + method.getName());
+        long start = System.currentTimeMillis();
+        Object result = method.invoke(target, args);
+        System.out.println("Completed in " + (System.currentTimeMillis() - start) + "ms");
+        return result;
+    }
+}
+
+// Usage
+ImageLoader realImage = new HighResolutionImage("photo.jpg");
+ImageLoader proxy = (ImageLoader) Proxy.newProxyInstance(
+    realImage.getClass().getClassLoader(),
+    new Class[]{ImageLoader.class},
+    new LoggingHandler(realImage)
+);
+proxy.display();
+```
+
+This is precisely how Spring AOP works under the hood. When you annotate a method with @Transactional or @Cacheable, Spring wraps your bean in a JDK dynamic proxy (or a CGLIB subclass proxy if the target doesn't implement an interface) that intercepts the method call and applies the cross-cutting concern. Hibernate uses proxies for lazy-loaded entity associations — when you access a `@ManyToOne` relationship, you're often touching a Hibernate proxy that transparently fetches the data from the database only when a getter is invoked.
+The key pitfall with proxies — especially in Spring — is that self-invocation bypasses the proxy. If a `@Transactional` method calls another `@Transactional` method in the same class, the second call goes directly to this rather than through the proxy, so the transaction behavior is silently skipped. This is one of the most common and confusing Spring bugs in production codebases.
+
+The distinction between Decorator and Proxy is worth dwelling on, as they look structurally similar. Both wrap an object implementing the same interface. The difference is intent: a Decorator adds behavior and is typically composed by the client (you choose which decorators to apply). A Proxy controls access and is often transparent to the client — they don't know or care that they're talking to a proxy rather than the real object.
+Similarly, Facade and Proxy both sit in front of something else, but a Facade simplifies a complex subsystem for external clients, while a Proxy represents a single object and controls access to it specifically.
 
 ### Behavioral Patterns
 
