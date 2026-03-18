@@ -68,8 +68,8 @@ https://www.geeksforgeeks.org/advance-java/spring-boot/
     - [Immutable Classes (IMPROVE)](#immutable-classes)
         - [String Immutability](#string-immutability)
         - [Benefits and Pitfalls](#benefits-and-pitfalls)
-9. [9. Equals & Hashcode Contract](#9-equals-and-hashcode-contract)
-10. [10. SOLID](#10-solid)
+9. [9. Equals & Hashcode Contract (CHECK)](#9-equals-and-hashcode-contract)
+10. [10. SOLID (EXPAND)](#10-solid)
 11. [11. Design Patterns](#11-design-patterns)
     - [Creational Patterns](#creational-patterns)
         - [Singleton](#singleton)
@@ -80,27 +80,29 @@ https://www.geeksforgeeks.org/advance-java/spring-boot/
         - [Facade](#facade)
         - [Composite](#composite)
         - [Proxy](#proxy)
-    - [Behavioral Patterns (EXPAND)](#behavioral-patterns)
+    - [Behavioral Patterns](#behavioral-patterns)
         - [Strategy](#strategy)
         - [Observer](#observer)
-        - [Command (TODO)](#command)
-        - [State (TODO)](#state)
-12. [12. Serialization (CHECK)](#12-serialization)
-    - [Serializable vs Externalizable](#serializable-vs-externalizable)
+        - [Command](#command)
+        - [State](#state)
+12. [12. Serialization](#12-serialization)
+    - [Serializable](#serializable)
+    - [serialVersionUUID](#serialVersionUUID)
     - [transient](#transient)
-    - [Versioning](#versioning)
+    - [Custom Serialization](#custom-serialization)
+    - [Externalizable](#externalizable)
+    - [Object Graphs](#object-graphs)
+    - [Security](#security)
+    - [Common Pitfalls (EXPAND)](#common-pitfalls)
 13. [13. I/O & NIO (CHECK)](#13-io-and-nio)
-    - [System I/O](#system-io)
-    - [Streams vs Readers/Writers](#streams-vs-readers-and-writers)
-    - [File Handling](#file-handling)
-        - [Java IO](#java-io)
-        - [Java NIO](#java-nio)
+    - [IO](#io)
+    - [NIO](#nio)
 14. [14. Networking (TODO)](#14-networking)
     - [](#)
     - [](#)
     - [](#)
     - [](#)
-15. [15. Spring Framework](#15-spring-framework)
+15. [15. Spring Framework (TODO)](#15-spring-framework)
     - [Dependency Injection](#dependency-injection)
     - [Inversion of Control](#inversion-of-control)
     - [Aspect-Oriented Programming](#aspect-oriented-programming)
@@ -2059,64 +2061,82 @@ The distinction between Decorator and Proxy is worth dwelling on, as they look s
 Similarly, Facade and Proxy both sit in front of something else, but a Facade simplifies a complex subsystem for external clients, while a Proxy represents a single object and controls access to it specifically.
 
 ### Behavioral Patterns
+Behavioral patterns are concerned with algorithms and the assignment of responsibilities between objects. While structural patterns describe how objects are assembled, behavioral patterns describe how they communicate and collaborate at runtime. The central question they answer is not "how is this object built?" but rather "who does what, and how do they talk to each other?".
 
 #### Strategy
-The Strategy Pattern is a behavioral design pattern that lets you define a family of algorithms, encapsulate each algorithm in its own class, and switch between them at runtime.
-
-Use it when:
-- You have multiple ways to perform an action.
-- You want to choose the algorithm at runtime.
-- You want to avoid long if–else or switch statements.
-- You want to follow the Open/Closed Principle (easy to add new behaviors without modifying existing code).
-
-To use the Strategy pattern create "Strategy Interface" that defines a common method for all algorithms, create different classes called "Concrete Strategies" that implement different variations of the interface then define a "context" that uses a strategy and allows changing it dynamically.
+The Strategy pattern defines a family of algorithms, encapsulates each one behind a common interface, and makes them interchangeable. The key idea is that the algorithm can vary independently from the clients that use it. Rather than baking a decision into a class with conditionals, you extract each branch into its own object and inject the appropriate one at runtime.The smell that signals you need Strategy is a method full of if-else or switch blocks where each branch performs a conceptually similar operation — sorting, pricing, validation, compression, routing. Every time a new variant is needed, you're back modifying the same class, violating the Open/Closed Principle.Consider an e-commerce platform with multiple shipping cost calculation strategies:
 
 ```Java
-public interface PaymentStrategy {
-    void pay(double amount);
+// Strategy interface
+public interface ShippingStrategy {
+    double calculate(double weightKg, double distanceKm);
 }
 
-public class CreditCardPayment implements PaymentStrategy {
+// Concrete strategies
+public class StandardShipping implements ShippingStrategy {
     @Override
-    public void pay(double amount) {
-        System.out.println("Paid " + amount + " using Credit Card.");
+    public double calculate(double weightKg, double distanceKm) {
+        return weightKg * 1.5 + distanceKm * 0.05;
     }
 }
 
-public class PayPalPayment implements PaymentStrategy {
+public class ExpressShipping implements ShippingStrategy {
+    private static final double SURCHARGE = 15.0;
+
     @Override
-    public void pay(double amount) {
-        System.out.println("Paid " + amount + " using PayPal.");
+    public double calculate(double weightKg, double distanceKm) {
+        return (weightKg * 2.5 + distanceKm * 0.1) + SURCHARGE;
     }
 }
 
-public class CryptoPayment implements PaymentStrategy {
+public class FreeShipping implements ShippingStrategy {
     @Override
-    public void pay(double amount) {
-        System.out.println("Paid " + amount + " using Crypto.");
+    public double calculate(double weightKg, double distanceKm) {
+        return 0.0;
     }
 }
 
-public class CheckoutContext {
-    private PaymentStrategy strategy;
+// Context — uses a strategy without knowing its internals
+public class ShoppingCart {
+    private ShippingStrategy shippingStrategy;
+    private final List<OrderItem> items = new ArrayList<>();
 
-    public void setPaymentStrategy(PaymentStrategy strategy) {
-        this.strategy = strategy;
+    public ShoppingCart(ShippingStrategy shippingStrategy) {
+        this.shippingStrategy = shippingStrategy;
     }
 
-    public void processOrder(double amount) {
-        strategy.pay(amount);
+    // Strategy can be swapped at runtime
+    public void setShippingStrategy(ShippingStrategy strategy) {
+        this.shippingStrategy = strategy;
+    }
+
+    public double calculateShipping(double distanceKm) {
+        double totalWeight = items.stream()
+            .mapToDouble(OrderItem::getWeightKg)
+            .sum();
+        return shippingStrategy.calculate(totalWeight, distanceKm);
     }
 }
 ```
+What makes this especially clean in modern Java is that a single-method interface is a functional interface, meaning strategies can be expressed as lambdas. The strategy pattern and Java's functional programming model are natural allies:
+```Java
+ShippingStrategy weekendPromo = (weight, distance) -> weight * 1.0; // flat rate weekend promo
+ShoppingCart cart = new ShoppingCart(weekendPromo);
+
+// Or using method references
+ShoppingCart premiumCart = new ShoppingCart(new ExpressShipping());
+
+// Swap strategy at runtime based on user's membership tier
+if (user.isPremiumMember()) {
+    cart.setShippingStrategy(new FreeShipping());
+}
+```
+In real-world Java, java.util.Comparator is the most ubiquitous strategy in the entire JDK. When you pass a Comparator to Collections.sort() or List.sort(), you're injecting a sorting strategy. Spring Security's AuthenticationProvider is a strategy — you can plug in LDAP, OAuth, database, or custom authentication. Jackson's SerializationFeature configuration, Hibernate's NamingStrategy, and Spring's ResourceLoader all follow this pattern.
+The limitation to be aware of is that Strategy introduces a proliferation of small classes (or lambdas) that can make the codebase harder to navigate if overused. It also requires the context to be aware of the available strategies — some external mechanism must decide which strategy to inject, which is where a Factory or DI container comes in. If the algorithm selection logic itself becomes complex, you've just moved the problem rather than solved it.
 
 #### Observer
-The Observer Pattern is a behavioral design pattern that defines a one-to-many relationship between objects. When one object (the Subject) changes its state, all the dependent objects (the Observers) are automatically notified.
-
-Use the Observer pattern when:
-One object's change should update others automatically.
-You want to avoid tight coupling between objects.
-You need a reactive update system.
+The Observer pattern defines a one-to-many dependency between objects so that when one object — the subject or publisher — changes state, all its dependents — observers or subscribers — are notified and updated automatically. It's the foundational pattern behind event-driven programming, reactive systems, and the publish-subscribe model.
+The motivating problem is decoupling: the subject should not need to know who is listening or what they do with the notification. New observers can be added without modifying the subject at all.
 ```Java
 interface Subject {
     void register(Observer o);
@@ -2169,165 +2189,912 @@ class TVDisplay implements Observer {
     }
 }
 ```
+Java has had built-in observer support since its early days via java.util.Observable and java.util.Observer, but these were deprecated in Java 9 because Observable is a class (forcing inheritance), and its implementation is neither thread-safe nor flexible. The ecosystem has moved on to better alternatives.
+Spring's ApplicationEvent system is the most practically important observer implementation in enterprise Java. It decouples components across the entire application context:
+```Java
+// Custom event
+public class OrderPlacedEvent extends ApplicationEvent {
+    private final Order order;
+
+    public OrderPlacedEvent(Object source, Order order) {
+        super(source);
+        this.order = order;
+    }
+
+    public Order getOrder() { return order; }
+}
+
+// Publisher
+@Service
+public class OrderService {
+    private final ApplicationEventPublisher eventPublisher;
+
+    public OrderService(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
+
+    public Order placeOrder(OrderRequest request) {
+        Order order = processOrder(request);
+        eventPublisher.publishEvent(new OrderPlacedEvent(this, order));
+        return order;
+    }
+}
+
+// Observers — completely decoupled from OrderService
+@Component
+public class EmailListener {
+    @EventListener
+    public void handleOrderPlaced(OrderPlacedEvent event) {
+        // Send email
+    }
+}
+
+@Component
+public class InventoryListener {
+    @EventListener
+    @Async  // Can even be asynchronous
+    public void handleOrderPlaced(OrderPlacedEvent event) {
+        // Update inventory in a separate thread
+    }
+}
+```
+For reactive systems, Project Reactor (the foundation of Spring WebFlux) takes this pattern to its logical extreme. `Flux` and `Mono` are essentially observable streams — publishers that emit items to subscribers, with backpressure support for cases where publishers emit faster than subscribers can consume.
+The critical pitfalls with Observer deserve careful attention. First, memory leaks are a pervasive problem — if observers are registered but never removed, the subject holds strong references that prevent garbage collection. In long-lived subjects, this is a serious leak. The solution is either weak references (used in some frameworks) or diligent lifecycle management (calling `removeListener` when a component is destroyed). Second, notification order is typically undefined and should not be relied upon. Third, in synchronous implementations, a slow or throwing observer blocks or breaks the entire notification chain — robust implementations catch exceptions per-observer and continue notifying the rest. Finally, in multithreaded environments, the list of listeners itself must be protected — `CopyOnWriteArrayList` is a common choice because it's safe for concurrent reads while writes create a new copy.
 
 #### Command
+The Command pattern encapsulates a request as an object, thereby allowing you to parameterize clients with different requests, queue or log requests, and support undoable operations. The operation's invoker doesn't know what the operation does — it just knows it can call execute() on it.
+This encapsulation gives you three powerful capabilities that you can't easily get with direct method calls: deferred execution (store the command and run it later), undo/redo (store a history of commands and reverse them), and queuing (put commands in a work queue for a thread pool to process).
+```Java
+// Command interface
+public interface Command {
+    void execute();
+    void undo();
+}
+
+// Receiver — the object that actually knows how to perform the work
+public class TextEditor {
+    private final StringBuilder content = new StringBuilder();
+
+    public void insertText(int position, String text) {
+        content.insert(position, text);
+        System.out.println("Content: " + content);
+    }
+
+    public void deleteText(int position, int length) {
+        content.delete(position, position + length);
+        System.out.println("Content: " + content);
+    }
+
+    public String getContent() { return content.toString(); }
+}
+
+// Concrete command
+public class InsertTextCommand implements Command {
+    private final TextEditor editor;
+    private final int position;
+    private final String text;
+
+    public InsertTextCommand(TextEditor editor, int position, String text) {
+        this.editor = editor;
+        this.position = position;
+        this.text = text;
+    }
+
+    @Override
+    public void execute() {
+        editor.insertText(position, text);
+    }
+
+    @Override
+    public void undo() {
+        // Reverse: delete the text that was inserted
+        editor.deleteText(position, text.length());
+    }
+}
+
+// Invoker — manages command execution and history
+public class CommandHistory {
+    private final Deque<Command> history = new ArrayDeque<>();
+
+    public void execute(Command command) {
+        command.execute();
+        history.push(command);
+    }
+
+    public void undo() {
+        if (!history.isEmpty()) {
+            history.pop().undo();
+        }
+    }
+}
+
+// Usage
+TextEditor editor = new TextEditor();
+CommandHistory history = new CommandHistory();
+
+history.execute(new InsertTextCommand(editor, 0, "Hello"));
+history.execute(new InsertTextCommand(editor, 5, " World"));
+// Content: Hello World
+
+history.undo();
+// Content: Hello
+
+history.undo();
+// Content: (empty)
+```
+In Java's functional style, simple commands without undo requirements can be expressed as Runnable or Supplier — both are functional command interfaces. This is exactly how ExecutorService works: you submit Runnable or Callable commands to an executor that queues and runs them on managed threads. The submitter doesn't know which thread will run the task or when — it just encapsulates the work and hands it off.
+```Java
+// Commands as lambdas submitted to an executor — Command pattern in disguise
+ExecutorService executor = Executors.newFixedThreadPool(4);
+
+executor.submit(() -> processPayment(order));
+executor.submit(() -> sendConfirmationEmail(order));
+executor.submit(() -> updateInventory(order));
+```
+Spring's `@Transactional` with savepoints, database migration tools like Flyway (each migration script is a command that can be tracked and potentially rolled back), and job scheduling systems like Quartz (where a `Job` interface is essentially a Command) all embody this pattern.
+A particularly practical real-world application is transactional outbox pattern implementations, where instead of performing side effects directly, you store command objects in a database table (the outbox) as part of the same transaction as your domain change. A separate process reads and executes these commands, guaranteeing at-least-once delivery even if the application crashes between the database write and the side effect.
+One nuance that trips people up is the boundary between the Command and the Receiver. Commands should be thin — they hold the data needed to perform an action and delegate the actual work to the receiver. When commands start containing significant business logic themselves, you've blurred this boundary and made testing harder. The command's job is to know what to do and with what data; the receiver knows how to do it.
+Undo implementation deserves special attention in practice. Straightforward state restoration (store the previous value, restore it on undo) works for simple cases. For complex objects, you often combine Command with Memento — the command captures a snapshot of the relevant state before executing, and restores it on undo. For collaborative or distributed systems, event sourcing takes this idea to its conclusion: the entire application state is derived from an append-only log of commands (events), and you can replay or roll back to any point in history.
 
 #### State
+The State pattern allows an object to alter its behavior when its internal state changes. The object will appear to change its class. Rather than encoding state-dependent behavior as sprawling conditionals throughout a class, you extract each state into its own object that handles behavior for that state.
+The problem it solves becomes obvious when you see code like this scattered throughout a class:
+```Java
+// WITHOUT State pattern — conditional chaos
+public void handlePayment() {
+    if (status.equals("PENDING")) { ... }
+    else if (status.equals("PROCESSING")) { ... }
+    else if (status.equals("PAID")) { throw new IllegalStateException(); }
+    else if (status.equals("CANCELLED")) { ... }
+}
+
+public void cancel() {
+    if (status.equals("PENDING")) { ... }
+    else if (status.equals("PROCESSING")) { ... }
+    else if (status.equals("PAID")) { ... }
+    // And so on for every method
+}
+```
+Every new state or new operation means touching every conditional block. With the State pattern, adding a new state means adding one new class, and adding a new operation means adding one new method to the state interface.
+Let's model an order's lifecycle:
+```Java
+// State interface
+public interface OrderState {
+    void confirm(OrderContext order);
+    void ship(OrderContext order);
+    void deliver(OrderContext order);
+    void cancel(OrderContext order);
+}
+
+// Context — delegates all behavior to its current state
+public class OrderContext {
+    private OrderState currentState;
+    private final String orderId;
+
+    public OrderContext(String orderId) {
+        this.orderId = orderId;
+        this.currentState = new PendingState(); // Initial state
+    }
+
+    public void setState(OrderState state) {
+        System.out.println("Transitioning to: " + state.getClass().getSimpleName());
+        this.currentState = state;
+    }
+
+    // All operations delegate to the current state
+    public void confirm() { currentState.confirm(this); }
+    public void ship()    { currentState.ship(this); }
+    public void deliver() { currentState.deliver(this); }
+    public void cancel()  { currentState.cancel(this); }
+
+    public String getOrderId() { return orderId; }
+}
+
+// Concrete states
+public class PendingState implements OrderState {
+    @Override
+    public void confirm(OrderContext order) {
+        System.out.println("Order confirmed. Awaiting shipment.");
+        order.setState(new ConfirmedState());
+    }
+
+    @Override
+    public void ship(OrderContext order) {
+        throw new IllegalStateException("Cannot ship a pending order.");
+    }
+
+    @Override
+    public void deliver(OrderContext order) {
+        throw new IllegalStateException("Cannot deliver a pending order.");
+    }
+
+    @Override
+    public void cancel(OrderContext order) {
+        System.out.println("Order cancelled from pending state.");
+        order.setState(new CancelledState());
+    }
+}
+
+public class ConfirmedState implements OrderState {
+    @Override
+    public void confirm(OrderContext order) {
+        throw new IllegalStateException("Order already confirmed.");
+    }
+
+    @Override
+    public void ship(OrderContext order) {
+        System.out.println("Order shipped.");
+        order.setState(new ShippedState());
+    }
+
+    @Override
+    public void deliver(OrderContext order) {
+        throw new IllegalStateException("Order has not been shipped yet.");
+    }
+
+    @Override
+    public void cancel(OrderContext order) {
+        System.out.println("Order cancelled after confirmation. Refund initiated.");
+        order.setState(new CancelledState());
+    }
+}
+
+public class ShippedState implements OrderState {
+    @Override
+    public void confirm(OrderContext order) {
+        throw new IllegalStateException("Order already confirmed.");
+    }
+
+    @Override
+    public void ship(OrderContext order) {
+        throw new IllegalStateException("Order already shipped.");
+    }
+
+    @Override
+    public void deliver(OrderContext order) {
+        System.out.println("Order delivered successfully.");
+        order.setState(new DeliveredState());
+    }
+
+    @Override
+    public void cancel(OrderContext order) {
+        throw new IllegalStateException("Cannot cancel an order in transit.");
+    }
+}
+
+public class DeliveredState implements OrderState {
+    @Override public void confirm(OrderContext order) { throw new IllegalStateException("Order complete."); }
+    @Override public void ship(OrderContext order)    { throw new IllegalStateException("Order complete."); }
+    @Override public void deliver(OrderContext order) { throw new IllegalStateException("Already delivered."); }
+    @Override public void cancel(OrderContext order)  { throw new IllegalStateException("Cannot cancel a delivered order."); }
+}
+
+// Usage
+OrderContext order = new OrderContext("ORD-001");
+order.confirm();  // PendingState → ConfirmedState
+order.ship();     // ConfirmedState → ShippedState
+order.deliver();  // ShippedState → DeliveredState
+order.cancel();   // throws IllegalStateException
+```
+The relationship between State and Strategy is worth pausing on because their structure is nearly identical — both involve an object delegating behavior to an interchangeable implementation of an interface. The difference is intent and lifecycle. In Strategy, the context is typically unaware of which concrete strategy it holds, and strategies don't usually trigger transitions to other strategies — the client chooses and injects them. In State, the states are deeply aware of each other and drive their own transitions — a `ShippedState` knows to move to `DeliveredState`. The context's behavior changes as a natural consequence of domain events, not external injection.
+In real-world Java, Spring's `AbstractStateMachine` from Spring State Machine is a full framework implementation of this pattern, used in workflow engines and order management systems. Java's `Thread` is a canonical example from the JDK itself — a thread's behavior for `start()`, `interrupt()`, and `join()` varies completely depending on whether it's `NEW`, `RUNNABLE`, `BLOCKED`, `WAITING`, or `TERMINATED`. TCP connection management (`CLOSED` → `SYN_SENT` → `ESTABLISHED` → `FIN_WAIT` → `...`) is the networking textbook example.
+One practical consideration is where state transitions live. In the example above, states transition themselves by calling `order.setState(new ConfirmedState())`. This is flexible but means each state must know about other state classes, creating coupling within the state family. An alternative is to have the context manage all transitions, with states returning a signal of what should happen next. For complex workflows, a dedicated transition table or DSL (as Spring State Machine provides) is cleaner than hardcoding transitions inside state classes.
+Another pitfall is state explosion. If a domain object has many independent state dimensions — say, an order has a payment status AND a fulfillment status AND a return status — modeling all combinations as individual state objects produces a combinatorial nightmare. In that case, you may be better served by separate, simpler state machines for each dimension, or by revisiting your domain model.
 
 ## 12. Serialization
-Serialization is the process of converting a Java object into a byte stream so it can be saved in the disk, sent over a network, cached, etc.
+Serialization in Java is the process of converting an object's state into a byte stream so it can be persisted to disk, transmitted over a network, or stored in a database — and then reconstructed later through deserialization.
 
-Deserialization is the reverse process: reconstructing the object from the byte stream.
+### Serializable
+At its heart, Java's built-in serialization is enabled by implementing the `java.io.Serializable` interface. This is a marker interface — it has no methods, it simply signals to the JVM that objects of this class are eligible for serialization.
 
-### Serializable vs Externalizable
-Serializable is a marker interface (an interface with no methods), the JVM automatically handles serialization of the object using reflection. It's not really efficient because it stores class metadata and does not offer control on which fields are serialized.
-
-Externalizable is a sub-interface of Serializable, it introduces 2 mandatory methods:
 ```Java
-void writeExternal(ObjectOutput out) throws IOException;
-void readExternal(ObjectInput in) throws IOException, ClassNotFoundException;
-```
+import java.io.*;
 
-This method allows control of how the object is serialized/deserialized.
+public class Employee implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private String name;
+    private String department;
+    private double salary;
+
+    public Employee(String name, String department, double salary) {
+        this.name = name;
+        this.department = department;
+        this.salary = salary;
+    }
+
+    @Override
+    public String toString() {
+        return "Employee{name='" + name + "', department='" + department + "', salary=" + salary + "}";
+    }
+}
+```
+Serializing and deserializing this object uses ObjectOutputStream and ObjectInputStream:
+```Java
+public class SerializationDemo {
+
+    public static void serialize(Employee emp, String filePath) throws IOException {
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(filePath))) {
+            oos.writeObject(emp);
+            System.out.println("Serialized: " + emp);
+        }
+    }
+
+    public static Employee deserialize(String filePath) throws IOException, ClassNotFoundException {
+        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(filePath))) {
+            return (Employee) ois.readObject();
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Employee emp = new Employee("Alice", "Engineering", 95000.0);
+        serialize(emp, "employee.ser");
+
+        Employee restored = deserialize("employee.ser");
+        System.out.println("Deserialized: " + restored);
+    }
+}
+```
+The JVM handles everything automatically here — field types, object graph references, class metadata.
+
+### serialVersionUUID
+The serialVersionUID is a version identifier for a serializable class. When you deserialize an object, the JVM compares the serialVersionUID embedded in the byte stream against the one in the currently loaded class. If they don't match, an InvalidClassException is thrown.
+If you don't declare it yourself, the JVM computes one automatically based on the class structure — fields, methods, interfaces. This means that even an innocuous change like adding a helper method can change the computed UID and break deserialization of previously stored data.
+```Java
+// Version 1 — stored to disk
+public class Config implements Serializable {
+    private static final long serialVersionUID = 1L;
+    private String host;
+    private int port;
+}
+
+// Version 2 — adding a new field
+public class Config implements Serializable {
+    private static final long serialVersionUID = 1L; // same UID = backward compatible
+    private String host;
+    private int port;
+    private int timeout = 30; // new field gets default value on deserialization
+}
+```
+With a consistent serialVersionUID, adding new fields is backward compatible — the new field simply takes its default value when deserializing old data. Removing fields or changing types is a different story and will silently corrupt or break data.
+The rule of thumb in production systems: always declare serialVersionUID explicitly and increment it deliberately when you make breaking changes.
 
 ### transient
-In a Serializable or Externalizable Object, fields marked with transient keywords will not be serialized.
+Not every field should be serialized. Passwords, open connections, thread references, cached computed values — these should be excluded. The transient keyword tells the serialization engine to skip a field entirely.
 ```Java
-class User implements Serializable {
+public class DatabaseConnection implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private String host;
+    private int port;
     private String username;
-    private transient String password; // will not be serialized
+
+    private transient String password;         // sensitive — never serialize
+    private transient Connection connection;   // runtime resource — can't serialize
+    private transient int cachedHashCode;      // derived value — recalculate on restore
+
+    public DatabaseConnection(String host, int port, String username, String password) {
+        this.host = host;
+        this.port = port;
+        this.username = username;
+        this.password = password;
+    }
+}
+```
+After deserialization, password and connection will be null, and cachedHashCode will be 0. You need to account for this in your code — often by reconnecting lazily or re-prompting for credentials.
+
+### Custom Serialization
+Java lets you override the default serialization behavior by declaring private writeObject and readObject methods. These are not interface methods — the serialization engine discovers them via reflection. This is a critical hook for handling encryption, validation, or structural transformation.
+```Java
+public class SecureEmployee implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private String name;
+    private transient String sensitiveData; // excluded from default serialization
+
+    public SecureEmployee(String name, String sensitiveData) {
+        this.name = name;
+        this.sensitiveData = sensitiveData;
+    }
+
+    private void writeObject(ObjectOutputStream oos) throws IOException {
+        oos.defaultWriteObject(); // serialize non-transient fields normally
+        // encrypt before writing
+        String encrypted = encrypt(sensitiveData);
+        oos.writeObject(encrypted);
+    }
+
+    private void readObject(ObjectInputStream ois) throws IOException, ClassNotFoundException {
+        ois.defaultReadObject(); // deserialize non-transient fields normally
+        // decrypt after reading
+        String encrypted = (String) ois.readObject();
+        this.sensitiveData = decrypt(encrypted);
+    }
+
+    private String encrypt(String value) {
+        // simplified — use proper AES in production
+        return "ENC:" + new StringBuilder(value).reverse();
+    }
+
+    private String decrypt(String value) {
+        String stripped = value.replace("ENC:", "");
+        return new StringBuilder(stripped).reverse().toString();
+    }
+}
+```
+This pattern is heavily used in the JDK itself. HashMap, for instance, doesn't serialize its internal bucket array directly — it uses writeObject/readObject to serialize only the key-value pairs, reconstructing the table on deserialization to account for different load factors and capacities.
+
+### Externalizable
+Externalizable goes further than custom writeObject/readObject — it gives you complete, explicit control over the serialization format with no default behavior at all. You must implement writeExternal and readExternal, and critically, the class must have a public no-arg constructor because the JVM constructs the object first before calling readExternal.
+```Java
+public class Point implements Externalizable {
+
+    private double x;
+    private double y;
+    private double z;
+
+    // Required for Externalizable
+    public Point() {}
+
+    public Point(double x, double y, double z) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+    }
+
+    @Override
+    public void writeExternal(ObjectOutput out) throws IOException {
+        out.writeDouble(x);
+        out.writeDouble(y);
+        out.writeDouble(z);
+    }
+
+    @Override
+    public void readExternal(ObjectInput in) throws IOException {
+        this.x = in.readDouble();
+        this.y = in.readDouble();
+        this.z = in.readDouble();
+    }
+}
+```
+Externalizable is faster and produces smaller output than default serialization because there's no class metadata, field names, or type descriptors written — just the raw data you choose to write. The trade-off is that you own the entire contract: if you add a field and forget to update writeExternal and readExternal, it simply won't be persisted.
+
+### Object Graphs
+Java's serialization engine is smart about object graphs. If two objects reference the same third object, only one copy is serialized and both references point to the same restored object. It also handles circular references without infinite loops.
+```Java
+public class Department implements Serializable {
+    private static final long serialVersionUID = 1L;
+    private String name;
+    private List<StaffMember> members = new ArrayList<>();
+
+    public void add(StaffMember m) { members.add(m); }
+}
+
+public class StaffMember implements Serializable {
+    private static final long serialVersionUID = 1L;
+    private String name;
+    private Department department; // circular reference back to department
+
+    public StaffMember(String name, Department department) {
+        this.name = name;
+        this.department = department;
+    }
+}
+```
+The JVM maintains an internal handle table during serialization — each object gets a handle, and subsequent references to the same object write just the handle rather than the full object again. This prevents duplication and infinite loops, but it also means the byte stream holds a reference graph, not a tree. Deep or wide object graphs can exhaust heap memory on both ends.
+
+### Security
+Java serialization is notorious for security vulnerabilities. Deserialization of untrusted data is one of the most dangerous operations in Java — it allows arbitrary code execution through gadget chains. Libraries like Apache Commons Collections, Spring, and others have historically contained classes that, when deserialized in the right sequence, execute attacker-controlled code.
+The attack mechanism is subtle: `readObject` calls happen during deserialization automatically, including on objects deep in the graph. If a malicious byte stream tricks the JVM into deserializing a class with a dangerous `readObject` implementation, the damage is done before you even see the returned object.
+The most practical defense is using a serialization filter, introduced in Java 9 and backported:
+```Java
+ObjectInputStream ois = new ObjectInputStream(inputStream);
+
+// Whitelist approach — only allow specific classes
+ois.setObjectInputFilter(filterInfo -> {
+    Class<?> cls = filterInfo.serialClass();
+    if (cls == null) return ObjectInputFilter.Status.UNDECIDED;
+
+    if (cls == Employee.class || cls == String.class || cls == ArrayList.class) {
+        return ObjectInputFilter.Status.ALLOWED;
+    }
+    return ObjectInputFilter.Status.REJECTED;
+});
+```
+You can also configure a global JVM-wide filter via the system property `jdk.serialFilter`. The broader advice from the Java security community is increasingly: don't use Java's built-in serialization for untrusted input, ever. Use JSON (Jackson, Gson), Protocol Buffers, or Avro instead.
+
+### Common Pitfalls
+
+#### Serialzing Non-Serializable fields
+The most frequent mistake developers make is serializing classes that contain non-serializable fields without marking them transient. This causes a NotSerializableException at runtime, not compile time — the compiler won't warn you.
+
+#### Schema Evolution Problem
+Another common trap is mutating a serialized class in a way that silently corrupts restored objects. Changing a field's type, narrowing its range, or removing a field that old data contains will either throw an exception or silently zero out values, depending on whether serialVersionUID is consistent.
+
+##### Solution 1: implement readObject
+The most surgical fix for handling old serialized data that doesn't match your current class shape is implementing a custom readObject. You can detect when a field was absent in the old data and supply a safe default, or read the old field under its old name and migrate the value manually.
+```Java
+public class UserProfile implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private String username;
+    private String email;
+
+    // Version 2: we want to split 'fullName' (old) into 'firstName' + 'lastName' (new)
+    // The old field must be kept temporarily to allow migration
+    @Deprecated
+    private transient String fullName; // we'll read it manually, not via default
+
+    private String firstName;
+    private String lastName;
+    private int loginCount;         // newly added field — will be 0 for old data
+    private String preferredLocale; // newly added field — will be null for old data
+
+    private void readObject(ObjectInputStream ois) throws IOException, ClassNotFoundException {
+        // Read the stream as-is — new fields absent in old data get their defaults
+        ois.defaultReadObject();
+
+        // Migration: if the old 'fullName' was present and new fields weren't populated
+        if (firstName == null && lastName == null && fullName != null) {
+            String[] parts = fullName.trim().split("\\s+", 2);
+            this.firstName = parts[0];
+            this.lastName = parts.length > 1 ? parts[1] : "";
+        }
+
+        // Supply safe defaults for genuinely new fields
+        if (preferredLocale == null) {
+            this.preferredLocale = "en-US";
+        }
+
+        if (loginCount < 0) {
+            this.loginCount = 0; // guard against corrupted legacy data
+        }
+    }
+
+    private void readObjectNoData() throws ObjectStreamException {
+        // Called when the class is present but the stream contains no data for it
+        // (e.g., the object was serialized by an older JVM before this class existed in hierarchy)
+        this.preferredLocale = "en-US";
+        this.loginCount = 0;
+    }
 }
 ```
 
-### Versioning
-Java serialization uses serialVersionUID to verify version compatibility between the class that produced the serialized object and the class that is trying to read it.
-A serialVersionUID is declared as follows:
+##### Solution 2: declare serialPersistentFields 
+If you want to explicitly declare which fields participate in serialization — essentially freezing the serialization contract independent of what fields the class actually has — you can use the serialPersistentFields mechanism. This is a static final field of type ObjectStreamField[].
 ```Java
-private static final long serialVersionUID = 1L;
+public class OrderRecord implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    // Explicitly declare the serialization contract — only these fields are serialized
+    // regardless of what other fields exist on the class
+    private static final ObjectStreamField[] serialPersistentFields = {
+        new ObjectStreamField("orderId", String.class),
+        new ObjectStreamField("totalAmount", double.class),
+        new ObjectStreamField("status", String.class)
+        // 'internalAuditCode' is intentionally excluded even though it's a real field
+    };
+
+    private String orderId;
+    private double totalAmount;
+    private String status;
+    private String internalAuditCode; // runtime-only, never serialized
+    private transient Connection dbConnection; // also excluded
+
+    // Now, even if you rename or add fields in the class body, the serialized
+    // format is determined by serialPersistentFields — stable and explicit
+}
 ```
-If you don't, JVM generates one automatically based on class structure. Small changes (like adding a field or changing method visibility) can change the generated UID which can break backward compatibility.
 
-The best practice is to always explicitly define serialVersionUID in Serializable classes to control compatibility.
+##### Solution 3: use a version field
+A more deliberate approach — especially useful when you anticipate multiple rounds of evolution — is to embed an explicit version number in the serialized data itself and branch in readObject accordingly.
 
-Changing a Serializable class is safe if you:
-- Add new fields they are set to default values when reading old data
-- Remove transient keyword
-- Change method logic
+```Java
+public class AppSettings implements Serializable {
 
-It is unsafe if you:
-- Remove a non-transient field
-- Change field type
-- Change class hierarchy (e.g., removing Serializable)
-- Change serialVersionUID manually
+    private static final long serialVersionUID = 1L;
+
+    // Always increment this when the schema changes
+    private int dataVersion = 3;
+
+    // Current fields (version 3 shape)
+    private String theme;
+    private boolean notificationsEnabled;
+    private int sessionTimeoutMinutes;
+    private List<String> pinnedMenuItems; // added in version 2
+    private Map<String, String> customShortcuts; // added in version 3
+
+    private void readObject(ObjectInputStream ois) throws IOException, ClassNotFoundException {
+        ois.defaultReadObject();
+
+        // Migrate forward based on what version the data was written with
+        if (dataVersion < 2) {
+            // pinnedMenuItems didn't exist — supply a default
+            this.pinnedMenuItems = new ArrayList<>();
+        }
+
+        if (dataVersion < 3) {
+            // customShortcuts didn't exist — supply a default
+            this.customShortcuts = new HashMap<>();
+        }
+
+        // After migration, stamp the current version
+        this.dataVersion = 3;
+    }
+}
+```
+
+##### Solution 4: Serialization Proxy Pattern
+This is the most robust and elegant solution, advocated strongly by Joshua Bloch in Effective Java. Instead of serializing the real object, you serialize a simple, stable proxy — a private nested class that captures only the logical state. The real object is reconstituted from the proxy during deserialization.
+
+```Java
+public final class DateRange implements Serializable {
+
+    private final LocalDate start;
+    private final LocalDate end;
+
+    public DateRange(LocalDate start, LocalDate end) {
+        if (start.isAfter(end)) throw new IllegalArgumentException("start must be before end");
+        this.start = start;
+        this.end = end;
+    }
+
+    // Intercept serialization — write the proxy instead of this object
+    private Object writeReplace() {
+        return new SerializationProxy(this);
+    }
+
+    // Prevent direct deserialization of DateRange — must go through proxy
+    private void readObject(ObjectInputStream ois) throws InvalidObjectException {
+        throw new InvalidObjectException("Use serialization proxy");
+    }
+
+    // The proxy: a simple, stable, serialization-friendly representation
+    private static class SerializationProxy implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private final String start; // stored as ISO string — immune to LocalDate internals
+        private final String end;
+
+        SerializationProxy(DateRange range) {
+            this.start = range.start.toString();
+            this.end = range.end.toString();
+        }
+
+        // Reconstruct the real object from the proxy — goes through the constructor,
+        // so invariants (start before end) are always enforced
+        private Object readResolve() {
+            return new DateRange(LocalDate.parse(start), LocalDate.parse(end));
+        }
+    }
+
+    public LocalDate getStart() { return start; }
+    public LocalDate getEnd() { return end; }
+}
+```
+The proxy pattern has several compounding benefits. First, because deserialization goes through the real constructor, your invariants and validation logic are always enforced — a malicious or corrupt byte stream cannot create an object in an illegal state. Second, the proxy is a thin, intentionally simple class that you consciously design for longevity — it's your real schema. Third, it handles inheritance hierarchies cleanly in ways that custom `readObject`/`writeObject` cannot.
+The `writeReplace` and `readResolve` hooks are what make it tick. `writeReplace` says "when you go to serialize me, serialize this other object instead." `readResolve` says "when you've finished deserializing me, return this other object to the caller instead." Together they let you fully substitute the serialized representation without touching the real class's structure.
+
+#### Large Object Graphs
+
+Watch out for large object graphs where every referenced object gets pulled in. Serializing a single entity might inadvertently pull in the entire object graph of your domain model — connection pools, caches, thread references — causing massive byte streams or NotSerializableException on objects you never intended to serialize.
+
+TOEXPAND: how to deal with large object graphs in serialization.
 
 ## 13. IO and NIO
-https://www.geeksforgeeks.org/java/java/#:~:text=Project%3A%20Snake%20Game-,File%20Handling,-Java%20File%20Handling
-Java I/O (Input/Output) is a collection of classes and streams in the java.io package that handle reading data from sources (like files, keyboard, or network) and writing data to destinations (like files, console or sockets). It provides both byte and character streams to support all types of data.
-Java I/O is the traditional, stream-based, blocking I/O API this means that:
-data is read/written 1 byte or char at a time
-when calling read() or write(), the thread stops and waits until the operation finishes
+Java has two generations of I/O APIs that coexist in the platform: the original `java.io` package introduced in Java 1.0, and the New I/O (`java.nio`) package introduced in Java 1.4, later significantly extended in Java 7 with NIO.2. Understanding both — and knowing when to reach for each — is essential for writing correct, performant Java applications.
 
-### System IO
-System.in: This is the standard input stream that is used to read characters from the keyboard or any other standard input device, it implements the following methods:
-int read(): reads one byte of data.
-int read(byte[] b): reads bytes into an array.
-int read(byte[] b, int off, int len): reads bytes into part of an array.
-void close(): closes the input stream.
-int available(): returns the number of bytes that can be read without blocking.
-System.out: This is the standard output stream that is used to produce the result of a program on an output device like the computer screen, it implements the following methods:
-print(String s): This Java method displays text on the console, keeping the cursor at the end of the printed text so the next output continues from the same line.
-println(String s): This method in Java is also used to display a text on the console. It prints the text on the console and the cursor moves to the start of the next line at the console. The next printing takes place from the next line.
-printf(String s, T… args): The printf() method in Java is used for formatted output and can take multiple arguments, making it more flexible than print() or println().
-System.err: This is the standard error stream that is used to display error messages separately from normal output.
-
-### Streams vs Readers and Writers
-Depending on the type of operations, streams can be divided into two primary classes:
-Input Stream: These streams are used to read data that must be taken as an input from a source array or file or any peripheral device. i.e.: FileInputStream, BufferedInputStream, ByteArrayInputStream.
-Output Stream: These streams are used to write data as outputs into an array or file or any output peripheral device. i.e.: FileOutputStream, BufferedOutputStream, ByteArrayOutputStream.
-
-Streams can be divided into two primary classes:
-Byte Stream: are used to perform input and output of 8-bit bytes. They are suitable for handling raw binary data such as images, audio, and video, using classes like InputStream and OutputStream.
-Character Stream: are used to perform input and output of 16-bit Unicode characters. They are best suited for handling text data, using classes like Reader and Writer which automatically handle character encoding and decoding.
-### File handling
-
-#### Java I/O
-File represents a pathname to a file or directory. It does not read/write file contents, but manages metadata and operations.
+### IO
+Everything in java.io is built around the concept of a stream — a sequential flow of data. The two abstract root classes are InputStream and OutputStream, which operate on raw bytes. Every concrete byte-based I/O class in the package extends one of these two.InputStream defines three core methods: read() which returns a single byte as an int (or -1 at end of stream), read(byte[]) which fills a buffer, and read(byte[], offset, length) which fills a portion of a buffer. OutputStream mirrors this with write(int), write(byte[]), and write(byte[], offset, length), plus flush() to force any buffered data out and close() to release resources.
 
 ```Java
-File file = new File("example.txt");
-
-file.exists();
-file.canRead();
-file.canWrite();
-file.isDirectory();
-file.isFile();
-file.length();      // size in bytes
-file.getAbsolutePath();
-```
-
-To read and write bytes:
-```Java
-try (FileInputStream fis = new FileInputStream("input.bin")) {
-    int data;
-    while ((data = fis.read()) != -1) {
-        System.out.println(data);
+// Reading a file byte by byte — illustrative but inefficient in practice
+try (InputStream in = new FileInputStream("data.bin")) {
+    int byteValue;
+    while ((byteValue = in.read()) != -1) {
+        // byteValue is 0-255, not a signed byte
+        process(byteValue);
     }
 }
 
-try (FileOutputStream fos = new FileOutputStream("output.bin")) {
-    fos.write(new byte[]{1, 2, 3});
+// Reading in chunks — far more practical
+try (InputStream in = new FileInputStream("data.bin")) {
+    byte[] buffer = new byte[8192]; // 8KB chunks
+    int bytesRead;
+    while ((bytesRead = in.read(buffer)) != -1) {
+        process(buffer, 0, bytesRead); // only process what was actually read
+    }
 }
+```
 
+A critical subtlety: read(byte[]) is not guaranteed to fill the entire buffer. It returns however many bytes were available — which could be 1, even if you passed a 8192-byte array. This is especially true with network streams where data arrives in packets. Always use bytesRead as the actual count.The distinction between byte streams and character streams is fundamental. Byte streams (InputStream/OutputStream) handle raw binary data — images, audio, compiled classes, serialized objects. Character streams (Reader/Writer) handle text and are encoding-aware. They sit on top of byte streams and handle the translation between bytes and Unicode characters. Using a byte stream to read a text file works in ASCII, but falls apart the moment you encounter multibyte UTF-8 sequences or any non-Latin character set. This is a source of subtle, hard-to-diagnose bugs in production systems.
 
-To read and write text:
-try (BufferedReader br = new BufferedReader(new FileReader("input.txt"))) {
+#### Reader and Writer
+Reader and Writer are the character-stream counterparts to InputStream and OutputStream. The bridge between the two worlds is InputStreamReader and OutputStreamWriter — they wrap byte streams and apply a character encoding.
+
+```Java
+// Explicitly specifying encoding — always do this, never rely on platform default
+try (Reader reader = new InputStreamReader(new FileInputStream("text.txt"), StandardCharsets.UTF_8)) {
+    char[] buffer = new char[1024];
+    int charsRead;
+    while ((charsRead = reader.read(buffer)) != -1) {
+        System.out.print(new String(buffer, 0, charsRead));
+    }
+}
+```
+
+FileReader and FileWriter are convenience subclasses of InputStreamReader and OutputStreamWriter that open files directly. Their historical flaw was using the platform default encoding, which made code non-portable. Since Java 11, they have constructors that accept a Charset, so always use those.
+
+```Java
+// Pre-Java 11 anti-pattern — platform default encoding, not portable
+Reader r = new FileReader("file.txt");
+
+// Correct — always explicit
+Reader r = new FileReader("file.txt", StandardCharsets.UTF_8);
+```
+
+BufferedReader and BufferedWriter are the workhorses of text I/O. BufferedReader adds an internal character buffer and, crucially, the readLine() method which returns lines without the line terminator, or null at end of stream. BufferedWriter adds newLine() which writes the platform-appropriate line separator.
+
+```Java
+// Reading a file line by line — the classic pattern
+try (BufferedReader br = new BufferedReader(new FileReader("config.txt", StandardCharsets.UTF_8))) {
     String line;
     while ((line = br.readLine()) != null) {
-        System.out.println(line);
+        if (!line.startsWith("#") && !line.isBlank()) {
+            processConfigLine(line);
+        }
     }
 }
 
-try (PrintWriter pw = new PrintWriter(new FileWriter("output.txt"))) {
-    pw.println("Hello World");
+// Writing text with buffering
+try (BufferedWriter bw = new BufferedWriter(new FileWriter("output.txt", StandardCharsets.UTF_8))) {
+    bw.write("Line one");
+    bw.newLine();
+    bw.write("Line two");
+    bw.newLine();
+    bw.flush(); // flush before close for safety, though close() flushes too
 }
 ```
 
-Copying files:
+The decorator pattern that java.io is built on becomes clear when you chain these classes. Each wrapper adds a capability — buffering, encoding, line-handling — while delegating the actual I/O to the inner stream. Understanding this chain matters when something goes wrong: a flush() call on a BufferedWriter flushes to the OutputStreamWriter beneath it and then to the FileOutputStream beneath that.
+
+#### File
+java.io.File is the original API for representing file system paths and performing file operations. It's been largely superseded by java.nio.file.Path (covered later), but you'll encounter it constantly in existing codebases and some APIs that haven't been updated.
+
 ```Java
-try (InputStream in = new FileInputStream("in.txt");
-     OutputStream out = new FileOutputStream("out.txt")) {
-    in.transferTo(out);
-}
-```
+File file = new File("/var/data/report.txt");
 
-#### Java NIO
-The modern API uses Path, Files, and offers better performance, error handling, and ease of use.
+// Querying state
+System.out.println(file.exists());       // does it exist at all
+System.out.println(file.isFile());       // is it a regular file
+System.out.println(file.isDirectory());  // is it a directory
+System.out.println(file.canRead());      // readable by this process
+System.out.println(file.canWrite());     // writable by this process
+System.out.println(file.length());       // size in bytes
+System.out.println(file.lastModified()); // milliseconds since epoch
+
+// Creating files and directories
+File newFile = new File("/tmp/test.txt");
+newFile.createNewFile(); // atomic creation — returns false if already exists
+
+File singleDir = new File("/tmp/mydir");
+singleDir.mkdir(); // creates one level only
+
+File deepDir = new File("/tmp/a/b/c/d");
+deepDir.mkdirs(); // creates entire path — the plural 's' matters
+
+// Listing directory contents
+File dir = new File("/var/data");
+String[] names = dir.list();           // just names
+File[] files = dir.listFiles();        // File objects
+File[] txtFiles = dir.listFiles(
+    (d, name) -> name.endsWith(".txt") // FilenameFilter
+);
+
+// Deletion — non-recursive, directory must be empty
+file.delete();
+
+// Rename and move — same filesystem only, returns boolean not exception on failure
+File dest = new File("/var/data/report_archived.txt");
+file.renameTo(dest); // check return value — silent failure is a common bug
+```
+The File class has notable limitations: delete() returns a boolean rather than throwing on failure, methods are not atomic, there's no symbolic link support, and list() returns null (not an empty array) if the path doesn't exist or isn't a directory — a classic NPE trap. The NIO Path API fixes all of these.
+
+#### PrintWriter and Scanner
+PrintWriter wraps a Writer (or an OutputStream) and provides print(), println(), and printf() / format() — the formatted text output API. It's what you use when you want System.out-style convenience writing to a file or network socket.
 
 ```Java
-Path path = Paths.get("example.txt");
+try (PrintWriter pw = new PrintWriter(
+        new BufferedWriter(new FileWriter("report.txt", StandardCharsets.UTF_8)))) {
 
-Files.exists(path);
-Files.isDirectory(path);
-Files.size(path);
-Files.getLastModifiedTime(path);
+    pw.println("=== Sales Report ===");
+    pw.printf("%-20s %10s %10s%n", "Product", "Units", "Revenue");
+    pw.printf("%-20s %10d %10.2f%n", "Widget A", 1500, 45750.00);
+    pw.printf("%-20s %10d %10.2f%n", "Widget B", 870, 32190.00);
 
-Files.createFile(path);
-Files.delete(path);
-
-List<String> lines = Files.readAllLines(path); // small files
-byte[] bytes = Files.readAllBytes(path);       // binary
-
-try (Stream<String> lines = Files.lines(path)) {
-    lines.forEach(System.out::println);
+    if (pw.checkError()) {
+        // PrintWriter swallows exceptions and sets an error flag instead
+        // You MUST check this — it's one of PrintWriter's most dangerous behaviors
+        throw new IOException("PrintWriter encountered an error");
+    }
 }
-
-Files.write(path, "Hello".getBytes());
-Files.write(path, List.of("One", "Two")); // text lines
-
-Files.copy(Paths.get("in.txt"), Paths.get("out.txt"));
 ```
 
+PrintWriter never throws IOException from its write methods — it silently sets an internal error flag. Always call checkError() when writing to anything other than a console, because silent write failures to a file are catastrophic and hard to diagnose.
+Scanner is the counterpart for parsing structured text input. It tokenizes its source (a stream, file, string, or Readable) using a delimiter pattern (whitespace by default) and provides typed nextInt(), nextDouble(), nextLine(), etc.
 
+```Java
+// Parsing a structured data file
+String data = "Alice 32 85000.50\nBob 28 72000.00\nCarol 45 110000.75";
+
+try (Scanner scanner = new Scanner(data)) {
+    while (scanner.hasNextLine()) {
+        String name = scanner.next();
+        int age = scanner.nextInt();
+        double salary = scanner.nextDouble();
+        System.out.printf("%s is %d years old, earns %.2f%n", name, age, salary);
+    }
+}
+
+// Reading a CSV with a custom delimiter
+try (Scanner scanner = new Scanner(new File("data.csv"), StandardCharsets.UTF_8)) {
+    scanner.useDelimiter(",|\\n"); // split on comma or newline
+    while (scanner.hasNext()) {
+        System.out.println(scanner.next().trim());
+    }
+}
+```
+
+Scanner is convenient for small parsing tasks but not appropriate for high-performance parsing of large files — it has significant overhead per token. For that, BufferedReader with String.split() or a dedicated CSV library is more appropriate.
+
+#### Piped Streams
+PipedInputStream/PipedOutputStream (and their character counterparts PipedReader/PipedWriter) create a direct data pipe between two threads — one writes, the other reads. This is a classic producer-consumer implementation using I/O primitives.
+
+```Java
+public class PipedStreamDemo {
+
+    public static void main(String[] args) throws IOException {
+        PipedOutputStream pos = new PipedOutputStream();
+        PipedInputStream pis = new PipedInputStream(pos); // connect them
+
+        // Producer thread — writes data into the pipe
+        Thread producer = new Thread(() -> {
+            try (PrintWriter writer = new PrintWriter(pos)) {
+                for (int i = 1; i <= 5; i++) {
+                    writer.println("Message " + i);
+                    writer.flush();
+                    Thread.sleep(100);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        // Consumer thread — reads from the pipe
+        Thread consumer = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(pis))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("Received: " + line);
+                }
+            } catch (IOException e) {
+                System.err.println("Pipe read error: " + e.getMessage());
+            }
+        });
+
+        consumer.start();
+        producer.start();
+    }
+}
+```
+
+### NIO
 
 ## 14. Networking
 https://www.geeksforgeeks.org/java/java/#:~:text=Project%3A%C2%A0Text%20Editor-,Networking,-Java%20Networking%20enables
