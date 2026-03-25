@@ -65,7 +65,7 @@
         - [RandomizedSearch (IMPROVE)](#randomized-search)
     - [Natural Language Processing (TODO)](#nlp)
     - [Large Language Models (TODO)](#llm)
-5. [Interview Questions & Anwers (TODO)](#interview-questions-and-answers)
+5. [Interview Questions & Answers (TODO)](#interview-questions-and-answers)
 
 ## Introduction
 This course focuses on Data Science and Analysis using Python.
