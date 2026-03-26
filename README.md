@@ -200,3 +200,6 @@ OUTPUT:
 
 ## References
 - Effective Java by Joshua Bloch
+- https://www.geeksforgeeks.org/java/
+- https://www.geeksforgeeks.org/advance-java/advanced-java/
+- https://www.geeksforgeeks.org/advance-java/spring-boot/
