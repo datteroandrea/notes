@@ -7937,3 +7937,1339 @@ An alternative to polling is **Change Data Capture (CDC)**: tools like Debezium 
 > 4. **Polling relay**: simple to implement and operate; adds periodic load (SELECT queries) to the primary database; latency equals the polling interval (typically 1–5 seconds); missed rows on failure are self-healing (next poll picks them up). **CDC with Debezium**: near-zero latency (events emitted as the WAL is written); no polling load on the primary; much higher operational complexity (Debezium cluster, Kafka Connect, managing WAL retention, schema registry); fragile to schema changes (adding a column can break the connector). Use polling for moderate throughput and simpler operations. Use CDC when sub-second latency is required or database query load from polling is prohibitive.
 
 ---
+
+
+---
+
+# Chapter 7: Microservices and Distributed Systems
+
+Modern software systems are rarely built as single, monolithic applications. As systems grow in scale, team size, and complexity, organizations decompose them into smaller, independently deployable services. This chapter covers the principles and trade-offs of microservices architecture, the fundamental challenges that arise when computation is spread across a network, and the operational tooling needed to maintain visibility and reliability in such environments. Understanding these topics is essential for designing systems that are both scalable and resilient.
+
+---
+
+## 7.1 Microservices Architecture
+
+Microservices architecture is a design philosophy in which a system is structured as a collection of small, autonomous services that communicate over a network. Each service owns its own data and business logic. This section examines how microservices compare to traditional monolithic systems, how to decompose a system into services, and how those services find and talk to each other.
+
+---
+
+### Monolith vs Microservices
+
+#### Theory
+
+A **monolith** is a system deployed as a single unit. All features — user authentication, order processing, inventory management, notifications — live in one codebase and one deployable artifact. When you deploy a change to the notification module, you redeploy everything.
+
+This is not inherently bad. Monoliths are straightforward to develop, test, and operate in early stages. The problems emerge as the system grows:
+
+- **Deployment coupling**: a bug in one module can block releases for the entire system.
+- **Scaling inflexibility**: you must scale all functionality together, even if only the search feature is under load.
+- **Team autonomy**: large codebases become hard to partition between teams without merge conflicts and coordination overhead.
+- **Technology lock-in**: the entire system is committed to one language, framework, and database.
+
+A **microservices** architecture resolves these problems by splitting the system into independently deployable services. Each service is small enough for one team to own end to end, uses the technology stack best suited to its problem, and scales independently.
+
+The trade-off is significant: you replace in-process function calls with network calls, shared memory with APIs, and a single deployable with dozens (or hundreds). Operational complexity increases substantially.
+
+**When to use each approach:**
+
+| Dimension | Monolith | Microservices |
+|---|---|---|
+| Team size | Small (1–10 engineers) | Large (multiple teams) |
+| System maturity | Early stage / MVP | Well-understood domain |
+| Deployment frequency | Low to moderate | High, per service |
+| Operational expertise | Limited | High (DevOps, Kubernetes, observability) |
+| Latency sensitivity | Predictable (in-process) | Must account for network overhead |
+| Data consistency | Easier (shared DB) | Harder (distributed data) |
+
+A common pattern is the **modular monolith**: enforce strict module boundaries within a single deployable. This captures many of the team-autonomy benefits without the operational burden, and makes future decomposition easier if it becomes necessary.
+
+#### Example
+
+A simplified e-commerce system decomposed into services:
+
+```
++---------------------+
+|   API Gateway       |  <-- single entry point for clients
++---------------------+
+        |
+   +----+----+----+----+
+   |         |         |
++------+ +-------+ +----------+
+|Orders| |Catalog| |Payments  |
+|Svc   | |Svc    | |Svc       |
++------+ +-------+ +----------+
+   |         |         |
++------+ +-------+ +----------+
+|Orders| |Catalog| |Payments  |
+|  DB  | |  DB   | |   DB     |
++------+ +-------+ +----------+
+```
+
+Each service has its own database. The Orders service does not query the Catalog database directly — it calls the Catalog service's API.
+
+> **Exercises**
+>
+> 1. (Beginner) Name two deployment advantages a microservices architecture has over a monolith.
+> 2. (Beginner) What is the main operational cost you accept when moving from a monolith to microservices?
+> 3. (Intermediate) A startup is building its first product with a team of four engineers. A colleague proposes microservices from day one. What would you argue, and under what condition would you revisit the decision?
+> 4. (Interview) Describe the "distributed monolith" anti-pattern. How does it arise and why is it considered worse than either a true monolith or true microservices?
+>    - *Hint: think about what happens when services are split physically but remain tightly coupled at the data or deployment level.*
+
+> **Answers**
+>
+> 1. (1) Individual services can be deployed independently, so a change to one service does not require redeploying others. (2) Each service can be scaled independently — only the service under load needs additional instances.
+> 2. The main operational cost is the complexity of managing a distributed system: network communication replaces in-process calls, you need service discovery, distributed tracing, independent CI/CD pipelines per service, and your data consistency story becomes much harder.
+> 3. For a four-engineer startup, a monolith (or modular monolith) is almost always the right call. The domain is not yet well understood, the team is small enough that coordination overhead is low, and the operational burden of microservices is disproportionate to the benefit. Revisit when the team grows large enough that the codebase is causing deployment bottlenecks or team-level autonomy problems — typically when two or more teams are regularly blocked by each other.
+> 4. A distributed monolith occurs when services are split into separate deployables but remain tightly coupled — for example, they share a single database, or service A must always be deployed in lockstep with service B because they share a schema or interface that cannot evolve independently. It is the worst of both worlds: you bear the operational costs of a distributed system (network latency, partial failures, complex deployments) while gaining none of the autonomy benefits (you still cannot deploy services independently, and a schema change still requires coordinating all teams).
+
+---
+
+### Service Decomposition Strategies
+
+#### Theory
+
+Decomposing a monolith into services is as much an organizational and domain-modeling exercise as a technical one. The wrong decomposition creates tightly coupled services that defeat the purpose of the architecture.
+
+**Decompose by business capability** — align services with distinct business functions, not technical layers. A "UserService" that handles everything a user can do is a business-capability service. An "AuthenticationService" that only handles login tokens is narrower — it may be appropriate, but splitting "UserProfile" from "Authentication" can create tight coupling if they constantly need to synchronize.
+
+**Decompose by subdomain (Domain-Driven Design)** — identify bounded contexts in the domain model (covered in the next topic) and make each bounded context a candidate service boundary.
+
+**Decompose by data ownership** — ask "which service is the single source of truth for this entity?" Each entity should have exactly one owning service. Shared ownership of mutable data is a strong signal of incorrect decomposition.
+
+**Decompose by change rate** — functionality that changes frequently (e.g., pricing algorithms) should be isolated from functionality that changes rarely (e.g., address validation). Coupling them means every price change requires retesting address validation.
+
+**Strangler Fig Pattern** — when decomposing an existing monolith, rather than rewriting it all at once, gradually extract functionality. Route requests through an API gateway; as each slice is extracted into a service, update the gateway routing. The monolith "strangles" over time.
+
+```
+Phase 1:                    Phase 2:                    Phase 3:
+                            +----------+
+Client --> Monolith         Client --> Gateway           Client --> Gateway
+                                  |                            |
+                            +--Monolith (shrinking)      +-----------+
+                            |                            | New Svc A |
+                            +-New Svc A                  | New Svc B |
+                                                         | New Svc C |
+                                                         +-----------+
+                                                    (monolith retired)
+```
+
+> **Exercises**
+>
+> 1. (Beginner) What does "decompose by business capability" mean? Give an example of a bad decomposition and a better one for an e-commerce platform.
+> 2. (Intermediate) You have an `Inventory` table shared by both the `Orders` service and the `Catalog` service. Each service reads and writes to it. What problem does this create, and how would you resolve it?
+> 3. (Intermediate) Describe the Strangler Fig pattern. Why is it generally preferred over a "big bang" rewrite when decomposing a monolith?
+> 4. (Interview) A payments domain has three teams: one owns fraud detection, one owns payment processing, one owns refunds. How would you decide whether these should be one service or three?
+>    - *Hint: think about deployment coupling, data ownership, and change rate.*
+
+> **Answers**
+>
+> 1. Decompose by business capability means aligning each service with a distinct business function the organization performs — not with a technical layer (like "DatabaseService" or "ValidationService"). Bad decomposition example: splitting an e-commerce system into a "ReadService" (all reads) and a "WriteService" (all writes) — these are technical boundaries with no business meaning, and every feature touches both services. Better decomposition: `OrderService`, `InventoryService`, `NotificationService` — each owns a distinct business capability with clear ownership of data and behavior.
+> 2. Shared mutable state across service boundaries is a distributed monolith anti-pattern. Both services can read and write the same table, so a schema change requires coordinating both teams. A write from Orders can corrupt data Catalog relies on, and vice versa. Resolution: designate one service as the owner of inventory data (e.g., `InventoryService`). The other service accesses inventory only through the owning service's API. This enforces a clean boundary and a single source of truth.
+> 3. The Strangler Fig pattern extracts functionality incrementally from a monolith by routing traffic through a facade (API gateway) and redirecting slices to new services as they are built, rather than rewriting everything at once. It is preferred over a big-bang rewrite because: (1) it reduces risk — at any point the partially migrated system is deployable and testable in production; (2) it allows learning — domain understanding improves as you extract services, so later decompositions benefit from earlier mistakes; (3) it avoids the "second system effect" where a full rewrite accumulates new requirements and becomes its own monolith.
+> 4. Start by checking deployment coupling: do fraud detection, payment processing, and refunds always need to be deployed together? If yes, they are already coupled. Check data ownership: does each team own distinct entities with minimal overlap? Fraud detection typically owns fraud signals and decisions; payment processing owns transaction records and gateway interactions; refunds own refund state and approval workflows. Check change rate: fraud models change frequently (new fraud patterns), while refund logic changes rarely. Given distinct data ownership, different change rates, and independent team autonomy needs, three services is a reasonable split. If the teams are small and the domain is immature, start with one service with strong internal module boundaries and split later.
+
+---
+
+### Bounded Context
+
+#### Theory
+
+**Bounded Context** is a concept from Domain-Driven Design (DDD). It defines the boundary within which a particular domain model is consistent and valid. Inside a bounded context, every term has one precise meaning. Outside it, the same word can mean something entirely different.
+
+Consider the word "Customer":
+- In the **Sales** context: a Customer is a lead with a contact record, deal stage, and sales rep assignment.
+- In the **Billing** context: a Customer is an account with a payment method, outstanding balance, and invoice history.
+- In the **Support** context: a Customer is a user who has submitted tickets, with a history of issues and resolutions.
+
+These are not the same object. Forcing a single "Customer" model to satisfy all three contexts creates a bloated, hard-to-maintain model that satisfies none of them well.
+
+In a microservices architecture, each bounded context is a natural candidate for a service boundary. Services own their local model of shared real-world entities. They communicate through well-defined APIs and integration events — not through shared databases.
+
+The mapping between bounded contexts is called a **context map**. Common integration patterns include:
+
+- **Shared Kernel**: two contexts share a small, common model they both maintain (use sparingly — increases coupling).
+- **Customer/Supplier**: one context (upstream) produces data; another (downstream) consumes it. The supplier publishes, the customer adapts.
+- **Anti-Corruption Layer (ACL)**: a translation layer that shields a context from the model of an external system, preventing "foreign" concepts from polluting the local model.
+
+```
++-------------------+         +-------------------+
+|  Sales Context    |         |  Billing Context  |
+|                   |  Event  |                   |
+|  Customer:        +-------->|  Customer:        |
+|   - lead stage    |         |   - account_id    |
+|   - sales_rep     |   ACL   |   - balance       |
+|   - deal_value    |         |   - payment_method|
++-------------------+         +-------------------+
+         ^
+         | (internal model — Sales owns this)
+```
+
+#### Example
+
+An Anti-Corruption Layer translating an external legacy CRM's "Account" concept into the local "Customer" model:
+
+```python
+# External legacy CRM returns this structure
+# {"acct_num": "A-1234", "co_name": "Acme Corp", "tier_code": 2}
+
+class LegacyCRMClient:
+    def get_account(self, account_number: str) -> dict:
+        # raw HTTP call to legacy CRM
+        return legacy_http_get(f"/accounts/{account_number}")
+
+class CustomerACL:
+    """
+    Anti-Corruption Layer: translates the legacy CRM's Account model
+    into the local Sales context's Customer model.
+    """
+    def __init__(self, crm_client: LegacyCRMClient):
+        self._crm = crm_client
+
+    def get_customer(self, account_number: str) -> "Customer":
+        raw = self._crm.get_account(account_number)
+        return Customer(
+            id=raw["acct_num"],
+            name=raw["co_name"],
+            tier=self._map_tier(raw["tier_code"])
+        )
+
+    def _map_tier(self, code: int) -> str:
+        return {1: "STANDARD", 2: "PREMIUM", 3: "ENTERPRISE"}.get(code, "UNKNOWN")
+```
+
+The rest of the Sales context never sees `acct_num`, `co_name`, or `tier_code`. If the legacy CRM changes its schema, only the ACL needs to change.
+
+> **Exercises**
+>
+> 1. (Beginner) What is a bounded context, and why does the same real-world entity (e.g., "Product") often need different models in different contexts?
+> 2. (Beginner) What problem does an Anti-Corruption Layer solve? When would you introduce one?
+> 3. (Intermediate) Two microservices — `OrderService` and `InventoryService` — both need a concept of "Product." Describe how bounded contexts would handle this without sharing a database table.
+> 4. (Interview) A team proposes a single shared "canonical data model" (a common library of domain objects used by all services). What are the risks of this approach, and how does bounded context thinking argue against it?
+>    - *Hint: consider what happens when two teams need to evolve the same model in incompatible directions.*
+
+> **Answers**
+>
+> 1. A bounded context is the boundary within which a domain model is internally consistent — every term has one precise meaning. The same real-world entity needs different models in different contexts because each context cares about different attributes and behaviors. A "Product" in the Catalog context has a name, description, images, and SEO metadata. The same "Product" in the Inventory context is a SKU with a warehouse location, stock count, and reorder threshold. Merging them into one model creates a bloated object that is hard to evolve and serves neither context well.
+> 2. An ACL shields a local bounded context from the concepts and vocabulary of an external system (often a legacy system or third-party API). Without it, the external system's model leaks into the local model — fields like `acct_num` or `tier_code` appear in local business logic. If the external system changes its schema, changes ripple through the entire local codebase. Introduce an ACL whenever integrating with an external system whose model you do not control and whose concepts do not map cleanly onto your local domain.
+> 3. Each service maintains its own local representation of "Product" — only the fields relevant to its own domain. `OrderService` stores `product_id`, `name` (as a snapshot at order time), and `unit_price`. `InventoryService` stores `product_id`, `sku`, `warehouse_location`, and `stock_count`. The two services do not share a table. When `OrderService` needs to know if a product is in stock, it calls `InventoryService`'s API. The shared key (`product_id`) is the integration point, not a shared schema.
+> 4. A shared canonical data model creates tight coupling across all services. The risks: (1) **Coupled releases** — any change to a shared model requires coordinating all teams that depend on the library; one team's needed change may break another. (2) **Semantic conflict** — different teams need "Order" to mean different things; a single canonical model satisfies none of them precisely. (3) **Forced convergence** — teams can no longer evolve their models independently, which is the primary autonomy benefit of microservices. Bounded context thinking argues that there is no single universal model — each context has its own valid model, and integration happens through explicit contracts (APIs, events), not shared code.
+
+---
+
+### Inter-Service Communication
+
+#### Theory
+
+When services need to exchange data or coordinate work, they must communicate over a network. There are two fundamental styles:
+
+**Synchronous communication** — the caller sends a request and waits for a response before proceeding. The most common protocol is REST over HTTP, though gRPC (using HTTP/2 and Protocol Buffers) is common for high-performance internal APIs.
+
+- Advantages: simple request/response semantics; response is immediately available; straightforward error handling.
+- Disadvantages: temporal coupling — the caller is blocked while the callee processes; if the callee is slow or unavailable, the caller is impacted; cascading failures are more likely.
+
+**Asynchronous communication** — the caller sends a message to a broker (Kafka, RabbitMQ, SQS) and continues without waiting. The receiver processes the message independently.
+
+- Advantages: temporal decoupling — caller and callee do not need to be available simultaneously; better fault isolation; natural backpressure.
+- Disadvantages: harder to reason about; eventual consistency; debugging requires distributed tracing; harder to model request/response workflows.
+
+**Choosing between them:**
+
+| Use case | Preferred style |
+|---|---|
+| Query needing immediate result (e.g., "is this product in stock?") | Synchronous (REST/gRPC) |
+| Command that triggers a downstream workflow (e.g., "order placed") | Asynchronous (events) |
+| High-throughput data pipeline | Asynchronous (message queue) |
+| Low-latency, structured internal API | gRPC |
+
+**Resilience patterns for synchronous calls:**
+
+- **Circuit Breaker**: if a downstream service fails repeatedly, stop calling it for a period (the circuit "opens") to prevent cascading failures. After a timeout, allow a probe request through (half-open state). If it succeeds, close the circuit.
+- **Retry with exponential backoff**: retry transient failures, but increase the wait between retries to avoid overwhelming a struggling service.
+- **Timeout**: always set a deadline on outbound calls; never wait indefinitely.
+
+```
+         Caller
+           |
+           v
+    +-------------+
+    | Circuit     |
+    | Breaker     |-- CLOSED --> forwards calls to service B
+    |             |-- OPEN   --> fails fast, returns error immediately
+    |             |-- HALF   --> allows one probe call through
+    +-------------+
+```
+
+#### Example
+
+A gRPC service definition and a synchronous REST call with a circuit breaker (using Python's `pybreaker`):
+
+```protobuf
+// catalog.proto — gRPC service definition
+syntax = "proto3";
+
+service CatalogService {
+  rpc GetProduct (GetProductRequest) returns (Product);
+}
+
+message GetProductRequest {
+  string product_id = 1;
+}
+
+message Product {
+  string product_id = 1;
+  string name       = 2;
+  double price      = 3;
+  bool   in_stock   = 4;
+}
+```
+
+```python
+import pybreaker
+import requests
+
+# Circuit breaker: open after 3 consecutive failures,
+# stay open for 30 seconds before probing again
+catalog_breaker = pybreaker.CircuitBreaker(fail_max=3, reset_timeout=30)
+
+@catalog_breaker  # decorates the function; breaker wraps all calls
+def get_product(product_id: str) -> dict:
+    response = requests.get(
+        f"http://catalog-service/products/{product_id}",
+        timeout=2.0  # never wait more than 2 seconds
+    )
+    response.raise_for_status()
+    return response.json()
+
+try:
+    product = get_product("SKU-001")
+except pybreaker.CircuitBreakerError:
+    # Circuit is open — return cached data or a graceful degradation
+    product = get_cached_product("SKU-001")
+```
+
+> **Exercises**
+>
+> 1. (Beginner) What is the difference between synchronous and asynchronous inter-service communication? Give one example use case for each.
+> 2. (Beginner) What is a circuit breaker? Describe its three states.
+> 3. (Intermediate) Service A calls Service B synchronously. Service B calls Service C synchronously. Service C starts responding slowly (5-second latency). Trace the failure cascade. What patterns would prevent it?
+> 4. (Interview) An order service needs to: (1) validate a user's payment method and (2) reserve inventory. Both must succeed for the order to proceed. Describe how you would orchestrate this using synchronous calls, and what happens on partial failure.
+>    - *Hint: think about compensating transactions if one call succeeds but the other fails.*
+
+> **Answers**
+>
+> 1. Synchronous: the caller sends a request and blocks until it receives a response. Use case: a product detail page that needs the current price and availability before it can render. Asynchronous: the caller sends a message to a broker and continues without waiting. Use case: after an order is placed, emit an "OrderPlaced" event so the Notifications service can send a confirmation email independently.
+> 2. A circuit breaker is a resilience pattern that monitors calls to a downstream service and, after detecting repeated failures, stops forwarding calls for a period to allow the downstream service time to recover. Three states: (1) **Closed** — normal operation, all calls are forwarded. (2) **Open** — the failure threshold was exceeded; calls fail fast without reaching the downstream service. (3) **Half-open** — after the timeout, one probe call is allowed through. If it succeeds, the circuit closes. If it fails, it returns to open.
+> 3. Service C's 5-second latency causes Service B's threads to block while waiting for responses. Service B's thread pool exhausts; incoming requests from Service A start queuing. Service A's outbound connections to Service B block, exhausting Service A's thread pool. Service A becomes unavailable to its clients — a cascading failure that started in Service C. Prevention: (1) **Timeouts** on every outbound call (e.g., Service B times out C calls after 500ms). (2) **Circuit breaker** on Service B's calls to C — after repeated timeouts, the circuit opens and Service B fails fast, releasing threads. (3) **Bulkhead** — limit the number of threads or connections allocated to calls to C, so exhaustion of C's pool does not exhaust B's global pool.
+> 4. Orchestrate with compensating transactions (the Saga pattern). Call Payment Validation first; if it fails, return an error immediately — nothing to roll back. If Payment Validation succeeds, call Inventory Reservation. If Inventory Reservation fails, issue a compensating call to release or void the payment authorization. This is a two-step saga: (1) authorize payment → (2) reserve inventory; compensating action for step 2 failure is to cancel the payment authorization. The saga does not guarantee atomicity — there is a window between the two calls where partial state exists. The key is that every step has a defined compensating action that can undo its effect.
+
+---
+
+### Service Discovery
+
+#### Theory
+
+In a static deployment, services communicate using fixed hostnames or IP addresses. In a dynamic environment (containers, Kubernetes, auto-scaling), service instances come and go. Their IP addresses change. You cannot hardcode them.
+
+**Service discovery** is the mechanism by which a service locates other services at runtime.
+
+There are two models:
+
+**Client-side discovery** — the calling service queries a service registry to get the list of available instances, then applies a load-balancing algorithm (round-robin, least-connections) to pick one and call it directly.
+
+```
+Client --> Service Registry  (query: "where are instances of OrderService?")
+       <-- [10.0.1.5:8080, 10.0.1.6:8080]
+       --> 10.0.1.5:8080  (client picks one and calls directly)
+```
+
+Advantage: the client has full control over load-balancing logic.
+Disadvantage: every client must implement registry query and load-balancing; clients are coupled to the registry API.
+
+**Server-side discovery** — the client calls a load balancer or API gateway. The load balancer queries the registry and forwards the request to an available instance.
+
+```
+Client --> Load Balancer / API Gateway
+                |
+                +--> Service Registry (transparent to client)
+                |
+                +--> 10.0.1.5:8080  (LB picks an instance)
+```
+
+Advantage: clients are simple — they only know one address (the LB).
+Disadvantage: the LB is an additional network hop; it must be highly available.
+
+**Service registries**: Consul, etcd, Eureka (Netflix), and Kubernetes' built-in DNS (`my-service.namespace.svc.cluster.local`) are common implementations. Kubernetes uses an internal DNS server — when you create a Service object, it gets a DNS name automatically.
+
+**Health checks** are critical: registries only return healthy instances. Services expose a `/health` endpoint; the registry polls it and removes unhealthy instances from rotation.
+
+#### Example
+
+Kubernetes Service DNS — the simplest form of server-side discovery:
+
+```yaml
+# catalog-service deployment and service
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service       # DNS name: catalog-service.default.svc.cluster.local
+  namespace: default
+spec:
+  selector:
+    app: catalog              # routes to pods with this label
+  ports:
+    - port: 80
+      targetPort: 8080
+```
+
+```python
+# Any other service in the cluster can call catalog-service by DNS name.
+# Kubernetes kube-proxy handles load balancing across healthy pods.
+import requests
+
+def get_product(product_id: str) -> dict:
+    # No hardcoded IP — DNS resolves to a healthy pod automatically
+    url = f"http://catalog-service/products/{product_id}"
+    return requests.get(url, timeout=2.0).json()
+```
+
+Consul-based client-side discovery (non-Kubernetes):
+
+```python
+import consul  # python-consul library
+import random
+
+c = consul.Consul(host="consul.internal", port=8500)
+
+def get_catalog_instance() -> str:
+    """Query Consul for healthy CatalogService instances."""
+    _, services = c.health.service("catalog-service", passing=True)
+    if not services:
+        raise RuntimeError("No healthy instances of catalog-service found")
+    instance = random.choice(services)  # simple random load balancing
+    address = instance["Service"]["Address"]
+    port    = instance["Service"]["Port"]
+    return f"http://{address}:{port}"
+
+def get_product(product_id: str) -> dict:
+    base_url = get_catalog_instance()
+    return requests.get(f"{base_url}/products/{product_id}", timeout=2.0).json()
+```
+
+> **Exercises**
+>
+> 1. (Beginner) Why is hardcoding IP addresses of other services problematic in a containerized environment?
+> 2. (Beginner) What is the difference between client-side and server-side service discovery?
+> 3. (Intermediate) A service's health check endpoint reports healthy, but the service is actually returning incorrect data. What does this reveal about the limitations of health checks? How would you improve the health check?
+> 4. (Interview) In Kubernetes, what happens at the network level when a Pod is terminated? How does this interact with service discovery to avoid routing traffic to a dead pod?
+>    - *Hint: consider the sequence of events: the pod receives SIGTERM, Kubernetes updates endpoints, kube-proxy updates iptables rules.*
+
+> **Answers**
+>
+> 1. In a containerized environment, pods are created and destroyed dynamically. Each new pod gets a new IP address assigned from the cluster's IP range. If Service A hardcodes the IP of Service B's pod, that IP becomes invalid as soon as B's pod is restarted, rescheduled, or scaled. Hardcoded IPs require manual updates on every topology change, which is operationally unsustainable.
+> 2. Client-side: the calling service directly queries the service registry, receives a list of available instances, applies its own load-balancing logic, and calls an instance directly. The client knows about the registry and implements load balancing. Server-side: the client calls a fixed address (load balancer or API gateway). The load balancer queries the registry and forwards the request to a healthy instance. The client is unaware of the registry and individual instances.
+> 3. A health check that returns 200 OK but the service is returning bad data is a **shallow health check** — it only confirms the process is alive and the HTTP server is responding, not that the service is functioning correctly. Improvement: implement a **deep health check** that exercises critical dependencies. For example, run a lightweight query against the database, check that a downstream cache is reachable, or validate that a configuration value is present. The check should confirm the service can actually do useful work, not just that it is alive. Be careful not to make deep checks too expensive — they run frequently.
+> 4. When a pod is terminated: (1) Kubernetes sends `SIGTERM` to the pod's container; the pod enters the Terminating state. (2) Simultaneously, the pod's IP is removed from the Service's Endpoints object. (3) kube-proxy on each node watches the Endpoints object and updates the node's iptables (or IPVS) rules to remove the terminated pod from the load-balancing pool. (4) After the `terminationGracePeriodSeconds` (default 30s), the pod receives SIGKILL if it hasn't exited. The risk: there is a small window between SIGTERM and kube-proxy propagating the iptables update across all nodes. During this window, some nodes may still route traffic to the terminating pod. Mitigation: add a `preStop` hook that sleeps for a few seconds before the container begins shutting down, giving kube-proxy time to propagate the endpoint removal before the pod stops accepting connections.
+
+---
+
+## 7.2 Distributed Systems Challenges
+
+Building a distributed system means accepting that your components communicate over a network — a fundamentally unreliable medium. This section covers the core challenges that all distributed systems face: the false assumptions engineers commonly make, what happens when the network partitions, how time behaves across machines, how to coordinate transactions across services, and the protocols used to do so.
+
+---
+
+### Fallacies of Distributed Computing
+
+#### Theory
+
+In 1994, Peter Deutsch (and later James Gosling) documented eight assumptions that engineers new to distributed systems routinely make — all of which are false. These are known as the **Fallacies of Distributed Computing**.
+
+| # | Fallacy | Reality |
+|---|---|---|
+| 1 | The network is reliable | Packets are dropped, routers fail, cables are cut |
+| 2 | Latency is zero | There is always a delay; it varies with load and distance |
+| 3 | Bandwidth is infinite | Networks have capacity limits; large payloads cost time and money |
+| 4 | The network is secure | Networks are hostile; data can be intercepted, spoofed, or tampered with |
+| 5 | Topology doesn't change | Nodes join and leave; IPs change; services are redeployed |
+| 6 | There is one administrator | Large systems span multiple teams, cloud regions, and providers |
+| 7 | Transport cost is zero | Serialization, deserialization, and network I/O have real CPU and memory costs |
+| 8 | The network is homogeneous | Different services may use different languages, protocols, and encodings |
+
+These fallacies matter because engineers who assume the network is reliable write code that fails ungracefully when it is not. Code that assumes zero latency breaks under load. Code that ignores security vulnerabilities gets exploited.
+
+**Practical implications:**
+
+- Always set timeouts on outbound calls (Fallacy 1, 2).
+- Design for idempotency — retries will happen (Fallacy 1).
+- Minimize payload sizes; use efficient serialization like Protocol Buffers (Fallacy 3, 7).
+- Use mutual TLS (mTLS) for service-to-service communication (Fallacy 4).
+- Use service discovery, not hardcoded addresses (Fallacy 5).
+- Never assume a network call succeeded just because it did not throw an exception (Fallacy 1) — the response might not have been delivered.
+
+> **Exercises**
+>
+> 1. (Beginner) List three of the eight fallacies and, for each, give a concrete failure scenario in a production system.
+> 2. (Intermediate) A developer writes code that calls an external payment API and, on timeout, does nothing (assumes the payment failed). What fallacy does this violate, and what is the real-world consequence?
+> 3. (Interview) How do the fallacies of distributed computing change the way you design API contracts between services? Give two concrete design decisions they influence.
+>    - *Hint: consider idempotency keys, explicit error categories, and timeout contracts.*
+
+> **Answers**
+>
+> 1. Examples: (1) **Network is reliable** — a service sends a payment request to a third-party gateway; the gateway processes the payment successfully but the response packet is dropped. The service retries, double-charging the customer. (2) **Latency is zero** — a service makes 10 synchronous calls to downstream services to assemble a response; under load, each call adds 50ms of latency, making the total response time 500ms+ — unacceptable for a user-facing API. (3) **Network is secure** — service-to-service calls use plain HTTP inside the data center; an attacker with access to internal network traffic intercepts and reads sensitive customer data.
+> 2. This violates Fallacy 1 (the network is reliable). A timeout does not mean the payment failed — it means the client did not receive a response within the deadline. The server may have successfully processed the payment. If the developer does nothing on timeout, the user sees an error but has actually been charged. The correct response: before retrying, query the payment gateway's status endpoint using the original idempotency key to determine whether the payment was recorded. Never assume a failed response means a failed operation.
+> 3. Two design decisions: (1) **Idempotency keys** — because requests may be retried after timeouts (Fallacy 1), POST/PUT operations should accept a client-generated idempotency key. The server records processed keys and returns the original result for duplicates, making retries safe. (2) **Explicit timeout contract in API documentation** — because callers must set timeouts (Fallacy 2), APIs should document their expected p99 response time. Callers set their timeout based on this contract. The API should also return a `Retry-After` header when rate-limiting or temporarily overloaded, so callers back off rather than hammering a degraded service.
+
+---
+
+### Network Partitions
+
+#### Theory
+
+A **network partition** is a scenario in which a network failure splits a distributed system into two or more groups of nodes that cannot communicate with each other, even though individual nodes may be fully operational.
+
+Partitions are not hypothetical. They happen due to:
+- Misconfigured firewall rules
+- Switch or router failures
+- Cross-datacenter fiber cuts
+- Cloud provider network issues
+
+The **CAP Theorem** (Brewer, 2000) states that in the presence of a network partition, a distributed system can provide at most one of:
+- **Consistency (C)**: every read reflects the most recent write.
+- **Availability (A)**: every request receives a response (not necessarily the most recent data).
+
+During a partition, you must choose whether to:
+- **Refuse requests** (sacrifice Availability) to ensure you only return consistent data.
+- **Serve requests from available nodes** (sacrifice Consistency) and risk returning stale data.
+
+**CP systems** (e.g., HBase, ZooKeeper, etcd): on partition, reject requests that cannot be confirmed consistent. Used for coordination, leader election, configuration storage — where correctness is more important than uptime.
+
+**AP systems** (e.g., Cassandra, DynamoDB, CouchDB): on partition, serve requests from available replicas and reconcile divergence after the partition heals. Used for user-facing reads where stale data is tolerable.
+
+The **PACELC model** extends CAP: even when there is no partition (the "E" = else case), there is still a latency vs. consistency trade-off. A system that replicates synchronously is consistent but adds latency to every write. A system that replicates asynchronously is fast but may return stale reads.
+
+```
+Is there a partition?
+        |
+       YES --> choose: Consistency OR Availability
+        |
+       NO  --> choose: lower Latency OR stronger Consistency
+```
+
+> **Exercises**
+>
+> 1. (Beginner) What is a network partition? Why can it occur even when all nodes are healthy?
+> 2. (Beginner) State the CAP theorem. What does a system give up if it chooses Availability over Consistency during a partition?
+> 3. (Intermediate) You are designing a distributed inventory system. During a partition, some nodes may accept orders that exceed stock. After the partition heals, inventory is negative. Is this a CP or AP trade-off? What compensating mechanism would you put in place?
+> 4. (Interview) A colleague says "our database is always consistent AND available, even during partitions — CAP theorem doesn't apply to us." What questions would you ask to evaluate this claim?
+>    - *Hint: think about what "consistent" and "available" mean precisely, and whether their system has ever experienced a real network partition.*
+
+> **Answers**
+>
+> 1. A network partition is a communication breakdown between groups of nodes in a distributed system — packets between the groups are lost or indefinitely delayed, even though the nodes themselves are running normally. It can occur when the network infrastructure between nodes fails (a faulty switch, a misconfigured firewall rule, a severed fiber link) while the nodes remain operational. The nodes are "partitioned" from each other's perspective.
+> 2. CAP theorem: a distributed system can guarantee at most two of Consistency, Availability, and Partition Tolerance. Since partitions cannot be eliminated (you cannot prevent the network from failing), the real choice is between Consistency and Availability during a partition. A system that chooses Availability during a partition will serve requests from available nodes, but those nodes may not have the latest data — reads may return stale values, and concurrent writes to different partition halves can create conflicting state that must be reconciled after the partition heals.
+> 3. This is an AP trade-off: the system chose to remain available (accepting orders) during the partition, sacrificing consistency (resulting in negative inventory). Compensating mechanism: (1) **Oversell buffer** — maintain a safety stock level; the system accepts orders down to the buffer, not to zero, giving a cushion for partition-induced overselling. (2) **Post-partition reconciliation** — after the partition heals, detect negative inventory and trigger compensating actions: cancel excess orders (with customer notification and refund), backorder items, or expedite replenishment. (3) **Reservation TTL** — inventory reservations expire after a short window (e.g., 15 minutes) if not confirmed by payment, preventing long-lived phantom reservations from accumulating.
+> 4. Questions to ask: (1) "How do you define 'consistent'?" — linearizability (every read reflects the latest write globally) is very different from eventual consistency or read-your-own-writes. (2) "How do you define 'available'?" — does every request get a response, or do some requests time out during node failures? (3) "What happens during a datacenter network outage between your primary and replica?" — have they actually tested this? (4) "What replication mode does your database use — synchronous or asynchronous?" — synchronous replication that blocks writes when a replica is unreachable is CP, not CA. (5) "Have you observed split-brain scenarios in production?" — if they have replicas that can independently accept writes, they will diverge during a partition regardless of what the marketing says.
+
+---
+
+### Clock Skew and Logical Clocks
+
+#### Theory
+
+Every machine has a physical clock that drifts over time. Even with NTP (Network Time Protocol) synchronization, clocks across machines can differ by tens of milliseconds to seconds. This is called **clock skew**.
+
+Clock skew matters when you try to use wall-clock timestamps to order events across distributed nodes. If Node A records an event at 10:00:00.100 and Node B records a later event at 10:00:00.050, the timestamps suggest B's event happened first — even though it did not. Relying on wall clocks for ordering in a distributed system is unreliable.
+
+**Logical clocks** solve the ordering problem by tracking causality rather than wall time. The key insight: if event A caused event B (e.g., A sent a message that B received), then A must have happened before B. This is the **happens-before** relation (Lamport, 1978).
+
+**Lamport Timestamps:**
+- Each process maintains a counter, initialized to 0.
+- On every event (local or send): increment the counter.
+- On receiving a message: set the counter to `max(local, received) + 1`.
+- If event A happens-before event B, then `timestamp(A) < timestamp(B)`.
+- However, `timestamp(A) < timestamp(B)` does NOT imply A happens-before B — there may be concurrent events with ordered timestamps.
+
+**Vector Clocks:**
+- Each process maintains a vector of counters, one per process.
+- On a local event: increment own counter.
+- On sending: attach the full vector.
+- On receiving: take the element-wise max, then increment own counter.
+- Vector clocks can detect **causality** and **concurrency**: if neither `V(A) <= V(B)` nor `V(B) <= V(A)` holds, the events are concurrent (neither caused the other).
+
+```
+3-process system: processes P1, P2, P3
+Vector: [P1, P2, P3]
+
+P1 sends msg to P2:  P1 = [1,0,0]
+P2 receives:         P2 = [1,1,0]  (max([1,0,0],[0,1,0]) + increment P2)
+P2 sends msg to P3:  P2 = [1,2,0]
+P3 receives:         P3 = [1,2,1]  (max([1,2,0],[0,0,1]) + increment P3)
+P1 local event:      P1 = [2,0,0]
+
+P1's second event [2,0,0] and P3's event [1,2,1] are concurrent:
+  [2,0,0] is not <= [1,2,1] (P1 counter: 2 > 1)
+  [1,2,1] is not <= [2,0,0] (P2 counter: 2 > 0)
+```
+
+**Hybrid Logical Clocks (HLC)** combine physical time with logical counters, preserving wall-clock readability while guaranteeing causal ordering — used in systems like CockroachDB.
+
+> **Exercises**
+>
+> 1. (Beginner) What is clock skew, and why does it make wall-clock timestamps unreliable for ordering events in a distributed system?
+> 2. (Beginner) What does a Lamport timestamp guarantee? What does it NOT guarantee?
+> 3. (Intermediate) Two processes, P1 and P2, exchange messages. Trace the Lamport timestamps for the following sequence: P1 sends to P2 (P1 counter = 1); P2 processes locally (counter = 2); P2 sends to P1 (counter = 3); P1 receives. What is P1's counter after receiving?
+> 4. (Interview) A distributed key-value store uses last-write-wins (LWW) conflict resolution based on wall-clock timestamps. A customer reports that their profile update was silently overwritten by an older update. Explain the root cause and propose a solution.
+>    - *Hint: think about clock skew and what ordering mechanism would preserve causality.*
+
+> **Answers**
+>
+> 1. Clock skew is the difference in wall-clock time between two machines. Even with NTP synchronization, clocks can differ by milliseconds to seconds and drift between sync intervals. If two events on different machines are timestamped using their local wall clocks, the timestamps may not reflect the actual order of events. An event that genuinely happened later may have a smaller timestamp if it occurred on a machine whose clock is behind, making wall clocks unsuitable for reliable event ordering in distributed systems.
+> 2. A Lamport timestamp guarantees: if event A causally precedes event B (A happened-before B), then `timestamp(A) < timestamp(B)`. It does NOT guarantee the converse: a smaller timestamp does not imply causal precedence. Two concurrent events (neither caused the other) will have Lamport timestamps in some order, but that order is arbitrary — it does not reflect causality or wall-clock time.
+> 3. Initial: P1=0, P2=0. P1 sends to P2: P1 increments → P1=1. Message arrives at P2 with timestamp 1; P2 sets counter to max(0,1)+1=2. P2 local event: P2 increments → P2=3 (wait — let me re-trace). Actually: P2 receives (counter becomes max(P2_current, received)+1 = max(0,1)+1=2), then a local event increments to 3, then P2 sends (increments to... actually, the send IS the local event that increments). Let me re-trace cleanly: P2 receives message with P1's timestamp 1: P2 = max(0,1)+1 = 2. P2 local event: P2 = 3. P2 sends message to P1 with timestamp 3; P2 = 3. P1 receives message with timestamp 3: P1 = max(1,3)+1 = 4. P1's counter after receiving is 4.
+> 4. Root cause: last-write-wins with wall-clock timestamps is vulnerable to clock skew. The older update originated on a node whose clock was ahead (or the newer update came from a node whose clock was behind), so the older update had a larger timestamp and "won" even though it was causally older. The newer update was silently discarded. Solution: replace wall-clock LWW with **vector clocks** or **causal tokens**. Each write attaches a vector clock. On conflict, the system detects whether one update causally supersedes the other (one vector dominates the other), in which case the causally later update wins. If the updates are concurrent (neither dominates), surface the conflict to the application or user for explicit resolution rather than silently discarding data. Systems like Amazon Dynamo use this approach with application-level conflict resolution.
+
+---
+
+### Distributed Transactions
+
+#### Theory
+
+A **transaction** ensures that a set of operations either all succeed or all fail — atomically. In a single-database system, the database's transaction mechanism handles this. In a microservices system, a business operation may span multiple services and multiple databases. No single database transaction can span them.
+
+Consider: placing an order requires (1) decrementing inventory, (2) charging the customer, (3) creating the order record. Each step is owned by a different service with its own database. How do you ensure all three happen, or none of them do?
+
+**Two approaches:**
+
+**1. Sagas** — a sequence of local transactions, each updating one service's database. If a step fails, previously completed steps are undone by **compensating transactions** (undo operations that reverse the effect).
+
+- **Choreography-based saga**: each service listens for events and publishes its own events. No central coordinator. Simple for small sagas; hard to reason about and debug as sagas grow.
+- **Orchestration-based saga**: a central orchestrator (a dedicated service or workflow engine) directs each step by sending commands and waiting for responses. Easier to trace and debug; the orchestrator is a new component to maintain.
+
+```
+Orchestration-based Order Saga:
+
+Saga Orchestrator
+  |
+  +--> [1] Reserve Inventory   --> success
+  |
+  +--> [2] Charge Payment      --> FAILURE
+  |
+  +--> [compensate] Release Inventory reservation
+  |
+  +--> Return "Order Failed" to caller
+```
+
+**2. Two-Phase Commit (2PC)** — a protocol that uses a coordinator to achieve distributed atomicity. Covered in the next topic.
+
+**Sagas vs 2PC:**
+
+| Aspect | Saga | 2PC |
+|---|---|---|
+| Atomicity | Eventual (compensating) | Strong (protocol-level) |
+| Locking | No distributed locks | Holds locks across phases |
+| Failure recovery | Compensating transactions | Coordinator crash → blocked |
+| Coupling | Loose (events/commands) | Tight (shared protocol) |
+| Use case | Long-running workflows | Short, fast transactions |
+
+#### Example
+
+Orchestration-based saga in pseudocode:
+
+```python
+class OrderSagaOrchestrator:
+    def execute(self, order: Order) -> Result:
+
+        # Step 1: Reserve inventory
+        reservation = inventory_service.reserve(order.items)
+        if not reservation.ok:
+            return Result.failure("Insufficient inventory")
+
+        # Step 2: Charge payment
+        charge = payment_service.charge(order.customer_id, order.total)
+        if not charge.ok:
+            # Compensate: release the reservation made in step 1
+            inventory_service.release(reservation.id)
+            return Result.failure("Payment failed")
+
+        # Step 3: Create order record
+        order_record = order_service.create(order, reservation.id, charge.id)
+        if not order_record.ok:
+            # Compensate both prior steps
+            payment_service.refund(charge.id)
+            inventory_service.release(reservation.id)
+            return Result.failure("Order creation failed")
+
+        return Result.success(order_record.order_id)
+```
+
+> **Exercises**
+>
+> 1. (Beginner) Why can't you use a standard database transaction (e.g., `BEGIN; ...; COMMIT;`) to coordinate changes across multiple microservices?
+> 2. (Beginner) What is a compensating transaction? Give an example for the step "charge customer's credit card."
+> 3. (Intermediate) In a choreography-based saga, the Inventory service listens for `OrderPlaced` events and publishes `InventoryReserved`. The Payment service listens for `InventoryReserved` and publishes `PaymentCharged`. What happens if the Payment service fails to charge and publishes `PaymentFailed`? Who listens, and what do they do?
+> 4. (Interview) A saga's compensating transaction also fails. For example, after a failed payment, the orchestrator attempts to release the inventory reservation, but the Inventory service is down. What strategies exist for handling this?
+>    - *Hint: think about durable state, retry with backoff, and idempotency of compensating actions.*
+
+> **Answers**
+>
+> 1. A standard database transaction operates within a single database connection and uses the database engine's internal locking and write-ahead log. Multiple microservices own separate databases — different processes, different machines, potentially different database technologies. There is no shared transaction manager that can span them. Calling `BEGIN` on one database does not enlist another database in the same transaction; changes to each database are independent.
+> 2. A compensating transaction is an operation that logically reverses the effect of a previously completed step in a saga. It is not a rollback — the original transaction has already committed. It is a new, forward-moving operation that undoes the business effect. Example for "charge customer's credit card": the compensating transaction is "issue a refund of the same amount to the same payment method." The charge is not rolled back at the database level; a new refund record is created and the customer's payment method is credited.
+> 3. In a choreography saga: the Inventory service listens for `PaymentFailed`. On receiving it, the Inventory service issues a compensating action — it releases the reservation it created earlier and publishes `InventoryReleased`. Optionally, a Notifications service listens for `PaymentFailed` to inform the customer. The challenge in choreography: each service must know which events to listen for and what compensating action to take — this logic is distributed across services with no central view of the saga's state, making it hard to audit or debug.
+> 4. Strategies for a failing compensating transaction: (1) **Retry with exponential backoff** — the orchestrator persists the pending compensation to durable storage (a database) and retries with increasing delays. Since the compensating action must be idempotent (releasing the same reservation ID twice should be safe), retries are safe. (2) **Dead-letter queue** — if retries exceed a threshold, move the compensation request to a dead-letter queue for manual intervention or an on-call alert. (3) **Saga state machine persistence** — the saga's current state (which steps completed, which compensations are pending) must be persisted so that if the orchestrator itself crashes and restarts, it can resume from the last known state rather than starting over. (4) **Circuit breaker on compensations** — if the Inventory service is down, avoid hammering it; use a circuit breaker and resume compensations when it recovers. The key invariant: the saga must eventually complete (succeed or fully compensate). Leaving a saga in a partial state indefinitely is a data integrity failure.
+
+---
+
+### Two-Phase Commit (2PC)
+
+#### Theory
+
+**Two-Phase Commit** is a distributed algorithm that provides atomic commitment across multiple participants (databases or services). Either all participants commit their transaction, or all abort.
+
+**The protocol:**
+
+**Phase 1 — Prepare (Voting):**
+1. The **coordinator** sends a `PREPARE` message to all **participants**.
+2. Each participant executes the transaction up to the commit point, writes a prepare record to its write-ahead log (ensuring it can commit or abort later), and responds with `VOTE_COMMIT` or `VOTE_ABORT`.
+3. The participant is now "in doubt" — it has agreed to commit if the coordinator says so, but has not committed yet. It holds its locks.
+
+**Phase 2 — Commit or Abort:**
+1. If the coordinator receives `VOTE_COMMIT` from all participants, it writes a commit record to its own log and sends `COMMIT` to all participants. Each participant commits, releases locks, and acknowledges.
+2. If any participant voted `ABORT` (or timed out), the coordinator sends `ABORT` to all participants. Each participant rolls back and releases locks.
+
+```
+Coordinator          Participant A       Participant B
+    |                     |                   |
+    |---PREPARE---------->|                   |
+    |---PREPARE------------------->|          |
+    |<--VOTE_COMMIT-------|                   |
+    |<--VOTE_COMMIT--------------------|      |
+    |                     |                   |
+    |---COMMIT----------->|                   |
+    |---COMMIT-----------------------|        |
+    |<--ACK---------------|                   |
+    |<--ACK--------------------------|        |
+```
+
+**Failures and blocking:**
+
+2PC has a critical flaw: if the coordinator crashes after Phase 1 but before sending the Phase 2 decision, participants are left "in doubt" — they have voted COMMIT and hold their locks, but cannot proceed without the coordinator's decision. They are **blocked** until the coordinator recovers. This is the **blocking problem** of 2PC.
+
+**Three-Phase Commit (3PC)** adds a pre-commit phase to reduce (but not eliminate) blocking, at the cost of more network round trips. In practice, most systems accept 2PC's blocking window as tolerable (coordinator recovery is fast) or use alternative designs (Sagas, Paxos-based consensus) instead.
+
+**When 2PC is appropriate:** short-lived transactions where participants are systems you control (e.g., coordinating two databases in the same organization with reliable network), and where the blocking window is acceptable. Not appropriate for long-running workflows or across organizational boundaries.
+
+#### Example
+
+2PC in the context of a relational database XA transaction (Java):
+
+```java
+import javax.sql.XADataSource;
+import javax.transaction.xa.XAResource;
+import javax.transaction.xa.Xid;
+
+// XA is the standard interface for 2PC with relational databases
+// The application server (coordinator) manages the protocol
+
+XADataSource inventoryDS = getInventoryDataSource();  // e.g., MySQL XA
+XADataSource paymentsDS  = getPaymentsDataSource();   // e.g., PostgreSQL XA
+
+XAResource xaInventory = inventoryDS.getXAConnection().getXAResource();
+XAResource xaPayments  = paymentsDS.getXAConnection().getXAResource();
+
+Xid xid = createXid();  // unique transaction identifier
+
+try {
+    // Phase 0: start the XA transaction on each resource
+    xaInventory.start(xid, XAResource.TMNOFLAGS);
+    // ... execute inventory SQL ...
+    xaInventory.end(xid, XAResource.TMSUCCESS);
+
+    xaPayments.start(xid, XAResource.TMNOFLAGS);
+    // ... execute payment SQL ...
+    xaPayments.end(xid, XAResource.TMSUCCESS);
+
+    // Phase 1: PREPARE — each resource prepares and votes
+    int inventoryVote = xaInventory.prepare(xid);  // returns XA_OK or XA_RDONLY
+    int paymentsVote  = xaPayments.prepare(xid);
+
+    // Phase 2: COMMIT — only if both voted OK
+    if (inventoryVote == XAResource.XA_OK && paymentsVote == XAResource.XA_OK) {
+        xaInventory.commit(xid, false);  // false = not one-phase
+        xaPayments.commit(xid, false);
+    } else {
+        xaInventory.rollback(xid);
+        xaPayments.rollback(xid);
+    }
+} catch (Exception e) {
+    xaInventory.rollback(xid);
+    xaPayments.rollback(xid);
+    throw e;
+}
+```
+
+> **Exercises**
+>
+> 1. (Beginner) Describe the two phases of 2PC and what happens in each.
+> 2. (Beginner) What is the "blocking problem" in 2PC? Under what condition does it occur?
+> 3. (Intermediate) A 2PC coordinator crashes after all participants have voted COMMIT but before sending the COMMIT message. The coordinator recovers 30 seconds later. What state are the participants in during those 30 seconds? What must the coordinator do on recovery?
+> 4. (Interview) Why do most modern microservices architectures prefer Sagas over 2PC for distributed transactions? What is the primary thing 2PC provides that Sagas do not?
+>    - *Hint: think about the blocking problem, lock duration, and what "atomicity" means in each approach.*
+
+> **Answers**
+>
+> 1. Phase 1 (Prepare/Voting): the coordinator sends a PREPARE message to all participants. Each participant executes the transaction up to the commit point, writes a prepare record to durable storage (ensuring it can recover its decision after a crash), holds its locks, and responds VOTE_COMMIT or VOTE_ABORT. Phase 2 (Commit/Abort): if all participants voted COMMIT, the coordinator records the commit decision durably and sends COMMIT to all participants; each commits and releases locks. If any participant voted ABORT (or timed out), the coordinator sends ABORT; all participants roll back and release locks.
+> 2. The blocking problem occurs when the coordinator crashes after all participants have voted COMMIT (Phase 1 complete) but before it has sent the Phase 2 COMMIT or ABORT decision. The participants are "in doubt": they have agreed to commit and are holding their locks, but they cannot commit or abort without the coordinator's decision. They are blocked — unable to proceed or release their locks — until the coordinator recovers and reissues the Phase 2 message.
+> 3. During the 30 seconds: participants are in the "in-doubt" state. They are holding their row locks (or table locks), preventing any other transaction from accessing those rows. This is a distributed deadlock risk — other requests that need the same data will be blocked or time out. On recovery: the coordinator reads its write-ahead log. If it finds a record that all participants voted COMMIT, it reissues the COMMIT message to all participants. If it finds no record (crashed before deciding), it issues ABORT to all participants. Participants that already committed ignore an ABORT (idempotent). The key: the coordinator's decision log must be durable and persisted before Phase 2 begins.
+> 4. Modern microservices prefer Sagas over 2PC for several reasons: (1) **No blocking** — sagas do not hold locks across services. Each local transaction commits immediately and releases its locks. 2PC holds locks across all participants for the duration of the protocol, which can be seconds if the coordinator is slow or fails. (2) **No coordinator single point of failure** — the blocking problem disappears. (3) **Asynchronous and long-running workflows** — sagas work well for workflows that take seconds, minutes, or hours. 2PC is only suitable for fast, short-lived transactions. (4) **Cross-service/cross-technology support** — 2PC requires XA support in all participating databases; many modern datastores (NoSQL, cloud services) do not support XA. The primary thing 2PC provides that Sagas do not: **true atomicity** — during 2PC, the state of the system is either "all committed" or "all aborted" with no intermediate visible state. In a Saga, intermediate states are visible and committed to each service's database. If a compensation fails, the system is in a partially compensated state with no automatic resolution. Sagas provide eventual consistency, not atomic consistency.
+
+---
+
+## 7.3 Service Mesh and Observability
+
+A distributed system composed of dozens of services generates enormous operational complexity. Network policies, retries, tracing, logging, and monitoring must be applied consistently across all services. This section covers the service mesh — a dedicated infrastructure layer for managing service-to-service communication — and the observability tools required to understand what a distributed system is doing at runtime.
+
+---
+
+### Service Mesh Concepts (Istio, Envoy)
+
+#### Theory
+
+A **service mesh** is an infrastructure layer that handles service-to-service communication transparently, without requiring changes to application code. It is implemented using the **sidecar proxy pattern**: a lightweight proxy (typically Envoy) is injected alongside each service instance. All inbound and outbound traffic passes through the proxy.
+
+The mesh has two planes:
+
+- **Data plane**: the network of sidecar proxies that intercept and route traffic. Envoy is the dominant implementation.
+- **Control plane**: the management layer that configures proxies with routing rules, security policies, and telemetry collection. Istio is the dominant control plane for Kubernetes environments.
+
+**Capabilities provided by the service mesh (without code changes):**
+
+| Capability | Description |
+|---|---|
+| Mutual TLS (mTLS) | Automatic encryption and authentication for all service-to-service traffic |
+| Load balancing | Advanced algorithms (round-robin, least-connections, locality-aware) |
+| Circuit breaking | Automatically stop routing to unhealthy instances |
+| Retries and timeouts | Configurable per route, not hardcoded in application code |
+| Traffic shifting | Route a percentage of traffic to a canary version (e.g., 90% v1, 10% v2) |
+| Distributed tracing | Inject and propagate trace headers; export spans to Jaeger or Zipkin |
+| Access control | Enforce which services are allowed to call which |
+
+**Envoy** is a high-performance proxy written in C++. It operates at Layer 7 (HTTP, gRPC) and Layer 4 (TCP). It handles connection pooling, request routing, health checking, and telemetry emission.
+
+**Istio** runs the control plane (Istiod in modern versions). It pushes configuration to Envoy proxies via the xDS API (a set of gRPC-based discovery services). When you apply an Istio `VirtualService` or `DestinationRule` manifest, Istiod translates it into Envoy configuration and pushes it to all relevant proxies.
+
+```
++-------------------+         +-------------------+
+|  Service A Pod    |         |  Service B Pod    |
+|                   |         |                   |
+|  +-------------+  |         |  +-------------+  |
+|  | App Process |  |         |  | App Process |  |
+|  +------+------+  |         |  +------+------+  |
+|         |         |         |         |         |
+|  +------+------+  |  mTLS   |  +------+------+  |
+|  | Envoy Proxy | +--------->|  | Envoy Proxy |  |
+|  +-------------+  |         |  +-------------+  |
++-------------------+         +-------------------+
+         ^                             ^
+         |   xDS config push           |
+         +------------ Istiod ---------+
+                    (Control Plane)
+```
+
+#### Example
+
+An Istio `VirtualService` that shifts 10% of traffic to a canary version and adds a timeout:
+
+```yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: catalog-service
+spec:
+  hosts:
+    - catalog-service                # applies to traffic destined for catalog-service
+  http:
+    - route:
+        - destination:
+            host: catalog-service
+            subset: stable           # 90% to the stable version
+          weight: 90
+        - destination:
+            host: catalog-service
+            subset: canary           # 10% to the new canary version
+          weight: 10
+      timeout: 2s                    # enforced by Envoy — no code change needed
+      retries:
+        attempts: 2                  # retry up to 2 times on 5xx responses
+        perTryTimeout: 1s
+```
+
+```yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: catalog-service
+spec:
+  host: catalog-service
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 100  # circuit breaker: queue limit
+    outlierDetection:
+      consecutiveErrors: 3           # eject a host after 3 consecutive 5xx errors
+      interval: 10s
+      baseEjectionTime: 30s          # keep ejected host out for at least 30s
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+    - name: canary
+      labels:
+        version: canary
+```
+
+> **Exercises**
+>
+> 1. (Beginner) What is the sidecar proxy pattern? Why does it allow service mesh features to be added without modifying application code?
+> 2. (Beginner) What are the data plane and control plane in a service mesh? Give an example of each.
+> 3. (Intermediate) A development team wants to roll out a new version of their service to 5% of production traffic while keeping 95% on the stable version. How would you configure this with Istio? What metric would you monitor to decide whether to proceed or roll back?
+> 4. (Interview) What are the operational costs of adopting Istio in a Kubernetes cluster? Describe at least three non-trivial challenges.
+>    - *Hint: think about resource overhead, debugging complexity, upgrade management, and mTLS certificate rotation.*
+
+> **Answers**
+>
+> 1. The sidecar proxy pattern deploys a proxy container (Envoy) alongside each application container within the same pod. The proxy intercepts all network traffic flowing in and out of the application using iptables rules injected at pod startup. Because the interception is at the network level and transparent to the application, features like mTLS, retries, circuit breaking, and tracing can be added and configured centrally without any change to the application's source code or its dependencies.
+> 2. Data plane: the network of Envoy sidecar proxies deployed alongside each service instance. These proxies do the actual work — routing traffic, enforcing policies, encrypting connections, and emitting telemetry. Example: the Envoy proxy next to the Order service that encrypts outbound calls to the Payment service via mTLS. Control plane: the management component that configures all the proxies. Example: Istiod, which reads Istio custom resources (VirtualService, DestinationRule) from Kubernetes, computes the corresponding Envoy configuration, and pushes it to all sidecar proxies via the xDS API.
+> 3. Configure an Istio `DestinationRule` with two subsets (stable and canary, differentiated by a version label on the pods) and a `VirtualService` with weighted routing: 95 to stable, 5 to canary. Deploy a small number of canary pods with the new version label. Metric to monitor: the canary subset's error rate (5xx response rate) and p99 latency, compared to the stable subset. Watch for: elevated error rate on canary (rollback if above threshold, e.g., >1%), increased latency on canary, or downstream service errors caused by behavioral changes. Use Grafana dashboards with Istio's built-in Prometheus metrics (`istio_requests_total`, `istio_request_duration_milliseconds`). Roll back by setting canary weight to 0 in the VirtualService.
+> 4. Three non-trivial challenges: (1) **Resource overhead** — every pod gets an Envoy sidecar that consumes memory (~50–150 MB per pod) and CPU. In a cluster with thousands of pods, this is significant. The control plane (Istiod) also requires resources. (2) **Debugging complexity** — when a request fails, determining whether the failure is in the application or in the Envoy proxy requires understanding Envoy's configuration, access logs, and xDS state. `istioctl proxy-config` and `istioctl analyze` help but add a steep learning curve. mTLS misconfigurations produce opaque `connection refused` errors that are hard to trace without mesh-specific tooling. (3) **Upgrade management** — Istio upgrades require careful management of the control plane, data plane (sidecar injection), and CRD versions. A mismatch between Istiod version and sidecar version can cause subtle failures. Canary upgrades of Istio itself (using revision-based deployments) add operational complexity. Certificate rotation for mTLS (managed by Istio's CA) must be monitored to prevent expired certificates from silently breaking service-to-service communication.
+
+---
+
+### Distributed Tracing
+
+#### Theory
+
+In a monolith, debugging a slow request is straightforward: look at the application logs and profiler output for that process. In a microservices system, a single user request may traverse ten services. If the request is slow or fails, which service is responsible?
+
+**Distributed tracing** answers this question. It tracks a request as it propagates through multiple services, capturing the time spent in each service and the relationships between operations.
+
+**Core concepts:**
+
+- **Trace**: the complete journey of a single request through the system, from entry point to final response. Identified by a unique `trace_id`.
+- **Span**: a named, timed operation within a trace. A span represents a unit of work: an HTTP handler, a database query, an external API call. Each span records its start time, duration, service name, and any relevant metadata (HTTP status, SQL query, error message).
+- **Parent-child relationships**: when Service A calls Service B, A's span is the parent and B's span is the child. This forms a tree (or DAG) that represents the causal structure of the request.
+- **Context propagation**: the `trace_id` and `span_id` are propagated across service boundaries via HTTP headers (W3C Trace Context: `traceparent`, `tracestate`; or Zipkin's `X-B3-*` headers). Each service reads the incoming headers, creates a child span, and passes the headers to downstream calls.
+
+```
+Trace (trace_id: abc123)
+
+[API Gateway        ]-[         200ms total        ]
+  [Order Service    ]--[    150ms                  ]
+    [Inventory Svc  ]----[30ms]
+    [Payment Svc    ]----------[90ms               ]
+      [Stripe API   ]-----------[85ms              ]
+    [DB: INSERT order]--[15ms]
+```
+
+The waterfall view reveals that the Payment service (and its call to the Stripe API) is the bottleneck.
+
+**OpenTelemetry** is the vendor-neutral standard for distributed tracing, metrics, and logs. It provides SDKs for all major languages, a collector agent, and exporters for backends like Jaeger, Zipkin, Tempo (Grafana), and cloud-native solutions (AWS X-Ray, GCP Cloud Trace).
+
+#### Example
+
+Instrumenting a Python Flask service with OpenTelemetry:
+
+```python
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+
+# Configure the tracer to export spans to an OpenTelemetry Collector
+provider = TracerProvider()
+provider.add_span_processor(
+    BatchSpanProcessor(OTLPSpanExporter(endpoint="http://otel-collector:4317"))
+)
+trace.set_tracer_provider(provider)
+
+# Auto-instrument Flask (HTTP server spans) and requests (outbound HTTP spans)
+FlaskInstrumentor().instrument()
+RequestsInstrumentor().instrument()  # propagates trace headers on outbound calls
+
+tracer = trace.get_tracer(__name__)
+
+from flask import Flask, request
+import requests as http_client
+
+app = Flask(__name__)
+
+@app.route("/orders/<order_id>")
+def get_order(order_id):
+    # A child span is created automatically for this handler by FlaskInstrumentor.
+    # We can also create manual spans for important sub-operations.
+    with tracer.start_as_current_span("fetch-inventory-status") as span:
+        span.set_attribute("order.id", order_id)  # custom attribute on the span
+        resp = http_client.get(
+            f"http://inventory-service/reservations/{order_id}",
+            timeout=2.0
+        )
+        # RequestsInstrumentor automatically injects traceparent headers on this call,
+        # so inventory-service receives them and creates a child span in the same trace.
+        span.set_attribute("inventory.status_code", resp.status_code)
+    return resp.json()
+```
+
+> **Exercises**
+>
+> 1. (Beginner) What is a distributed trace? What is the difference between a trace and a span?
+> 2. (Beginner) What is context propagation, and why is it necessary for distributed tracing to work?
+> 3. (Intermediate) A distributed trace shows the following: the API gateway span takes 500ms. The Order service child span takes 450ms. The Order service's database query child span takes 10ms. There are no other child spans. Where is the missing time, and what would you do to find it?
+> 4. (Interview) Your team wants to trace 100% of requests, but the volume is 50,000 requests per second. Describe the trade-offs of head-based sampling vs. tail-based sampling, and which you would recommend.
+>    - *Hint: think about what each approach preserves, what it loses, and the infrastructure implications of each.*
+
+> **Answers**
+>
+> 1. A distributed trace is the complete record of a single request's journey through multiple services — from the initial entry point (e.g., an API gateway) through all downstream service calls, to the final response. It is identified by a unique `trace_id` shared across all services that handled the request. A span is a single, named unit of work within a trace: for example, one HTTP handler execution, one database query, or one call to an external API. A trace is composed of many spans arranged in a parent-child tree. Each span records its own start time, duration, service name, and metadata.
+> 2. Context propagation is the mechanism by which the `trace_id` and current `span_id` are passed from one service to another as a request crosses service boundaries. It is typically done via HTTP headers (e.g., `traceparent: 00-abc123-spanid-01`). Without context propagation, each service would generate an independent span with a new `trace_id`, and the spans from different services could not be linked into a coherent trace. The waterfall view of a distributed trace only works because every service that handled the request attached its span to the same `trace_id`.
+> 3. The API gateway span takes 500ms; the Order service span takes 450ms; within the Order service, only 10ms is attributed to the database query. That leaves ~440ms unaccounted for within the Order service span. The missing time is work the Order service is doing that has not been instrumented — likely outbound calls to other services, or non-trivial in-process computation. To find it: (1) Add manual spans around any outbound HTTP calls or queue publishes that the Order service makes. (2) Enable auto-instrumentation for the HTTP client library used by the Order service (e.g., `RequestsInstrumentor` for Python) to automatically create spans for outbound calls. (3) Add a span around any significant in-memory computation (e.g., business logic, data transformation) to see if time is spent there.
+> 4. **Head-based sampling**: the decision to sample (record) or drop a trace is made at the start of the trace, before any spans are collected. Simple to implement (the gateway flips a coin), low overhead, but it may drop exactly the rare, slow, or erroneous requests you most want to inspect — those requests are not more likely to be sampled than normal ones. **Tail-based sampling**: the decision to sample is made after the trace is complete, based on the full trace content. An OpenTelemetry Collector buffers all spans until the trace is complete, then applies rules: "always keep traces with errors or p99+ latency." This preserves exactly the interesting traces. The cost: the collector must buffer potentially millions of incomplete spans in memory, requiring significant infrastructure and careful memory management. **Recommendation**: implement a hybrid approach — head-sample at 1% for baseline coverage (statistical baselines, latency distributions), and use tail-based sampling to always keep 100% of error traces and slow traces (above p95 threshold). This preserves the traces you care most about without storing 100% of 50,000 RPS.
+
+---
+
+### Centralized Logging
+
+#### Theory
+
+Each service in a microservices system writes logs. In a distributed environment with dozens of services and hundreds of instances, logs are scattered across containers and nodes. Finding the logs for a specific failed request requires knowing which instance handled it — and that information is often gone after the container is restarted.
+
+**Centralized logging** aggregates all logs from all services into a single, queryable system. The standard architecture is:
+
+1. Services write structured logs to stdout (or a log file).
+2. A **log collector** (Fluentd, Fluent Bit, Logstash, Vector) runs on each node, tails container logs, and forwards them to a central store.
+3. A **log aggregation backend** stores and indexes logs (Elasticsearch, OpenSearch, Loki, Splunk, CloudWatch Logs).
+4. A **query and visualization frontend** (Kibana, Grafana, Splunk UI) allows engineers to search and analyze logs.
+
+**Structured logging** is the practice of emitting logs as machine-parseable JSON rather than plain text strings. Structured logs are far easier to filter and aggregate in a central store.
+
+```
+# Unstructured log — hard to query programmatically
+ERROR 2024-01-15 14:23:01 Order 4521 failed: payment declined for user 987
+
+# Structured log — each field is individually queryable
+{
+  "level": "ERROR",
+  "timestamp": "2024-01-15T14:23:01.234Z",
+  "service": "order-service",
+  "trace_id": "abc123",
+  "event": "order_failed",
+  "order_id": 4521,
+  "user_id": 987,
+  "reason": "payment_declined",
+  "duration_ms": 342
+}
+```
+
+**Correlation**: to trace a request across multiple services' logs, include the `trace_id` (from distributed tracing) in every log line. In Kibana or Grafana, filtering by `trace_id = abc123` surfaces all log lines from all services for that specific request.
+
+**Log levels**: emit the right level of detail at each severity:
+- `DEBUG`: detailed diagnostic data — disabled in production, enabled on demand.
+- `INFO`: normal operational events (request received, order placed).
+- `WARN`: recoverable abnormal conditions (retry succeeded after 1 failure).
+- `ERROR`: failures that require attention but do not crash the service.
+- `FATAL`/`CRITICAL`: the process cannot continue.
+
+#### Example
+
+Structured logging in Python with `structlog` and injecting trace context:
+
+```python
+import structlog
+from opentelemetry import trace as otel_trace
+
+# Configure structlog to output JSON
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso"),     # adds "timestamp" field
+        structlog.processors.add_log_level,              # adds "level" field
+        structlog.processors.JSONRenderer()              # outputs as JSON
+    ]
+)
+
+log = structlog.get_logger()
+
+def get_order_handler(order_id: str):
+    # Inject the active trace context so logs and traces can be correlated
+    current_span = otel_trace.get_current_span()
+    ctx = current_span.get_span_context()
+    trace_id = format(ctx.trace_id, '032x') if ctx.is_valid else "none"
+
+    logger = log.bind(
+        service="order-service",
+        trace_id=trace_id,       # correlates this log line with distributed traces
+        order_id=order_id
+    )
+
+    try:
+        order = db.get_order(order_id)
+        logger.info("order_fetched", status=order.status)
+        return order
+    except OrderNotFoundError:
+        logger.warning("order_not_found")  # not an error — expected condition
+        raise
+    except Exception as e:
+        logger.error("order_fetch_failed", error=str(e))
+        raise
+```
+
+Output (one line per event, formatted here for readability):
+```json
+{"timestamp": "2024-01-15T14:23:01.234Z", "level": "info",
+ "service": "order-service", "trace_id": "abc123def456",
+ "order_id": "4521", "event": "order_fetched", "status": "SHIPPED"}
+```
+
+> **Exercises**
+>
+> 1. (Beginner) What is the difference between structured and unstructured logging? Why is structured logging preferred in a microservices system?
+> 2. (Beginner) Why should services write logs to stdout rather than to a file on disk?
+> 3. (Intermediate) A user reports that their order placed at 14:23 UTC failed. You have centralized logging with trace IDs. Describe the step-by-step process you would follow to diagnose the failure.
+> 4. (Interview) Your logging system ingests 5 TB of logs per day. Storage costs are becoming significant. Describe a tiered strategy for reducing costs without losing the ability to investigate incidents.
+>    - *Hint: think about log levels, retention tiers, sampling, and the difference between operational logs and audit logs.*
+
+> **Answers**
+>
+> 1. Unstructured logging emits plain text (e.g., `"ERROR Order 4521 failed: payment declined"`). Parsing it programmatically requires fragile regex patterns; adding or renaming a field breaks existing queries. Structured logging emits machine-parseable formats (typically JSON), where each piece of information is a named field (`"order_id": 4521`, `"reason": "payment_declined"`). In a microservices system with dozens of services, structured logging is essential: you can filter, aggregate, and alert on specific fields (all `ERROR` events where `reason = "payment_declined"`) without brittle text parsing. It also makes it easy to add new fields without breaking existing queries.
+> 2. Containers are ephemeral — when a container restarts, its filesystem (including log files) is discarded. Writing to a file on disk means logs are lost on container restart. Writing to stdout allows the container runtime (Docker, Kubernetes) to capture log output and forward it to a centralized log collector (Fluent Bit, etc.) before the container disappears. It also means the application does not need to manage log rotation, file permissions, or disk space — the infrastructure handles log forwarding.
+> 3. Step-by-step diagnosis: (1) Filter the centralized log store for logs from the order-service around 14:23 UTC (±5 minutes) with log level ERROR or WARNING and any field matching the user's account or an order placed near that time. (2) Identify the `trace_id` from the matched log line. (3) Filter all logs across all services by that `trace_id` to see every log line from every service that handled that specific request, in chronological order. (4) Read the sequence: where did the first error occur? Which service logged it? (5) Cross-reference with distributed traces using the same `trace_id` to see which span had elevated latency or an error status. (6) If the root cause service has no ERROR log, check for WARNING or abnormal status codes in the structured log fields.
+> 4. Tiered cost reduction strategy: (1) **Drop DEBUG logs in production** — they account for the majority of volume in many systems. Enable DEBUG only dynamically for specific services during incidents using a feature flag or log-level API endpoint. (2) **Sampling for high-volume INFO logs** — for extremely high-throughput, low-value events (e.g., "health check received"), sample at 1% without losing signal on errors (errors are always kept). (3) **Hot/warm/cold retention tiers** — keep the last 7 days in a fast, expensive store (Elasticsearch, OpenSearch) for active incident investigation. Archive logs older than 7 days to object storage (S3, GCS) at a fraction of the cost (Parquet format + Athena or BigQuery for ad hoc queries). Delete logs older than 90 days (or whatever the compliance requirement is). (4) **Separate audit logs** — compliance-required audit events (who accessed what data, payment events) are a small fraction of total volume but must be retained long-term (1–7 years). Store them in a dedicated, compressed, immutable store (S3 with Object Lock) separate from operational logs.
+
+---
+
+### Metrics and Alerting
+
+#### Theory
+
+Logs tell you what happened in detail. **Metrics** tell you what is happening at aggregate level. A metric is a numeric measurement recorded over time — for example, the number of HTTP requests per second, the 99th percentile response latency, or the count of active database connections.
+
+Metrics are the foundation of alerting. You observe trends over time and trigger alerts when thresholds are crossed.
+
+**The four golden signals** (from Google's SRE book) are the most important metrics to monitor for any service:
+
+| Signal | What it measures | Example metric |
+|---|---|---|
+| **Latency** | How long requests take | p50, p95, p99 response time |
+| **Traffic** | How much demand the system is serving | Requests per second |
+| **Errors** | Rate of failing requests | 5xx errors / total requests |
+| **Saturation** | How "full" the service is | CPU %, memory %, queue depth |
+
+**The RED Method** (Requests, Errors, Duration) is a simplified version focused on services:
+- **R**ate: requests per second
+- **E**rror rate: proportion of failed requests
+- **D**uration: distribution of request latencies
+
+**Prometheus** is the dominant open-source metrics system for cloud-native environments. Services expose a `/metrics` endpoint with metrics in Prometheus exposition format. Prometheus scrapes this endpoint on a configured interval and stores time-series data. **Grafana** is the standard visualization layer.
+
+**Alerting with Alertmanager (Prometheus ecosystem):**
+- Define alert rules in PromQL (Prometheus Query Language).
+- Alertmanager handles routing, deduplication, silencing, and notification (PagerDuty, Slack, email).
+- Alerts should be **actionable**: every alert should have a clear owner and a defined response. Alert fatigue — too many low-signal alerts — causes engineers to ignore all alerts, including critical ones.
+
+**Service Level Indicators (SLIs) and Service Level Objectives (SLOs):**
+- **SLI**: a quantitative measure of a service behavior. Example: "the proportion of HTTP requests completed in under 200ms."
+- **SLO**: a target for an SLI. Example: "99% of requests complete in under 200ms over a 30-day window."
+- **Error budget**: 1 - SLO = the allowed proportion of failures (100% - 99% = 1% of requests may be slow or fail). If the error budget is exhausted, freeze non-critical deployments until it recovers.
+
+#### Example
+
+Prometheus metrics in Python with `prometheus_client`, and an Alertmanager rule:
+
+```python
+from prometheus_client import Counter, Histogram, start_http_server
+import time
+
+# Define metrics at module level — these are automatically registered
+REQUEST_COUNT = Counter(
+    "http_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "status_code"]  # label dimensions
+)
+
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency",
+    ["endpoint"],
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]  # histogram bucket boundaries
+)
+
+# Start the metrics server on port 8001 — Prometheus scrapes this
+start_http_server(8001)
+
+def handle_request(method: str, endpoint: str):
+    start = time.time()
+    status = "200"
+    try:
+        # ... process the request ...
+        pass
+    except Exception:
+        status = "500"
+        raise
+    finally:
+        duration = time.time() - start
+        REQUEST_COUNT.labels(method=method, endpoint=endpoint, status_code=status).inc()
+        REQUEST_LATENCY.labels(endpoint=endpoint).observe(duration)
+```
+
+Prometheus alert rule (YAML, loaded by Alertmanager):
+
+```yaml
+groups:
+  - name: order-service
+    rules:
+      # Alert if error rate exceeds 1% over the last 5 minutes
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m])) > 0.01
+        for: 2m              # must be true for 2 consecutive minutes before firing
+        labels:
+          severity: critical
+          team: orders
+        annotations:
+          summary: "Order service error rate above 1%"
+          description: "Current error rate: {{ $value | humanizePercentage }}"
+          runbook: "https://wiki.internal/runbooks/order-service-errors"
+
+      # Alert if p99 latency exceeds 500ms
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{endpoint="/orders"}[5m]))
+            by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          team: orders
+        annotations:
+          summary: "Order service p99 latency above 500ms"
+```
+
+> **Exercises**
+>
+> 1. (Beginner) What are the four golden signals? Give a concrete example of a metric for each.
+> 2. (Beginner) What is the difference between an SLI and an SLO? Give an example of each for an API service.
+> 3. (Intermediate) An alert fires: "error rate above 1% for the last 5 minutes." Walk through the steps you take to investigate. What other metrics would you look at alongside the error rate?
+> 4. (Interview) A team has 200 alerts configured. On-call engineers routinely ignore pages because most are false positives. How would you approach reducing alert fatigue while ensuring critical failures are still caught?
+>    - *Hint: think about symptom-based vs cause-based alerts, SLO-based alerting, and the "every alert must be actionable" principle.*
+
+> **Answers**
+>
+> 1. Four golden signals: (1) **Latency** — example: p99 HTTP response time in milliseconds. (2) **Traffic** — example: HTTP requests per second received by the service. (3) **Errors** — example: proportion of requests returning 5xx status codes. (4) **Saturation** — example: CPU utilization percentage, or the depth of the request queue (requests waiting to be processed).
+> 2. An SLI (Service Level Indicator) is a specific, measurable metric that reflects service behavior. An SLO (Service Level Objective) is a target value for that SLI over a defined time window. Example SLI: "the proportion of API requests completed successfully (non-5xx) within 200ms." Example SLO: "99.5% of requests meet the SLI over a rolling 30-day window." The SLO defines success; the SLI is what you measure to determine whether you are meeting it.
+> 3. Investigation steps: (1) Check which endpoints are producing errors — filter the `http_requests_total` metric by `status_code=~"5.."` grouped by `endpoint` to identify if the errors are concentrated on one endpoint or spread across all. (2) Check latency — high latency often precedes or accompanies errors; determine if p99 latency also spiked at the same time. (3) Check saturation — is the service CPU-bound or memory-constrained? Is the request queue growing? (4) Check upstream dependencies — did a downstream service the order-service depends on (Payment, Inventory) start failing at the same time? Check their error rates and latencies. (5) Pull structured logs filtered by `level=ERROR` and the same time window to read the actual error messages and stack traces. (6) Check recent deployments — did a deploy happen just before the alert fired? If so, consider rolling back.
+> 4. Approach to reducing alert fatigue: (1) **Audit and delete cause-based alerts** — alerts like "CPU above 80%" or "database connection pool above 50%" fire frequently but do not always mean users are impacted. Replace them with symptom-based alerts that directly measure user experience (error rate, latency). (2) **Adopt SLO-based alerting** — define SLOs for each service and alert only when the error budget is burning faster than expected. This creates a small number of high-signal alerts directly tied to user impact. (3) **Apply the "always actionable" rule** — for each of the 200 alerts, ask: "What does an on-call engineer do when this fires?" If the answer is "nothing" or "wait and see," delete or demote the alert to a dashboard warning. (4) **Tier alerts by severity** — separate page-worthy (wake someone up at 3am) from ticket-worthy (fix during business hours). Only severity: critical alerts should page. (5) **Add minimum duration requirements** — alerts that require `for: 5m` before firing eliminate spikes and transient blips that would otherwise produce noisy pages. (6) **Review alert history** — for the last 30 days, which alerts fired most often and led to no action? Those are candidates for deletion.
+
+---
+
+### Health Dashboards
+
+#### Theory
+
+Metrics and alerts tell you when something is wrong. A **health dashboard** gives you a continuous, at-a-glance view of system state — both for on-call engineers during incidents and for teams monitoring the general health of the system.
+
+An effective health dashboard is built around the perspective of the user and the business, not the internal implementation. The first question is: "Are users being served successfully?" — not "Is the database CPU above 60%?"
+
+**Dashboard layers** (from top to bottom):
+
+1. **Business layer**: top-level KPIs — orders per minute, revenue per hour, active users. If this is normal, users are likely fine.
+2. **Service layer**: RED metrics (rate, error rate, duration) for each critical service.
+3. **Dependency layer**: health of databases, queues, caches, and external APIs.
+4. **Infrastructure layer**: CPU, memory, network, disk for each node or pod.
+
+**Principles for effective dashboards:**
+
+- **One screen, one purpose** — do not put everything on one dashboard. Create a top-level "service health overview" and link to drill-down dashboards per service.
+- **Signal over noise** — every panel on the dashboard should answer a question. Remove panels that engineers never look at.
+- **Historical context** — always show a time range that includes normal baseline behavior, so anomalies are visually obvious. Defaulting to "last 1 hour" without a baseline makes it hard to see if current behavior is abnormal.
+- **Link to runbooks** — alert panels should link directly to the runbook for that alert, reducing the time from "something is wrong" to "I know what to do."
+- **SLO panels** — display the current error budget remaining prominently. When the budget is almost gone, everyone can see it without waiting for an alert.
+
+**Runbooks**: a runbook is a documented procedure for responding to a specific alert or failure scenario. A good runbook includes: the alert conditions, a brief description of the likely cause, step-by-step diagnostic commands, and escalation paths.
+
+#### Example
+
+A Grafana dashboard definition (simplified Grafana JSON model excerpt) for a service health overview:
+
+```json
+{
+  "title": "Order Service Health",
+  "panels": [
+    {
+      "title": "Request Rate (RPS)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{service='order-service'}[1m]))",
+          "legendFormat": "Requests/sec"
+        }
+      ]
+    },
+    {
+      "title": "Error Rate (%)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{service='order-service',status_code=~'5..'}[1m])) / sum(rate(http_requests_total{service='order-service'}[1m])) * 100",
+          "legendFormat": "Error %"
+        }
+      ],
+      "thresholds": [
+        {"value": 1, "color": "red"}
+      ]
+    },
+    {
+      "title": "p99 Latency (ms)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service='order-service'}[5m])) by (le)) * 1000",
+          "legendFormat": "p99 ms"
+        }
+      ]
+    },
+    {
+      "title": "SLO Error Budget Remaining",
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "(1 - (sum(rate(http_requests_total{service='order-service',status_code=~'5..'}[30d])) / sum(rate(http_requests_total{service='order-service'}[30d])) / 0.01)) * 100",
+          "legendFormat": "Budget %"
+        }
+      ],
+      "thresholds": [
+        {"value": 0,  "color": "red"},
+        {"value": 25, "color": "yellow"},
+        {"value": 75, "color": "green"}
+      ]
+    }
+  ]
+}
+```
+
+> **Exercises**
+>
+> 1. (Beginner) What are the four layers of a health dashboard hierarchy? What question does each layer answer?
+> 2. (Beginner) What is a runbook, and why should alert panels on a dashboard link to one?
+> 3. (Intermediate) Design the panels for a health dashboard for an e-commerce checkout service. List at least five panels and explain what each monitors and why it is important.
+> 4. (Interview) During an incident, an on-call engineer spends 15 minutes finding the right Grafana dashboard, then another 10 minutes understanding what the panels mean. What dashboard design changes would reduce time-to-diagnosis in future incidents?
+>    - *Hint: think about dashboard organization, default time ranges, panel annotations, and pre-built incident views.*
+
+> **Answers**
+>
+> 1. Four layers: (1) **Business layer** — answers "Are users getting value from the system?" Metrics: orders per minute, active sessions, revenue. (2) **Service layer** — answers "Are individual services healthy?" Metrics: RED (request rate, error rate, duration) per service. (3) **Dependency layer** — answers "Are the services our system depends on healthy?" Metrics: database query latency, queue depth, cache hit rate, external API error rates. (4) **Infrastructure layer** — answers "Are the machines and containers running normally?" Metrics: CPU utilization, memory usage, disk I/O, network throughput per host or pod.
+> 2. A runbook is a documented, step-by-step procedure for diagnosing and resolving a specific type of alert or failure. It includes: the alert conditions and their likely causes, diagnostic commands to run (with expected output), resolution steps, and escalation contacts. Alert panels should link to runbooks because during an incident, engineers are under pressure and may be unfamiliar with the specific failure mode. A direct link eliminates the time spent searching for the relevant procedure, reducing mean time to recovery (MTTR).
+> 3. Panels for a checkout service health dashboard: (1) **Checkout requests per second** — baseline traffic monitoring; sudden drops can indicate a frontend issue preventing users from reaching checkout. (2) **Checkout error rate** — proportion of 5xx responses on the `/checkout` endpoint; the primary signal for user-facing failures. (3) **Payment API error rate and latency** — the checkout service calls a payment gateway; this panel surfaces degradation in the external dependency before it causes widespread checkout failures. (4) **Cart service error rate** — checkout reads from the cart service; failures here cause checkout failures even if payment is healthy. (5) **p99 checkout latency** — users abandon slow checkouts; high latency is as harmful as errors. (6) **SLO error budget remaining** — shows how much headroom remains before the SLO is breached; triggers escalation when budget is low. (7) **Active checkout sessions** — helps distinguish a traffic spike (expected high latency) from a bug (high latency with normal traffic).
+> 4. Dashboard design changes to reduce time-to-diagnosis: (1) **Create an incident-first landing page** — a single top-level dashboard with RED metrics for all critical services, designed to be the first place an on-call engineer opens. Link it prominently in the on-call runbook. (2) **Default to a 1-hour time range with a 24-hour comparison overlay** — immediately shows whether current behavior is anomalous relative to the same time yesterday. (3) **Add deployment event annotations** — mark deployments on all time-series panels so that anomalies correlated with a deploy are immediately visible without cross-referencing a deployment log. (4) **Standardize panel naming and layout** — use the same top-to-bottom layout on every service dashboard (rate, errors, latency, saturation). Engineers familiar with the pattern can orient themselves immediately on an unfamiliar service's dashboard. (5) **Add per-panel runbook links** — every error-rate or latency panel has a direct link to the runbook for that service/scenario, so engineers can act without navigating away to find documentation. (6) **Create saved drill-down links** — from the top-level dashboard, "Error rate spike on Order Service" links to the Order Service dashboard pre-filtered to the same time range, rather than requiring the engineer to navigate and set the time range manually.
+CHAPTER7_EOF

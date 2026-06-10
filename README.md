@@ -4,6 +4,8 @@ The notes are generated using AI and personally reviewed and enriched by me usin
 
 ## Optimized Prompts
 
+### Generate Index
+
 Prompt used to generate an index for a specific topic divided into chapters and subchapters:
 ```
 You are a curriculum architect. Your task is to generate a structured, hierarchical 
@@ -43,6 +45,8 @@ Output format (strict JSON):
 
 Only return valid JSON. No explanation, no markdown, no preamble.
 ```
+
+### Generate Chapter Content
 
 Prompt used to generate a markdown file with all the content of a specific chapter:
 ```
