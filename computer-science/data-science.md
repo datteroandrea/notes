@@ -1,33 +1,71 @@
 # Data Science
 
+## TODO
+- split numpy into a separate chapter before pandas
+- add more Pandas exercises sections
+- add exercises at the end of Supervised Learning sub-chapter
+- add exercises at the end of Unsupervised Learning sub-chapter
+
 ## Index
 1. [Introduction](#introduction)
-2. [Pandas & NumPy](#pandas)
+2. [Numpy (TODO)](#numpy)
+3. [Pandas](#pandas)
     - [What is Pandas?](#what-is-pandas)
-    - [What is a Dataframe?](#dataframes)
-    - [What are Pandas Attributes?](#attributes)
-    - [What are Pandas Functions?](#functions)
-    - [What are Pandas Methods?](#methods)
-    - [NumPy Basics](#numpy)
-    - [...](#)
-3. [Machine Learning](#machine-learning) (TODO)
+    - [Dataframes](#dataframes)
+    - [Attributes](#attributes)
+    - [Functions](#functions)
+    - [Methods](#methods)
+    - [Exercises 1](#exercises-1)
+    - [Math Operations](#math-operations)
+    - [Sort Operations](#sort-operations)
+    - [Indexing](#indexing)
+    - [Filtering](#filtering)
+    - [Concat](#concat)
+    - [Where](#where)
+    - [Select](#select)
+    - [Isin](#isin)
+    - [Duplicated](#duplicated)
+    - [Drop Duplicates](#drop-duplicates)
+    - [Unique](#Where)
+    - [Selecting Rows and Columns](#selecting-rows-and-columns)
+    - [Drop Rows and Columns](#drop-rows-and-columns)
+    - [Sample](#sample)
+    - [Query](#query)
+    - [Apply](#apply)
+    - [Copy](#copy)
+    - [Pivot and Pivot Tables](#pivot-and-pivot-tables)
+    - [GroupBy and Aggregate](#groupby-and-aggregate)
+    - [Exercises 2](#exercises-2)
+    - [GroupBy Filter](#groupby-filter)
+    - [Joins](#Joins)
+    - [Handling Missing Data](#handling-missing-data)
+    - [Exercises 3](#exercises-3)
+4. [Machine Learning (TODO)](#machine-learning)
     - [Supervised Learning](#supervised-learning)
         - [Regression](#regression)
         - [Classification](#classification)
+            - [Vectorization](#vectorization)
+            - [Naive Bayes](#naive-bayes)
+            - [Logistic Regression](#logistic-regression)
+            - [Linear SVM](#linear-svm)
+            - [Decision Trees](#decision-trees)
     - [Unsupervised Learning](#unsupervised-learning)
-        - [...]()
-    - [Model Evaluation & Performance](#model-evaluation-and-performance)
-        - [GridSearch](#grid-search)
-        - [RandomizedSearch](#randomized-search)
-    - [Natural Language Processing](#nlp) (TODO)
-        - [...]()
-    - [Large Language Models](#llm) (TODO)
-        - [...]()
-4. [Interview Questions & Anwers (TODO)](#interview-questions-and-answers)
-    - [](#)
-    - [](#)
-    - [](#)
-    - [](#)
+        - [Clustering](#clustering)
+            - [Centroid-based Clustering](#centroid-based-clustering)
+            - [Density-based Clustering](#density-based-clustering)
+            - [Hierarchical Clustering (TODO)](#hierarchical-clustering)
+        - [Dimensionality Reduction (TODO)](#dimensionality-reduction)
+            - [Principal Component Analysis (TODO)](#principal-component-analysis)
+            - [Autoencoders (TODO)](#autoencoders)
+    - [Model Evaluation & Performance (IMPROVE)](#model-evaluation-and-performance)
+        - [Train / Test Split (IMPROVE)](#train--test-split)
+        - [Confusion Matrix (IMPROVE)](#confusion-matrix)
+    - [Maximize Model Performance (IMPROVE)](#maximize-model-performance)
+        - [GridSearch (IMPROVE)](#grid-search)
+        - [RandomizedSearch (IMPROVE)](#randomized-search)
+    - [Natural Language Processing (TODO)](#nlp)
+    - [Large Language Models (TODO)](#llm)
+5. [Interview Questions & Answers (TODO)](#interview-questions-and-answers)
 
 ## Introduction
 This course focuses on Data Science and Analysis using Python.
@@ -35,6 +73,8 @@ This course is built upon the following references:
 - [FreeCodeCamp: Learn Python for Data Science – Full Course for Beginners ](https://www.freecodecamp.org/news/learn-python-for-data-science-full-course/)
 - [Official Python Documentation](https://docs.python.org/3/)
 - [Official Pandas Library Documentation](https://pandas.pydata.org/docs/)
+
+## Numpy
 
 ## Pandas
 
@@ -144,7 +184,7 @@ Methods are functions that belong to a class, for example:
 - `df.info()`: returns data about the table specifically for each column name, the type of the data type, how many rows are non-null and the total number of rows and the memory size.
 - `df.describe()`: returns some statistics of the dataframe i.e.: count, mean, std, min, max, 25th percentile, 50th percentile, 75th percentile
 
-### Examples
+### Exercises 1
 Select 2 columns from a dataframe:
 ```Python
 df[['gender', 'score']]
@@ -181,6 +221,7 @@ To insert a new column in a specific position in the table use the insert method
 ```Python
 df.insert(1, 'new column', np.random.uniform(1,100,100))
 ```
+
 ### Math Operations
 To calculate the total sum of the values in a column use:
 ```Python
@@ -219,6 +260,7 @@ df['gender'].value_counts(normalize=True)
 >>> female  0.518
 >>> male    0.482
 ```
+
 ### Sort Operations
 To sort a dataset:
 ```Python
@@ -253,6 +295,7 @@ To read a CSV from a web url use:
 ```Python
 data = pd.read_csv('https://...')
 ```
+
 ### Filtering
 You can generate a list of true and false values by comparing a column with a value (this will return a list of true and false when the rows in a column match the condition):
 ```Python
@@ -279,6 +322,7 @@ Find laptops made by Apple or Dell:
 ```Python
 df_laptops[df_laptops['Company'] == 'Apple' | df_laptops['Company'] =='Dell']
 ```
+
 ### Concat
 You can concatenate 2 dataframes by using pandas concat method:
 ```Python
@@ -321,6 +365,7 @@ df_laptops['price_tier'] = np.select(conditions, values, default='Cheap')
 ```
 
 Note: always put a default value in the select method of numpy.
+
 ### Isin
 To filter a column by multiple values you can use the pandas isin method:
 ```Python
@@ -350,11 +395,13 @@ To show the dataframe with non duplicated values use:
 ```Python
 df_laptops[~duplicates]
 ```
+
 ### Drop Duplicates
 You can drop duplicates from one or more columns using the drop_duplicates method:
 ```Python
 df_laptops.drop_duplicates(['Company'])
 ```
+
 #### Exercise
 ```Python
 df_laptops = df_laptops.sort_values(['screen_size(inches)'])
@@ -362,6 +409,7 @@ df_small_screen = df_laptops.drop_duplicates(['Company'], keep='first')
 df_big_screen = df_laptops.drop_duplicates(['Company'], keep='last')
 df_laptops_screens = df_small_screen.concat(df_big_screen)
 ```
+
 ### Unique
 You can find all the unique elements (all the elements of a column that appear at least one time in a row) of a column using the unique method:
 ```Python
@@ -371,8 +419,10 @@ To count the unique elements in a column you can either use the len method or nu
 ```Python
 df_laptops['brand'].nunique()
 ```
-### Selecting rows & columns
+
+### Selecting Rows and Columns
 In pandas, loc and iloc are used to select rows and columns from DataFrames or Series, but they differ in how they index data.
+
 #### loc
 loc selects data by labels (row/column names), not by position:
 - Uses index labels and column names
@@ -397,6 +447,7 @@ df.loc[["a", "c"], ["Name", "Score"]] # selects columns 'Name' and 'Score' of ro
 
 df.loc[df["Age"] > 28] # selects all rows and columns where 'Age' is bigger than 28
 ```
+
 #### iloc
 iloc selects data by numerical position, similar to Python lists.
 - Uses integer positions (0-based)
@@ -426,7 +477,7 @@ columns = ['price', 'graphics']
 df.loc[df['brand'] == 'Apple', columns] = np.nan
 ```
 
-### Drop rows/columns
+### Drop Rows and Columns
 You can drop rows using the drop method:
 ```Python
 # axis = 0 for rows, axis = 1 for columns
@@ -571,7 +622,7 @@ s = df["Score"].copy()
 s[0] = 999
 ```
 
-### Pivot & Pivot Tables
+### Pivot and Pivot Tables
 In pandas, `pivot()` and `pivot_table()` are used to reshape data—turning long (tidy) data into wide format—similar to Excel Pivot Tables.
 They look similar but differ in how they handle duplicates and aggregation.
 
@@ -719,7 +770,7 @@ To find the amount of null values in all columns in a dataframe:
 df.isnull().sum()
 ```
 
-#### Exercises
+### Exercises 2
 Find the minimum and maximum values on each column:
 ```Python
 df.groupby('Vehicle_type').agg(['min','max'])
@@ -963,7 +1014,7 @@ Fill only a single column:
 df['A'] = df['A'].fillna(df['A'].mean())
 ```
 
-### Exercises
+### Exercises 3
 Import movies.csv and rating.csv and merge them based on the movie id, then extract relevant columns:
 ```Python
 import pandas as pd
@@ -1196,6 +1247,7 @@ for feature, coef in zip(X.columns, model.coef_):
 >>> budget       0.01 # +1 unit budget → +0.01 mean_vote
 >>> popularity   0.03 # +1 popularity → +0.03 mean_vote
 ```
+
 #### Classification
 Classification is a supervised learning problem that focuses on predicting a discrete class (label). Common classification algorithms are: Logistic Regression, Naive Bayes, SVM, Decision Tree Classifier, Random Forest Classifier.
 
@@ -1745,21 +1797,22 @@ plt.ylabel("Feature 2")
 plt.show()
 ```
 
-##### Hierarchical Clustering (TODO)
+##### Hierarchical Clustering
 Connectivity-based (or hierarchical) clustering builds nested groupings of data by evaluating how data points are connected to their neighbors. It creates a dendrogram a tree-like structure that reflects relationships at various granularity levels and does not require specifying cluster numbers in advance, but can be computationally intensive.
 
 ###### Agglomerative (TODO)
 
 ###### Divisive (TODO)
 
-#### Dimensionality Reduction (TODO)
+#### Dimensionality Reduction
 Dimensionality reduction transforms high-dimensional data into a lower-dimensional form while retaining essential information and patterns, primarily by removing noise or redundant features.
 
-##### Principal Component Analysis (PCA) (TODO)
+##### Principal Component Analysis
+Principal Component Analysis (PCA)
 
-##### Autoencoders (TODO)
+##### Autoencoders
 
-### Model Evaluation and Performance (IMPROVE)
+### Model Evaluation and Performance
 Model Evaluation is the process that evaluates the performance of the ML model based on unseen data.
 
 In scikit-learn, evaluation is done by:
@@ -1773,9 +1826,11 @@ There are different evaluation metrics:
 - Precision measures how many of the positive predictions were actually correct. Answers: “Are my positives trustworthy?”.
 - Recall measures how many of the actual positives the model correctly identified. Answers: “Am I missing important positives?”.
 - F1-score is the harmonic mean of precision and recall. Answers: “Balanced performance?”
-- ROC-AUC measures how well the model separates classes across all thresholds. Answers: “Can I separate classes well?”.
+- ROC: Receiver Operating Characteristic (ROC) curve is a crucial evaluation metric for binary classification models that plots the True Positive Rate (Sensitivity) against the False Positive Rate (1-Specificity) at various threshold settings. It illustrates the trade-off between sensitivity and specificity, with higher, top-left-oriented curves indicating superior performance. The Area Under the Curve (AUC) quantifies this performance, with 0.5 representing random guessing and 1.0 indicating a perfect model. 
+- AUC: measures the entire two-dimensional area underneath the Receiver Operating Characteristic (ROC) curve, providing a single scalar value (0 to 1) that evaluates a classification model's ability to distinguish between classes. An AUC of 1.0 indicates a perfect classifier, while 0.5 represents a model with no discriminatory power (random guessing). 
+ROC-AUC measures how well the model separates classes across all thresholds. Answers: “Can I separate classes well?”.
 
-#### Train / Test Split (IMPROVE)
+#### Train / Test Split
 Never evaluate on training data.
 ```Python
 from sklearn.model_selection import train_test_split
@@ -1791,7 +1846,7 @@ y_pred = model.predict(X_test)
 
 This gives you a single estimate of performance.
 
-#### Confusion Matrix (IMPROVE)
+#### Confusion Matrix
 A confusion matrix is a table that breaks down a classifier's predictions into four outcome types, showing exactly how the model is making mistakes.
 
 Accuracy alone hides how the model fails, a confusion matrix exposes error types, not just error counts.
@@ -1829,7 +1884,7 @@ from sklearn.metrics import classification_report
 classification_report(test_y, model.predict(test_X))
 ```
 
-### Maximize Model Performance (IMPROVE)
+### Maximize Model Performance
 Hyperparameters are configuration values set before training that control how a model learns.
 The goal is not maximum training accuracy, but maximum validation/test performance.
 
@@ -1841,7 +1896,7 @@ Hyperparameter tuning means finding the combination that yields the best cross-v
 - Number of trees (n_estimators)
 - Kernel type (kernel)
 
-#### Grid Search (IMPROVE)
+#### Grid Search
 Grid Search is an exhaustive search over a predefined set of hyperparameter values.
 
 1. For each combination:
@@ -1885,7 +1940,8 @@ print(grid.best_params_) # best hyperparameters
 print(grid.best_score_) # best CV score
 print(grid.best_estimator_) # fully trained model
 ```
-#### Randomized Search (IMPROVE)
+
+#### Randomized Search
 Randomized Search is a hyperparameter tuning method that:
 - Randomly samples parameter combinations
 - Evaluates each using cross-validation
@@ -1926,7 +1982,7 @@ print(search.best_score_) # best CV score
 print(search.best_estimator_) # fully trained model
 ```
 
-### NLP (TODO)
+### NLP
 Natural Language Processing, is a branch of AI that helps computers understand, interpret, and generate human language (text/speech) by combining computational linguistics with machine learning, enabling tasks like translation, chatbots, sentiment analysis, and text summarization, essentially bridging human communication with machine understanding.
 
 Tokenization: splits text into smaller units (tokens) for NLP; Word Tokenization uses spaces/punctuation for whole words (simple, large vocab), while Subword Tokenization (BPE, WordPiece, Unigram) breaks rare/complex words into smaller parts (e.g., "unhappiness" -> "un", "happi", "ness"), balancing vocabulary size and meaning, crucial for modern models handling new or morphologically rich languages.
@@ -1970,9 +2026,9 @@ print("Predictions:", predictions)
 print("Accuracy:", accuracy_score(y_test, predictions))
 ```
 
-### Neural Networks (TODO)
+### Neural Networks
 
-### LLM (TODO)
+### LLM
 LLM has two main meanings: most commonly, a Large Language Model, an AI trained on vast text data to understand and generate human language.
 
 Transformers: are a type of deep learning model that utilizes self-attention mechanisms to process and generate sequences of data efficiently. They capture long-range dependencies and contextual relationships making them highly effective for tasks like language modeling, machine translation and text generation. The transformer model is built on encoder-decoder architecture where both the encoder and decoder are composed of a series of layers that utilize self-attention mechanisms and feed-forward neural networks. This architecture enables the model to process input data in parallel making it highly efficient and effective for tasks involving sequential data.
@@ -2002,4 +2058,4 @@ Hallucinations: are when a large language model (LLM) perceives patterns or obje
 
 LLM token limits: define the maximum amount of text (input prompt + output response) a model can process in one go, known as the context window, with limits varying widely (e.g., 4k, 32k, 128k+ tokens), and exceeding this causes errors or truncated information, impacting cost, complexity, and model capability; tokens are roughly 0.75 words, but depend on the model's tokenizer.
 
-### Interview Questions and Answers
+## Interview Questions and Answers
