@@ -104,7 +104,6 @@ OUTPUT:
 ```
 
 ## TODO
-- Algorithms and Data Structures (TODO)
 - Data Science
   - Introduction (IMPROVE)
   - Pandas (IMPROVE)
