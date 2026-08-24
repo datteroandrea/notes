@@ -81,9 +81,9 @@ In German, **all nouns are capitalised** — not just proper nouns.
 
 **Exercise 1C: Correct the capitalisation errors.**
 
-1. Ich esse ein brot.
-2. das ist ein hund.
-3. Wir trinken kaffee.
+1. Ich esse ein brot. -> Ich esse ein Brot.
+2. das ist ein hund. -> Das ist ein Hund.
+3. Wir trinken kaffee. -> Wir trinken Kaffee.
 
 ---
 
@@ -137,6 +137,8 @@ In German, **all nouns are capitalised** — not just proper nouns.
 > **Note on formal vs. informal:**
 > Use **Sie** (capital S) with strangers, older people, and in professional settings.
 > Use **du** with friends, family, children, and peers your age.
+> Use **woher** means **from where**
+> Use **wo** for all other **where** questions
 
 ## 2.3 Polite Phrases
 
@@ -158,35 +160,35 @@ In German, **all nouns are capitalised** — not just proper nouns.
 
 **Exercise 2A: Fill in the blank with the correct greeting.**
 
-1. It is 8am. You see your colleague: "_____________!"
-2. You are leaving a formal meeting: "_____________!"
-3. You meet a friend at lunch: "_____________!"
-4. You are going to sleep: "_____________!"
+1. It is 8am. You see your colleague: "Guten Morgen!"
+2. You are leaving a formal meeting: "Auf Wiedesehen!"
+3. You meet a friend at lunch: "Guten Tag!"
+4. You are going to sleep: "Guten Nacht!"
 
 **Exercise 2B: Translate into German.**
 
-1. My name is Maria.
-2. I come from Switzerland.
-3. I live in Zurich.
-4. I am 25 years old.
-5. I am a doctor. (female)
+1. My name is Maria. -> Ich heisse Maria.
+2. I come from Switzerland. -> Ich komme aus Schwyz.
+3. I live in Zurich. -> Ich wohne in Zurich.
+4. I am 25 years old. -> Ich bin funfundzwanzwig Jahre alt.
+5. I am a doctor. (female) -> Ich bin Arztin.
 
 **Exercise 2C: Formal or informal? Choose the correct form.**
 
 You are speaking to your boss. Complete the question:
-1. "What is your name?" → Wie heißen ___?
-2. "Where do you live?" → Wo wohnen ___?
-3. "How old are you?" → Wie alt sind ___?
+1. "What is your name?" → Wie heißen Sie?
+2. "Where do you live?" → Wo wohnen Sie?
+3. "How old are you?" → Wie alt sind Sie?
 
 **Exercise 2D: Match the phrase to the situation.**
 
 | Phrase | Situation |
 |---|---|
-| *Entschuldigung!* | a) You want to say thank you warmly |
-| *Danke schön!* | b) You need to get someone's attention |
+| *Entschuldigung!* | b) You need to get someone's attention |
+| *Danke schön!* | a) You want to say thank you warmly |
 | *Ich verstehe nicht.* | c) You didn't understand what was said |
-| *Kein Problem.* | d) Someone thanks you |
-| *Bitte!* | e) Someone apologises to you |
+| *Kein Problem.* | e) Someone apologises to you |
+| *Bitte!* | d) Someone thanks you |
 
 ---
 
@@ -264,32 +266,32 @@ To say "no" or "not a", use **kein/keine/kein** (same pattern as ein/eine/ein):
 
 **Exercise 3A: Fill in the correct definite article (der / die / das).**
 
-1. ___ Buch (book, neuter)
-2. ___ Tisch (table, masculine)
-3. ___ Lampe (lamp, feminine)
-4. ___ Auto (car, neuter)
-5. ___ Stadt (city, feminine)
-6. ___ Mann (man, masculine)
+1. Das Buch (book, neuter)
+2. Der Tisch (table, masculine)
+3. Die Lampe (lamp, feminine)
+4. Das Auto (car, neuter)
+5. Die Stadt (city, feminine)
+6. Der Mann (man, masculine)
 
 **Exercise 3B: Fill in the correct indefinite article (ein / eine).**
 
-1. Das ist ___ Hund. (masculine)
-2. Ich habe ___ Idee. (feminine)
-3. Er kauft ___ Buch. (neuter)
-4. Sie trinkt ___ Kaffee. (masculine)
-5. Wir sehen ___ Kind. (neuter)
+1. Der ist ein Hund. (masculine)
+2. Ich habe eine Idee. (feminine)
+3. Er kauft ein Buch. (neuter)
+4. Sie trinkt einen Kaffee. (masculine)
+5. Wir sehen ein Kind. (neuter)
 
 **Exercise 3C: Make these sentences negative using kein/keine.**
 
-1. Das ist ein Hund. → Das ist ___ Hund.
-2. Ich habe eine Katze. → Ich habe ___ Katze.
-3. Er trinkt Kaffee. → Er trinkt ___ Kaffee.
+1. Das ist ein Hund. → Das ist kein Hund.
+2. Ich habe eine Katze. → Ich habe keine Katze.
+3. Er trinkt Kaffee. → Er trinkt keinen Kaffee.
 
 **Exercise 3D: Which gender? Use the rules to guess.**
 
-1. *die Freiheit* — what ending tells you it's feminine?
-2. *das Mädchen* — what ending tells you it's neuter?
-3. *der Januar* — what category tells you it's masculine?
+1. *die Freiheit* — what ending tells you it's feminine?  -heit
+2. *das Mädchen* — what ending tells you it's neuter? -chen
+3. *der Januar* — what category tells you it's masculine? month
 
 ---
 
@@ -357,30 +359,30 @@ Frühling (spring) | Sommer (summer) | Herbst (autumn) | Winter (winter)
 
 **Exercise 4A: Write out these numbers in German.**
 
-1. 7 → ___
-2. 15 → ___
-3. 43 → ___
-4. 28 → ___
-5. 100 → ___
+1. 7 → sieben
+2. 15 → funfzig
+3. 43 → dreiundvierzig
+4. 28 → achtunfzwanzig
+5. 100 → hundert
 
 **Exercise 4B: Translate into German.**
 
-1. Today is Thursday.
-2. My birthday is on 3rd September.
-3. It is half past four.
-4. It is quarter to eight.
+1. Today is Thursday. -> Heute ist Donnerstag.
+2. My birthday is on 3rd September. -> Ich habe am 3. September Geburtstag.
+3. It is half past four. -> Es ist halb funf.
+4. It is quarter to eight. -> Es ist Viertel vor acht.
 
 **Exercise 4C: What time is it? Write in German.**
 
-1. 10:00 → ___
-2. 3:30 → ___
-3. 9:15 → ___
-4. 7:45 → ___
-5. 2:20 → ___
+1. 10:00 → Es ist zehn Uhr.
+2. 3:30 → Es ist halb vier.
+3. 9:15 → Es ist Viertel nach neun.
+4. 7:45 → Es ist Viertel vor acht.
+5. 2:20 → Es ist zwanzwig nach zwei.
 
 **Exercise 4D: Fill in the missing months in order.**
 
-Januar, ___, März, ___, Mai, ___, Juli, ___, September, ___, November, ___
+Januar, Februar, März, April, Mai, Juni, Juli, August, September, Oktober, November, Dezember
 
 ---
 
