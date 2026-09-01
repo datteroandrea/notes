@@ -46,6 +46,14 @@ Output format (strict JSON):
 Only return valid JSON. No explanation, no markdown, no preamble.
 ```
 
+### Convert JSON Index to Markdown
+Convert it into a markdown format following these rules:
+- title using #
+- chapter using ##
+- topics ###
+- include an index after the title and before the beginning of the chapters that links to each chapter and specific topic
+- use system-design.md as a reference
+
 ### Generate Chapter Content
 
 Prompt used to generate a markdown file with all the content of a specific chapter:
@@ -102,107 +110,3 @@ OUTPUT:
 - No preamble, no explanation outside the document itself
 - The document should be fully self-contained and ready to save as a .md file
 ```
-
-## TODO
-- Data Science
-  - Introduction (IMPROVE)
-  - Pandas (IMPROVE)
-  - NumPy (IMPROVE)
-  - Machine Learning
-    - Supervised Learning (IMPROVE)
-    - Unsupervised Learning
-        - Clustering
-            - Centroid-based Clustering (IMPROVE)
-            - Density-based Clustering (IMPROVE)
-            - Hierarchical Clustering (TODO)
-        - Dimensionality Reduction (TODO)
-            - Principal Component Analysis (TODO)
-            - Autoencoders (TODO)
-    - Model Evaluation & Performance (IMPROVE)
-    - Maximize Model Performance (IMPROVE)
-    - Natural Language Processing (TODO)
-    - Large Language Models (TODO)
-  - Interview Questions & Answers (TODO)
-- Java
-  - Core Java Fundamentals (CHECK)
-  - Object Oriented Programming (CHECK)
-  - Collections Framework (IMPROVE ALL CHAPTER)
-    - Set
-        - LinkedHashSet (TODO)
-    - Map
-        - LinkedHashMap (TODO)
-    - Queue
-        - PriorityQueue (TODO)
-    - Iterator (TODO)
-    - Comparator (TODO)
-    - HashMap vs TreeMap (TODO)
-  - Exception Handling (IMPROVE)
-  - Java 8+ features (IMPROVE ALL CHAPTER)
-    - Method References (TODO)
-    - Streams (IMPROVE)
-  - Concurrency & Parallelism (IMPROVE ALL CHAPTER)
-    - Concurrency vs Parallelism (TODO)
-    - Volatile (IMPROVE)
-    - Synchronization (IMPROVE)
-    - Race Condition (TODO)
-    - Deadlocks (TODO)
-    - Locks (TODO)
-    - Thread Pools (TODO)
-    - Atomics (TODO)
-  - Java Memory Management (IMPROVE ALL CHAPTER)
-    - Garbage Collection (EXPAND)
-        - Generational Garbage Collection (TODO)
-        - Memory Leaks (IMPROVE)
-  - Immutability (IMPROVE ALL CHAPTER)
-    - Immutable Variables (IMPROVE)
-    - Immutable Methods (TODO)
-    - Immutable Classes (IMPROVE)
-  - Equals & Hashcode Contract (CHECK)
-  - SOLID (EXPAND)
-  - Serialization
-    - Common Pitfalls (EXPAND)
-  - I/O & NIO
-    - IO
-      - Piped streams — inter-thread communication with PipedInputStream/PipedOutputStream
-      - Data streams — DataInputStream/DataOutputStream for primitive types
-      - Buffered I/O — performance benefits and when to use BufferedInputStream/BufferedOutputStream
-    - NIO
-      - Buffers — ByteBuffer, CharBuffer, capacity vs limit vs position
-      - Channels — FileChannel, SocketChannel, ServerSocketChannel
-      - Selectors — multiplexing non-blocking I/O with Selector and SelectionKey
-      - File operations with Path & Paths — the modern replacement for File
-      - Files utility class — copy, move, delete, read, write convenience methods
-      - FileSystem & FileSystems — working with different file systems
-      - Directory traversal — Files.walk(), Files.walkFileTree(), FileVisitor
-      - WatchService — monitoring directories for file system changes
-      - Memory-mapped files — MappedByteBuffer for high-performance file access
-      - Scatter/Gather I/O — reading into multiple buffers or writing from multiple buffers
-    - fix the index
-    - make special words marked as code
-  - Networking (TODO)
-  - Spring Framework (CHECK ALL CHAPTER)
-    - Dependency Injection
-    - Inversion of Control
-    - Aspect-Oriented Programming
-    - Maven
-    - Bean lifecycle (TODO)
-    - Annotations (TODO)
-  - Spring Boot (TODO)
-  - JDBC (TODO)
-    - Connections (TODO)
-    - Prepared Statements (TODO)
-    - SQL Injection Prevention (TODO)
-    - Transactions (TODO)
-  - Testing & Best Practices (TODO)
-    - Unit Testing Basics (TODO)
-    - Clean Code Principles (TODO)
-    - Common Java Pitfalls (TODO)
-  - Interview Questions & Anwers (TODO)
-- React: review and improve.
-- System Design (TODO)
-
-## References
-- Effective Java by Joshua Bloch
-- https://www.geeksforgeeks.org/java/
-- https://www.geeksforgeeks.org/advance-java/advanced-java/
-- https://www.geeksforgeeks.org/advance-java/spring-boot/
