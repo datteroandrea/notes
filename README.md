@@ -62,7 +62,7 @@ Prompt used to generate a markdown file with all the content of a specific chapt
 ```
 You are an expert technical educator and curriculum writer. 
 Your task is to generate a comprehensive, self-contained study guide 
-for a single chapter from [path to document].
+for a single chapter from [filename].
 
 Given the following chapter name:
 [chapter name]
@@ -108,7 +108,6 @@ TONE & STYLE:
 ---
 
 OUTPUT:
-- Return only valid Markdown
-- No preamble, no explanation outside the document itself
-- The document should be fully self-contained and ready to save as a .md file
+- Write the content directly in the study guide document mentioned before
+- Do not include any summary section at the end of chapter
 ```
