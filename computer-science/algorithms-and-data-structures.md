@@ -1,11 +1,9 @@
 # Algorithms and Data Structures
 
-A self-contained study guide covering the core data structures and algorithmic
-patterns needed for technical interviews and day-to-day engineering. Each
-chapter builds intuition first ("why"), then the mechanics ("what" and "how"),
-with runnable examples, key takeaways, and graded practice.
+A self-contained study guide that covers all fundamental topics of Algorithms & Data Structures. Each chapter builds intuition first ("why"), then the mechanics ("what" and "how"), with runnable examples, key takeaways, and interview-style practice.
 
 ## Index
+0. [Interview Foundations](#0-interview-foundations)
 1. [Array and Hashing](#1-array-and-hashing)
 2. [Two Pointer](#2-two-pointer)
 3. [Stack](#3-stack)
@@ -23,6 +21,168 @@ with runnable examples, key takeaways, and graded practice.
 15. [2D Dynamic Programming](#15-2d-dynamic-programming)
 16. [Bit Manipulation](#16-bit-manipulation)
 17. [Math and Geometry](#17-math-and-geometry)
+
+---
+
+## 0. Interview Foundations
+
+Before any specific data structure, top-company interviews test three
+meta-skills: reasoning about time and space complexity out loud, recognizing
+which pattern a disguised problem belongs to, and driving the session with a
+clear, communicative process. This chapter makes those explicit so the rest of
+the guide plugs into a repeatable method.
+
+### 0.1 Big-O Complexity Analysis
+
+Big-O describes how an algorithm's running time or memory grows as the input size
+`n` grows, ignoring constants and lower-order terms. Interviewers ask "what's the
+time and space complexity?" after almost every solution — a correct answer that
+you cannot analyze reads as luck, not understanding.
+
+The "why": at Google/Meta scale, `n` can be billions. An O(n^2) solution that is
+fine on a laptop for 1,000 items is hopeless on 1,000,000. Big-O lets you compare
+approaches before writing a line of code and justify why your solution is
+efficient enough.
+
+Focus on the dominant term as `n` grows. Drop constants (`O(2n)` is `O(n)`) and
+non-dominant terms (`O(n^2 + n)` is `O(n^2)`), because for large `n` the biggest
+term swamps everything else.
+
+```text
+Growth from best to worst (n = 1,000,000):
+O(1)        constant       1            hash lookup, array index
+O(log n)    logarithmic    ~20          binary search
+O(n)        linear         1,000,000    single scan
+O(n log n)  linearithmic   ~20,000,000  best comparison sorts, heap sort
+O(n^2)      quadratic      10^12        nested loops over the input
+O(2^n)      exponential    astronomical unpruned subset/backtracking
+O(n!)       factorial      hopeless     brute-force permutations
+```
+
+```python
+# O(n) time, O(1) space: one pass, fixed extra memory
+def contains_target(nums, target):
+    for x in nums:            # n iterations
+        if x == target:       # O(1) work each
+            return True
+    return False
+
+# O(n) time, O(n) space: the hash set grows with input
+def has_duplicate(nums):
+    seen = set()              # extra memory proportional to n
+    for x in nums:
+        if x in seen:         # O(1) average lookup
+            return True
+        seen.add(x)
+    return False
+```
+
+A common interview move is the *space-for-time trade*: `has_duplicate` above uses
+O(n) memory to achieve O(n) time instead of O(n^2) nested comparisons. Being able
+to name that trade-off explicitly is what interviewers listen for.
+
+> Key Takeaways
+> - Big-O measures growth as `n` grows; drop constants and lower-order terms.
+> - Always state *both* time and space complexity, and the worst case.
+> - Know the ladder: O(1) < O(log n) < O(n) < O(n log n) < O(n^2) < O(2^n) < O(n!).
+> - Trading extra space (a hash map) for less time is a core interview instinct.
+
+> 🧪 Practice
+> 1. State the time and space complexity of each solution you write in later
+>    chapters, out loud, before checking it.
+> 2. Given nested loops where the inner loop runs to `i` (not `n`), derive the
+>    complexity. (Answer: 1+2+...+n = O(n^2).)
+> 3. Interview: An algorithm halves the input each step and does O(n) work per
+>    level. What is the total complexity? (Hint: sum the work across log n levels;
+>    this is the Master Theorem case behind merge sort.)
+
+### 0.2 Pattern Recognition
+
+Most interview problems are one of a dozen patterns wearing a disguise. The
+skill that separates passing candidates is mapping the problem's *signals* — its
+wording and constraints — to a known technique in seconds, instead of inventing
+an approach from scratch under pressure.
+
+The intuition: interviewers rarely ask something truly novel; they re-skin
+classic patterns. "Sorted array" whispers binary search or two pointers.
+"Contiguous subarray/substring" whispers sliding window. Training yourself to
+hear these whispers is most of the battle.
+
+| Signal in the problem                                   | Likely pattern            | Chapter |
+| ------------------------------------------------------- | ------------------------- | ------- |
+| "Have I seen this / count occurrences / find a pair"    | Hash map / set            | 1       |
+| Sorted array, find pair/triplet, in-place partition     | Two pointers              | 2       |
+| Match/nesting, "most recent", next greater element      | Stack / monotonic stack   | 3       |
+| Sorted input, or "minimize the maximum / find boundary" | Binary search             | 4       |
+| Contiguous subarray/substring, "longest/shortest with"  | Sliding window            | 5       |
+| Cycle, reverse, middle of a sequence                    | Fast/slow pointers        | 6       |
+| Hierarchy, "levels", ancestors, sorted-by-structure     | Tree DFS/BFS, BST         | 7       |
+| Prefix/autocomplete/dictionary of words                 | Trie                      | 8       |
+| "All combinations/permutations/subsets", constraints    | Backtracking              | 9       |
+| "Top/smallest/largest k", streaming median, scheduling  | Heap / priority queue     | 10      |
+| "Number of ways", "min/max cost", overlapping choices   | Dynamic programming       | 11, 15  |
+| Ranges `[start, end]`, meetings, overlaps               | Intervals (sort + sweep)  | 12      |
+| "Maximize/minimize" with a safe local choice            | Greedy                    | 13      |
+| Nodes + edges, shortest path, connectivity, ordering    | Graph BFS/DFS/Dijkstra/UF | 14      |
+| Pairs cancel, parity, subsets of <= 20 items            | Bit manipulation          | 16      |
+
+> Key Takeaways
+> - Read the constraints first: they leak the intended complexity and pattern
+>   (e.g. `n <= 20` hints at O(2^n) backtracking; `n <= 10^5` rules out O(n^2)).
+> - "Sorted" -> binary search or two pointers. "Contiguous" -> sliding window.
+> - "All possibilities" -> backtracking. "Ways/min/max over choices" -> DP.
+> - When stuck, ask which pattern the *input shape* and *ask* resemble.
+
+> 🧪 Practice
+> 1. For each practice problem in later chapters, name the pattern before solving.
+> 2. Given `1 <= n <= 18` and "find the optimal ordering", what complexity and
+>    technique are implied? (Hint: bitmask DP over subsets.)
+> 3. Interview: You are asked for the longest substring with at most `k` distinct
+>    characters. Which pattern, and why? (Hint: "substring" + "at most" = variable
+>    sliding window.)
+
+### 0.3 The Interview Process (Clarify, Plan, Code, Test)
+
+Interviewers grade communication and problem-solving, not just a correct final
+answer. A reliable four-step loop keeps you from silence, from coding the wrong
+problem, and from missing edge cases — the three most common ways strong coders
+still fail loops.
+
+The intuition: the interview is a collaboration simulation. Thinking out loud
+lets the interviewer give hints and see your reasoning; jumping straight to code
+hides both.
+
+1. **Clarify.** Restate the problem. Ask about input size, ranges, duplicates,
+   empty/`null` inputs, and expected output format. Confirm one example by hand.
+2. **Plan.** State a brute-force approach and its complexity, then propose an
+   optimized approach and *its* complexity. Get a nod before coding.
+3. **Code.** Write clean, readable code, narrating as you go. Use helper
+   functions and meaningful names; do not micro-optimize prematurely.
+4. **Test.** Dry-run your code on the example, then edge cases: empty input,
+   single element, all-equal, negatives, overflow, the largest allowed `n`.
+
+```text
+Time budget for a 45-minute coding round (rough):
+Clarify   ~5 min   |==|
+Plan      ~8 min   |===|
+Code     ~22 min   |=========|
+Test      ~8 min   |===|
+Buffer    ~2 min   |=|
+```
+
+> Key Takeaways
+> - Never code before confirming the problem and agreeing on an approach.
+> - Always state complexity before and after optimizing.
+> - Think out loud continuously; silence loses signal and forfeits hints.
+> - Reserve time to test edge cases — finding your own bug scores better than the
+>   interviewer finding it.
+
+> 🧪 Practice
+> 1. Take any problem and write down five clarifying questions before solving it.
+> 2. Practice narrating a solution aloud end to end without long silences.
+> 3. Interview: List the edge cases you would test for "reverse a linked list".
+>    (Hint: empty list, single node, two nodes, and a list with a cycle if
+>    unspecified.)
 
 ---
 

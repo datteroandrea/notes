@@ -47,12 +47,14 @@ Only return valid JSON. No explanation, no markdown, no preamble.
 ```
 
 ### Convert JSON Index to Markdown
+```
 Convert it into a markdown format following these rules:
 - title using #
 - chapter using ##
 - topics ###
 - include an index after the title and before the beginning of the chapters that links to each chapter and specific topic
 - use system-design.md as a reference
+```
 
 ### Generate Chapter Content
 
@@ -60,12 +62,12 @@ Prompt used to generate a markdown file with all the content of a specific chapt
 ```
 You are an expert technical educator and curriculum writer. 
 Your task is to generate a comprehensive, self-contained study guide 
-for a single chapter from a Computer Science curriculum.
+for a single chapter from [filename].
 
-Given the following chapter object:
-{CHAPTER_JSON}
+Given the following chapter name:
+[chapter name]
 
-Generate a full Markdown study document following these rules:
+Generate the full content in Markdown for this chapter of the study document following these rules:
 
 ---
 
@@ -101,12 +103,11 @@ TONE & STYLE:
 - Clear, precise, and technical — but approachable
 - Avoid unnecessary filler or repetition
 - Use tables for comparisons, bullet points for lists, and code blocks for all code
-- Emojis are allowed sparingly for section markers only (📌, 🧪, 💡, ⚠️)
+- Emojis are not allowed
 
 ---
 
 OUTPUT:
-- Return only valid Markdown
-- No preamble, no explanation outside the document itself
-- The document should be fully self-contained and ready to save as a .md file
+- Write the content directly in the study guide document mentioned before
+- Do not include any summary section at the end of chapter
 ```
