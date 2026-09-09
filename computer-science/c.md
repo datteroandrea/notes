@@ -35869,45 +35869,4005 @@ $ arm-none-eabi-gcc -T device.ld -nostdlib startup.c main.c -o firmware.elf
 
 ## 13. Quality, Debugging, and Security
 
+Writing C that compiles is the easy part; writing C that is correct, stays correct, and cannot be attacked is the rest of the job. This chapter covers the three disciplines that get you there: debugging a program that is already misbehaving, using tools that find defects you have not yet noticed, and writing code whose failure modes are bounded by construction. C gives you no safety net, so these practices are not optional extras — they are the safety net.
+
 <a id="131-debugging"></a>
 ### 13.1 Debugging
 
+A debugger lets you stop a running program and ask it questions. This section covers driving GDB or LLDB from the command line, the three ways to stop at the right moment, reading raw memory and registers, recovering from a crash you did not witness, and the logging that catches what a debugger cannot.
+
 #### GDB and LLDB Fundamentals
+
+**Theory**
+
+`printf` debugging works, and every C programmer uses it. Its limits appear quickly: each new question requires an edit and a rebuild, the added output changes timing enough to hide race conditions, and a program that crashes before reaching your `printf` tells you nothing.
+
+A **debugger** removes the edit-rebuild loop entirely. It runs your program under its control, stops it at points you choose, and lets you inspect any variable, walk the call stack, change values, and continue. The questions are asked interactively, at full speed, against the binary you already built.
+
+**GDB** is the GNU debugger, standard on Linux; **LLDB** is the LLVM equivalent, standard on macOS. The commands differ in spelling but not in concept, and the table below maps between them.
+
+The one prerequisite is **debug information**. Compile with **`-g`**, which embeds a mapping from machine addresses back to source lines, variable names, and types. Without it the debugger can only show you assembly and hex.
+
+The second consideration is **optimization**. At `-O2` the compiler inlines functions, reorders statements, and keeps variables in registers or eliminates them entirely — so stepping jumps around unpredictably and printing a variable reports `<optimized out>`. For debugging, build at **`-O0 -g`**. When you must debug an optimized build (because the bug only appears there), `-Og` is a compromise that optimizes while preserving debuggability.
+
+The essential workflow is small:
+
+| Task | GDB | LLDB |
+|---|---|---|
+| Start | `gdb ./prog` | `lldb ./prog` |
+| Run, with arguments | `run arg1 arg2` | `run arg1 arg2` |
+| Breakpoint at a function | `break main` | `breakpoint set -n main` |
+| Breakpoint at a line | `break file.c:42` | `breakpoint set -f file.c -l 42` |
+| Continue | `continue` / `c` | `continue` / `c` |
+| Step over a line | `next` / `n` | `next` / `n` |
+| Step into a call | `step` / `s` | `step` / `s` |
+| Run until the function returns | `finish` | `finish` |
+| Print an expression | `print x` / `p x` | `print x` / `p x` |
+| Call stack | `backtrace` / `bt` | `bt` |
+| Show source | `list` / `l` | `source list` |
+| Quit | `quit` / `q` | `quit` |
+
+Two features change GDB from usable to pleasant. **TUI mode** (`gdb -tui`, or Control-X A) shows the source alongside the prompt. And **`gdb --args ./prog --flag file.txt`** passes arguments straight through, which is easier than remembering to type them at the `run` prompt.
+
+GDB can also be scripted with `-batch -ex`, which is how you get a backtrace from a crashing program in CI without any interaction.
+
+**Examples**
+
+A program with a deliberate bug, for the session below:
+
+```c
+/* ============================ buggy.c ============================
+   Build for debugging:  gcc -g -O0 buggy.c -o buggy               */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    char   name[32];
+    int    score;
+    double average;
+} Student;
+
+static int total_score(const Student *students, int count)
+{
+    int total = 0;
+    for (int i = 0; i <= count; i++)     /* BUG: <= reads one past the end */
+        total += students[i].score;
+    return total;
+}
+
+static Student *make_students(int count)
+{
+    Student *s = calloc((size_t)count, sizeof *s);
+    if (!s) return NULL;
+
+    for (int i = 0; i < count; i++) {
+        snprintf(s[i].name, sizeof s[i].name, "student%d", i);
+        s[i].score   = (i + 1) * 10;
+        s[i].average = s[i].score / 2.0;
+    }
+    return s;
+}
+
+int main(int argc, char **argv)
+{
+    int count = (argc > 1) ? atoi(argv[1]) : 3;
+    if (count <= 0) { fprintf(stderr, "count must be positive\n"); return 1; }
+
+    Student *students = make_students(count);
+    if (!students) { fprintf(stderr, "out of memory\n"); return 1; }
+
+    int total = total_score(students, count);
+    printf("total = %d\n", total);
+    printf("average = %.2f\n", (double)total / count);
+
+    free(students);
+    return 0;
+}
+```
+
+A complete GDB session, annotated:
+
+```bash
+# -g embeds debug info; -O0 keeps the code matching the source.
+$ gcc -g -O0 buggy.c -o buggy
+
+# --args passes program arguments through in one go.
+$ gdb --args ./buggy 3
+
+(gdb) break total_score            # stop when this function is entered
+Breakpoint 1 at 0x1189: file buggy.c, line 15.
+
+(gdb) run
+Breakpoint 1, total_score (students=0x5555555592a0, count=3) at buggy.c:15
+15          int total = 0;
+
+(gdb) list                         # show the surrounding source
+13      static int total_score(const Student *students, int count)
+14      {
+15          int total = 0;
+16          for (int i = 0; i <= count; i++)
+17              total += students[i].score;
+
+(gdb) next                         # execute line 15, stop before 16
+16          for (int i = 0; i <= count; i++)
+
+(gdb) print count                  # inspect an argument
+$1 = 3
+
+(gdb) print students[0]            # the debugger knows the struct layout
+$2 = {name = "student0", '\000' <repeats 23 times>, score = 10, average = 5}
+
+(gdb) print students[3]            # index 3 with only 3 elements
+$3 = {name = "\000\000\000\000\000\000\000\000\321\f\002", score = 0, average = 0}
+#     ^ reading past the end -- whatever the heap happens to hold there.
+#       This is the bug, visible immediately.
+
+(gdb) break 17                     # inside the loop body
+(gdb) continue
+(gdb) print i                      # watch the loop variable
+$4 = 0
+
+(gdb) until 18                     # run until the loop finishes
+18          return total;
+
+(gdb) print i
+No symbol "i" in current context.  # 'i' is scoped to the for statement,
+                                   # so it is gone once the loop exits
+
+(gdb) print total
+$5 = 60                            # 10+20+30 = 60, plus 0 from the overrun
+
+(gdb) backtrace                    # who called us
+#0  total_score (students=0x5555555592a0, count=3) at buggy.c:18
+#1  0x000055555555527a in main (argc=2, argv=0x7fffffffe3c8) at buggy.c:44
+
+(gdb) finish                       # run to the end of this function
+Run till exit from #0  total_score (...) at buggy.c:18
+main (...) at buggy.c:44
+Value returned is $6 = 60
+
+(gdb) print total / count          # evaluate arbitrary expressions
+$7 = 20
+
+(gdb) set var count = 2            # variables can be CHANGED, not just read
+(gdb) print count
+$8 = 2
+
+(gdb) continue
+total = 60
+average = 30.00
+[Inferior 1 (process 12345) exited normally]
+
+(gdb) quit
+```
+
+Scripted, non-interactive use — how CI captures a crash:
+
+```bash
+# Run to completion and print a backtrace only if it crashes.
+$ gdb -batch -ex run -ex bt --args ./buggy 3
+
+# Print a specific expression at a breakpoint, then exit.
+$ gdb -batch \
+      -ex 'break total_score' \
+      -ex 'run' \
+      -ex 'print count' \
+      -ex 'print students[0].score' \
+      --args ./buggy 3
+
+# A .gdbinit in the project directory sets up every session:
+$ cat .gdbinit
+set print pretty on          # format structs across multiple lines
+set pagination off           # do not stop every screenful
+set confirm off              # do not ask "are you sure"
+break main
+```
+
+```text
+   WHY -O0 MATTERS FOR DEBUGGING
+
+   -O0 -g                            -O2 -g
+   +---------------------+           +---------------------+
+   | line 15  total = 0  |           | (folded into line 17)|
+   | line 16  for (...)  |           | (loop unrolled)      |
+   | line 17  total += ..|           | (vectorized)         |
+   +---------------------+           +---------------------+
+   step lands on each line           steps jump around
+   print total -> 0                  print total -> <optimized out>
+   variables live in memory          variables live in registers, or nowhere
+
+   USE  -O0 -g  to debug
+        -Og -g  when the bug only appears with optimization
+        -O2     for release, with -g kept for symbolizing crash reports
+```
+
+**Key Takeaways**
+
+- A debugger answers new questions without editing or rebuilding, and works even when the program crashes before reaching any output.
+- Compile with `-g` for debug information and `-O0` so the running code matches the source; `-Og` is the compromise when a bug only appears optimized.
+- The core loop is `break`, `run`, `next`/`step`, `print`, `backtrace`, `continue` — the same concepts in GDB and LLDB with different spellings.
+- `print` evaluates arbitrary expressions and `set var` changes them, so you can test a hypothesis without recompiling.
+- `gdb --args` passes program arguments through, and `gdb -batch -ex ...` scripts the debugger for CI.
+
+> 🧪 Practice
+>
+> 1. Build `buggy.c` with `-g -O0`, break on `total_score`, and step through the loop printing `i` and `total` each iteration until you see the off-by-one.
+> 2. Rebuild at `-O2 -g` and repeat, noting which variables report `<optimized out>` and where stepping jumps unexpectedly.
+> 3. Use `set var` to change `count` mid-run and confirm the printed average changes accordingly.
+> 4. Interview-style: *"When is a debugger the wrong tool?"* Hint: think about bugs that only appear under load, in production, or once every ten thousand runs.
 
 #### Breakpoints, Watchpoints, and Backtraces
 
+**Theory**
+
+Stopping the program is easy. Stopping it *at the right moment* is the skill, and there are three distinct mechanisms because there are three distinct kinds of question.
+
+**Breakpoints** stop when execution reaches a location. That answers "what is the state when we get here?". A plain breakpoint is enough for a bug that happens every time, but real bugs are often conditional — the corruption happens on iteration 4,732, and stepping there manually is not viable.
+
+Two refinements make breakpoints practical:
+
+- **Conditional breakpoints**: `break file.c:42 if i == 4732` stops only when the condition holds. The debugger evaluates it each time, so it is slower than a plain breakpoint but incomparably faster than you.
+- **Commands attached to a breakpoint**: a breakpoint can print something and automatically continue, turning the debugger into a `printf` you did not have to compile in.
+
+**Watchpoints** stop when a *value changes*, regardless of where in the code that happens. This is the tool for "who is corrupting this variable?" — a question breakpoints answer badly, because you do not know which line to break on. That is precisely the situation where a watchpoint is decisive: set it on the address, continue, and the debugger stops at the exact instruction that wrote it.
+
+Watchpoints come in three flavors: `watch` (on write), `rwatch` (on read), and `awatch` (on either). Note that a watchpoint on a local variable dies when its scope exits, and that hardware watchpoints are limited in number (typically four) and in size; exceeding either forces GDB into software watchpoints, which single-step the program and are dramatically slower.
+
+**Backtraces** answer "how did we get here?". `bt` prints the chain of active function calls with arguments; `frame N` selects one so `print` operates in its scope; `up` and `down` move along the chain. When a program crashes deep inside a library, the backtrace tells you which of your calls led there — usually the only thing you need.
+
+`bt full` additionally prints every frame's local variables, which is often the fastest way to understand a crash you are seeing for the first time.
+
+Two practical notes. A **catchpoint** (`catch throw`, `catch syscall`) stops on events rather than locations. And `tbreak` sets a breakpoint that deletes itself after firing once, which keeps a session from filling up with stale stops.
+
+**Examples**
+
+A program whose state gets corrupted, to demonstrate all three tools:
+
+```c
+/* ============================ corrupt.c ============================
+   Build:  gcc -g -O0 corrupt.c -o corrupt                           */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    int  id;
+    int  checksum;          /* should always equal id * 2 */
+    char label[16];
+} Record;
+
+static Record records[8];
+static int    global_counter = 0;
+
+static void init_records(void)
+{
+    for (int i = 0; i < 8; i++) {
+        records[i].id       = i;
+        records[i].checksum = i * 2;
+        snprintf(records[i].label, sizeof records[i].label, "rec%d", i);
+    }
+}
+
+/* The corrupting function: on one specific iteration it writes through
+   an index that is off by one, clobbering the next record. */
+static void process(int iteration)
+{
+    global_counter++;
+
+    if (iteration == 5) {
+        /* BUG: writes past record 7 into whatever follows. */
+        records[8].id = 999;            /* out of bounds */
+    }
+    records[iteration % 8].checksum = (iteration % 8) * 2;
+}
+
+static int verify(void)
+{
+    for (int i = 0; i < 8; i++)
+        if (records[i].checksum != records[i].id * 2) {
+            printf("record %d is inconsistent: id=%d checksum=%d\n",
+                   i, records[i].id, records[i].checksum);
+            return -1;
+        }
+    return 0;
+}
+
+int main(void)
+{
+    init_records();
+
+    for (int i = 0; i < 10; i++)
+        process(i);
+
+    printf("verify: %s\n", verify() == 0 ? "ok" : "FAILED");
+    printf("counter = %d\n", global_counter);
+    return 0;
+}
+```
+
+A GDB session using each mechanism:
+
+```bash
+$ gcc -g -O0 corrupt.c -o corrupt
+$ gdb ./corrupt
+
+# ---------- CONDITIONAL BREAKPOINT ----------
+# Stop only on the iteration that matters, not all ten.
+(gdb) break process if iteration == 5
+Breakpoint 1 at 0x11c9: file corrupt.c, line 26.
+
+(gdb) run
+Breakpoint 1, process (iteration=5) at corrupt.c:26
+26          global_counter++;
+
+(gdb) print iteration
+$1 = 5
+
+# ---------- WATCHPOINT ----------
+# "Who writes to records[8].id?" -- a question breakpoints answer badly,
+# because we do not know WHICH line is responsible.
+(gdb) watch records[8].id
+Hardware watchpoint 2: records[8].id
+
+(gdb) continue
+Hardware watchpoint 2: records[8].id
+
+Old value = 0
+New value = 999
+process (iteration=5) at corrupt.c:31
+31          records[iteration % 8].checksum = (iteration % 8) * 2;
+#  ^ the debugger stopped at the exact instruction AFTER the write,
+#    naming the culprit without any guessing
+
+# ---------- BACKTRACE ----------
+(gdb) backtrace
+#0  process (iteration=5) at corrupt.c:31
+#1  0x00005555555552f1 in main () at corrupt.c:53
+
+(gdb) bt full                     # every frame, with its locals
+#0  process (iteration=5) at corrupt.c:31
+No locals.
+#1  0x00005555555552f1 in main () at corrupt.c:53
+        i = 5
+
+(gdb) frame 1                     # switch scope to main
+#1  0x00005555555552f1 in main () at corrupt.c:53
+53              process(i);
+
+(gdb) print i                     # now 'i' refers to main's local
+$2 = 5
+
+# ---------- BREAKPOINT COMMANDS ----------
+# Turn a breakpoint into a printf you never had to compile in.
+(gdb) delete
+(gdb) break process
+(gdb) commands
+>silent
+>printf "process(%d) counter=%d\n", iteration, global_counter
+>continue
+>end
+
+(gdb) run
+process(0) counter=0
+process(1) counter=1
+process(2) counter=2
+...
+
+# ---------- MANAGING BREAKPOINTS ----------
+(gdb) info breakpoints            # list them all, with hit counts
+(gdb) disable 1                   # keep it but stop triggering
+(gdb) enable 1
+(gdb) tbreak verify               # fires once, then deletes itself
+(gdb) delete 2                    # remove one
+(gdb) info watchpoints
+```
+
+```text
+   CHOOSING THE RIGHT STOP
+
+   QUESTION                              TOOL
+
+   "What is the state when we reach       breakpoint
+    this line?"                           break file.c:42
+
+   "...but only on iteration 4732"        conditional breakpoint
+                                          break file.c:42 if i == 4732
+
+   "WHO is changing this variable?"       watchpoint
+    (you do not know which line)          watch myvar
+
+   "How did we end up here?"              backtrace
+                                          bt   /   bt full
+
+   "What are the locals three frames      frame + print
+    up the stack?"                        frame 3 ; print x
+
+   WATCHPOINT LIMITS
+     hardware watchpoints: fast, but typically only 4, and size-limited
+     software watchpoints: unlimited, but single-step the whole program
+                           (often 100x slower -- GDB warns when it falls back)
+     a watchpoint on a LOCAL dies when that scope exits
+```
+
+| Mechanism | Triggers on | Best for |
+|---|---|---|
+| `break` | reaching a location | inspecting state at a known point |
+| `break ... if cond` | a location, when a condition holds | bugs on a specific iteration |
+| `watch` | a value being written | finding unknown corruption |
+| `rwatch` / `awatch` | a value being read / either | who reads this? |
+| `catch` | an event (syscall, signal) | non-location triggers |
+| `tbreak` | once, then self-deletes | one-shot inspection |
+| `bt` / `bt full` | on demand | how did we get here |
+
+**Key Takeaways**
+
+- Conditional breakpoints (`break loc if cond`) find the one iteration that matters without stepping through thousands.
+- Watchpoints stop when a value changes anywhere in the program, which is the right tool for "who is corrupting this?" — a question breakpoints cannot answer well.
+- Hardware watchpoints are few and size-limited; exceeding them silently falls back to software watchpoints that single-step and are far slower.
+- `bt` shows the call chain and `bt full` adds every frame's locals; `frame N` switches scope so `print` reads that frame's variables.
+- Breakpoint `commands` ending in `continue` turn the debugger into logging you never had to compile in.
+
+> 🧪 Practice
+>
+> 1. Set a conditional breakpoint that stops only on iteration 5 of `process`, and confirm it does not stop on the other nine.
+> 2. Use `watch records[8].id` to find the corrupting write without knowing in advance which line does it.
+> 3. Attach `commands` to a breakpoint that print the arguments and continue, producing a trace of all ten calls.
+> 4. Interview-style: *"A global variable is being corrupted somewhere in a 50,000-line program. How do you find the culprit?"* Hint: you do not need to know which line to suspect.
+
 #### Inspecting Memory and Registers
+
+**Theory**
+
+Printing a variable is enough most of the time. Occasionally it is not: the data is corrupted so its declared type is meaningless, you are debugging optimized code where a value lives only in a register, the crash is inside a library with no debug info, or you need to see the exact bytes a struct occupies.
+
+For these, the debugger can show you **raw memory** and **CPU registers** directly.
+
+GDB's `x` (examine) command reads memory at an address and formats it. Its syntax is dense but systematic — `x/NFU address`, where `N` is a repeat count, `F` a format letter, and `U` a unit size:
+
+| Format | Shows | | Unit | Size |
+|---|---|---|---|---|
+| `x` | hexadecimal | | `b` | 1 byte |
+| `d` / `u` | signed / unsigned decimal | | `h` | 2 bytes |
+| `c` | character | | `w` | 4 bytes |
+| `s` | NUL-terminated string | | `g` | 8 bytes |
+| `i` | disassembled instruction | | | |
+| `f` | floating point | | | |
+| `t` | binary | | | |
+
+So `x/16xb ptr` shows 16 bytes in hex, `x/4dw arr` shows 4 words as decimal, and `x/s name` prints a string. `x/5i $pc` disassembles the next five instructions.
+
+**Registers** hold the CPU's working state. `info registers` prints them all; individual ones are `$rax`, `$rsp`, and so on, usable in any expression. Three matter constantly:
+
+- **`$pc`** (or `$rip`) — the program counter: which instruction is executing.
+- **`$sp`** (or `$rsp`) — the stack pointer: the top of the current stack frame.
+- **`$fp`** (or `$rbp`) — the frame pointer, when one is in use.
+
+Recalling the calling convention from the previous chapter makes register inspection useful: on x86-64 System V, the first arguments arrive in `RDI, RSI, RDX, RCX, R8, R9` and the return value comes back in `RAX`. So at the first instruction of a function with no debug info, `p $rdi` shows the first argument.
+
+Two commands are worth knowing beyond `x`:
+
+**`ptype`** prints a type's full definition — invaluable when you are unsure of a struct's members. **`print sizeof(T)`** and **`print &var`** answer layout questions directly, and `p/x` prints any expression in hex.
+
+The `x` command's real strength is examining data whose type you cannot trust. If a struct has been corrupted, `p *ptr` shows nonsense interpreted as fields; `x/32xb ptr` shows the actual bytes, and patterns become visible — a run of `0x00`, a repeated `0xAA` from an allocator, or ASCII text where a pointer should be.
+
+Recognizing sentinel byte patterns is a genuine debugging skill, since many allocators and sanitizers fill memory deliberately to make misuse visible.
+
+**Examples**
+
+```c
+/* ============================ inspect.c ============================
+   Build:  gcc -g -O0 inspect.c -o inspect                           */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+typedef struct {
+    uint32_t magic;         /* offset 0  */
+    uint16_t version;       /* offset 4  */
+    uint16_t flags;         /* offset 6  */
+    char     name[16];      /* offset 8  */
+    double   value;         /* offset 24 (aligned) */
+} Header;
+
+static int compute(int a, int b, int c)
+{
+    int sum = a + b + c;
+    return sum * 2;
+}
+
+int main(void)
+{
+    Header h;
+    memset(&h, 0, sizeof h);
+    h.magic   = 0xDEADBEEFu;
+    h.version = 2;
+    h.flags   = 0x00FF;
+    snprintf(h.name, sizeof h.name, "example");
+    h.value   = 3.14159;
+
+    int numbers[8];
+    for (int i = 0; i < 8; i++) numbers[i] = (i + 1) * 100;
+
+    const char *text = "inspect me";
+    char *heap = malloc(64);
+    if (heap) strcpy(heap, "heap contents");
+
+    int result = compute(10, 20, 30);
+    printf("result = %d, magic = 0x%X, name = %s\n", result, h.magic, h.name);
+    printf("numbers[0]=%d numbers[7]=%d\n", numbers[0], numbers[7]);
+    printf("text = %s, heap = %s\n", text, heap ? heap : "(null)");
+
+    free(heap);
+    return 0;
+}
+```
+
+A memory- and register-inspection session:
+
+```bash
+$ gcc -g -O0 inspect.c -o inspect
+$ gdb ./inspect
+
+(gdb) break 46                     # at the printf, after everything is set
+(gdb) run
+
+# ---------- STRUCTS AND LAYOUT ----------
+(gdb) print h                      # the typed view
+$1 = {magic = 3735928559, version = 2, flags = 255,
+      name = "example", '\000' <repeats 8 times>, value = 3.14159}
+
+(gdb) print/x h.magic              # any expression in hex
+$2 = 0xdeadbeef
+
+(gdb) ptype Header                 # the full type definition
+type = struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t flags;
+    char name[16];
+    double value;
+}
+
+(gdb) print sizeof(Header)
+$3 = 32
+(gdb) print (char*)&h.value - (char*)&h     # the offset of a member
+$4 = 24                                      # 24, not 22: alignment padding
+
+# ---------- RAW BYTES ----------
+# The untyped view: what the object ACTUALLY occupies.
+(gdb) x/32xb &h
+0x7ffd8a3c: 0xef 0xbe 0xad 0xde  0x02 0x00 0xff 0x00
+#            ^^^^^^^^^^^^^^^^^^ magic, LITTLE-ENDIAN on the wire
+0x7ffd8a54: 0x65 0x78 0x61 0x6d  0x70 0x6c 0x65 0x00   # "example"
+0x7ffd8a5c: 0x00 0x00 0x00 0x00  0x00 0x00 0x00 0x00
+0x7ffd8a64: 0x6e 0x86 0x1b 0xf0  0xf9 0x21 0x09 0x40   # the double
+
+(gdb) x/4xw &h                     # the same bytes as 32-bit words
+0x7ffd8a3c: 0xdeadbeef  0x00ff0002  0x6d617865  0x00656c70
+
+# ---------- ARRAYS ----------
+(gdb) x/8dw numbers                # 8 words, signed decimal
+0x7ffd8a70: 100   200   300   400
+0x7ffd8a80: 500   600   700   800
+
+(gdb) print numbers                # GDB knows it is an array
+$5 = {100, 200, 300, 400, 500, 600, 700, 800}
+(gdb) print numbers[3]@4           # the @ operator: 4 elements from index 3
+$6 = {400, 500, 600, 700}
+
+# ---------- STRINGS ----------
+(gdb) x/s text
+0x555555556004: "inspect me"
+(gdb) x/s heap
+0x5555555592a0: "heap contents"
+(gdb) x/16xb heap                  # the bytes behind the string
+0x5555555592a0: 0x68 0x65 0x61 0x70  0x20 0x63 0x6f 0x6e
+
+# ---------- REGISTERS ----------
+(gdb) info registers rax rbx rsp rip
+rax            0x78                120
+rsp            0x7ffd8a30          0x7ffd8a30
+rip            0x555555555289      0x555555555289 <main+271>
+
+(gdb) print $rsp                   # registers work in expressions
+$7 = (void *) 0x7ffd8a30
+(gdb) print/x $rax
+$8 = 0x78
+
+# At a function's first instruction, the ABI tells you where the
+# arguments are -- useful when there is no debug info at all.
+(gdb) break compute
+(gdb) run
+Breakpoint 2, compute (a=10, b=20, c=30) at inspect.c:19
+(gdb) print $rdi                   # first argument by the calling convention
+$9 = 10
+(gdb) print $rsi                   # second
+$10 = 20
+
+# ---------- DISASSEMBLY ----------
+(gdb) x/5i $pc                     # the next five instructions
+=> 0x5555555551c9 <compute+4>:  mov    %edi,-0x14(%rbp)
+   0x5555555551cc <compute+7>:  mov    %esi,-0x18(%rbp)
+   0x5555555551cf <compute+10>: mov    %edx,-0x1c(%rbp)
+
+(gdb) disassemble compute          # the whole function
+(gdb) finish                       # run out, and see RAX hold the result
+Value returned is $11 = 120
+(gdb) print/x $rax
+$12 = 0x78                         # 120 -- the return value, in RAX
+```
+
+```text
+   SENTINEL BYTE PATTERNS WORTH RECOGNIZING
+
+   0x00 repeated       calloc'd, or .bss -- never written
+   0xCD CD CD CD       MSVC debug: allocated but UNINITIALIZED
+   0xDD DD DD DD       MSVC debug: FREED memory (use-after-free)
+   0xFD FD FD FD       MSVC debug: guard bytes around an allocation
+   0xBE BE BE BE       some allocators: freed
+   0xAA / 0x55         hardware and embedded fill patterns
+   ASCII text          often a string where a pointer was expected
+   small values < 0x1000  usually a corrupted pointer, or an offset
+
+   Under AddressSanitizer, poisoned memory has its own shadow encoding --
+   ASan will name the exact error rather than making you read bytes.
+
+   x COMMAND SYNTAX
+
+        x / 16 x b   &h
+            |  | |    |
+            |  | |    +-- address (any expression)
+            |  | +------- unit:   b=1  h=2  w=4  g=8 bytes
+            |  +--------- format: x hex  d dec  u unsigned  c char
+            |                     s string  i instruction  f float  t binary
+            +------------ how many
+```
+
+**Key Takeaways**
+
+- `x/NFU addr` examines raw memory with a count, a format letter, and a unit size — the tool for data whose declared type can no longer be trusted.
+- `ptype` shows a full type definition and `print &member - &struct` reveals real offsets including padding.
+- Registers are usable in expressions: `$pc`, `$sp`, and — recalling the ABI — `$rdi`/`$rsi` for arguments and `$rax` for the return value.
+- The `arr[i]@n` syntax prints `n` consecutive elements, which is the fast way to dump part of an array.
+- Learn the common sentinel fill patterns; `0xDD` or `0xCD` in a struct usually identifies the bug before you read another line.
+
+> 🧪 Practice
+>
+> 1. Use `x/32xb` on the `Header` struct and locate every padding byte, confirming your reading against `ptype` and `sizeof`.
+> 2. Break at `compute`'s first instruction and read all three arguments from registers rather than by name.
+> 3. Print the same array with `print`, `x/8dw`, and `x/32xb`, and explain when each view is the most useful.
+> 4. Interview-style: *"You print a struct and every field is nonsense. What do you look at next?"* Hint: stop trusting the type and look at the bytes.
 
 #### Core Dumps
 
+**Theory**
+
+The hardest crashes to debug are the ones you did not witness: a nightly job that failed at 3 a.m., a customer's report with no reproduction steps, a crash that happens once in ten thousand runs. You cannot attach a debugger to a process that already died.
+
+A **core dump** solves this. When a process is killed by certain signals — `SIGSEGV`, `SIGABRT`, `SIGFPE`, `SIGBUS` — the kernel can write a snapshot of its entire memory image, register state, and thread stacks to a file. Loading that file into a debugger gives you the program frozen at the instant of death: full backtrace, all variables, every thread.
+
+It is a post-mortem rather than a live session — you cannot continue execution or call functions that have side effects — but for "why did it crash?", the frozen state is usually everything you need.
+
+Core dumps are commonly disabled by default, because they can be large and may contain secrets. Enabling them takes two steps:
+
+1. **Raise the size limit**: `ulimit -c unlimited` for the shell, or `setrlimit(RLIMIT_CORE, ...)` from within the program.
+2. **Know where they go**: `/proc/sys/kernel/core_pattern` controls the name and location. On systems using systemd it usually pipes to `systemd-coredump`, and you retrieve dumps with `coredumpctl` instead of finding a file.
+
+The debugging session is then `gdb ./program core`, and the first three commands are almost always the same: `bt` for the call chain, `frame N` to reach your code, and `print` to inspect the state.
+
+Two things determine whether a core dump is useful:
+
+**The binary must match the core exactly.** Debug information comes from the executable, not the dump, so you need the same build. This is why production systems keep the unstripped binary (or a separate `.debug` file) archived alongside each release, even when shipping stripped binaries.
+
+**Compile release builds with `-g`.** Debug information does not slow the program down — it adds to the file size and is not loaded at runtime. Shipping `-O2 -g` and stripping into a separate symbol file gives you full post-mortem capability at zero runtime cost.
+
+You can also generate a core dump on demand without a crash: `gcore <pid>` snapshots a running process, which is how you diagnose a hung or looping program.
+
+The signals that dump core are worth recognizing, since the signal itself narrows the cause: `SIGSEGV` is an invalid memory access, `SIGABRT` is usually a failed `assert` or a detected heap corruption, `SIGFPE` is integer division by zero, and `SIGBUS` is a misaligned or invalid mapping access.
+
+**Examples**
+
+A program that crashes several different ways:
+
+```c
+/* ============================ crash.c ============================
+   Build:  gcc -g -O0 crash.c -o crash                             */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/resource.h>
+
+typedef struct { int id; char *name; } Item;
+
+static void enable_core_dumps(void)
+{
+    /* Equivalent to 'ulimit -c unlimited', but from inside the program
+       so it works regardless of how the process was launched. */
+    struct rlimit rl = { RLIM_INFINITY, RLIM_INFINITY };
+    if (setrlimit(RLIMIT_CORE, &rl) != 0) perror("setrlimit");
+}
+
+static int level_three(Item *item)
+{
+    /* Crashes when item->name is NULL: dereferencing through a null
+       pointer raises SIGSEGV, which dumps core. */
+    return (int)strlen(item->name);
+}
+
+static int level_two(Item *item)  { return level_three(item) * 2; }
+static int level_one(Item *item)  { return level_two(item) + 1; }
+
+int main(int argc, char **argv)
+{
+    enable_core_dumps();
+
+    const char *mode = (argc > 1) ? argv[1] : "segv";
+
+    if (strcmp(mode, "segv") == 0) {
+        Item item = { 42, NULL };          /* name is NULL */
+        printf("about to crash in level_three\n");
+        printf("%d\n", level_one(&item));  /* SIGSEGV, three frames deep */
+
+    } else if (strcmp(mode, "abort") == 0) {
+        printf("aborting\n");
+        abort();                            /* SIGABRT */
+
+    } else if (strcmp(mode, "assert") == 0) {
+        int count = 0;
+        printf("failing an assertion\n");
+        if (count == 0) { fprintf(stderr, "count must be positive\n"); abort(); }
+    }
+    return 0;
+}
+```
+
+Producing and analyzing a core dump:
+
+```bash
+$ gcc -g -O0 crash.c -o crash
+
+# ---------- 1. ENABLE CORE DUMPS ----------
+$ ulimit -c                       # often 0 by default: no dumps at all
+0
+$ ulimit -c unlimited
+$ ulimit -c
+unlimited
+
+# Where do they go? This pattern controls the name and location.
+$ cat /proc/sys/kernel/core_pattern
+core.%e.%p                        # %e = executable, %p = pid
+# On systemd systems this is usually:
+# |/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h
+
+# ---------- 2. CRASH ----------
+$ ./crash segv
+about to crash in level_three
+Segmentation fault (core dumped)
+#                   ^^^^^^^^^^^ the dump was written
+
+$ ls -lh core.crash.*
+-rw------- 1 user user 356K core.crash.12345
+
+# ---------- 3. POST-MORTEM ----------
+# The binary supplies the debug info; the core supplies the state.
+# They MUST be the same build.
+$ gdb ./crash core.crash.12345
+
+Core was generated by `./crash segv'.
+Program terminated with signal SIGSEGV, Segmentation fault.
+#0  0x00007f8b2c4a1234 in strlen () from /lib/x86_64-linux-gnu/libc.so.6
+
+# The first three commands, almost every time:
+(gdb) bt                          # 1. how did we get here?
+#0  0x00007f8b2c4a1234 in strlen () from /lib/.../libc.so.6
+#1  0x00005555555551f9 in level_three (item=0x7ffd4c2b3a50) at crash.c:22
+#2  0x0000555555555216 in level_two   (item=0x7ffd4c2b3a50) at crash.c:26
+#3  0x0000555555555233 in level_one   (item=0x7ffd4c2b3a50) at crash.c:27
+#4  0x00005555555552a1 in main (argc=2, argv=0x7ffd4c2b3b68) at crash.c:38
+
+(gdb) frame 1                     # 2. move to OUR code, not libc's
+#1  0x00005555555551f9 in level_three (item=0x7ffd4c2b3a50) at crash.c:22
+22          return (int)strlen(item->name);
+
+(gdb) print *item                 # 3. inspect the state
+$1 = {id = 42, name = 0x0}
+#                     ^^^ there it is: name is NULL
+
+(gdb) print item->name
+$2 = 0x0
+
+(gdb) bt full                     # every frame with its locals
+(gdb) info threads                # for a multithreaded crash
+(gdb) thread apply all bt         # a backtrace for EVERY thread
+
+# ---------- systemd-based systems ----------
+$ coredumpctl list                          # recent dumps
+$ coredumpctl info crash                    # summary plus backtrace
+$ coredumpctl debug crash                   # open it straight in gdb
+$ coredumpctl dump crash > core.file        # extract to a file
+
+# ---------- SNAPSHOT A RUNNING PROCESS ----------
+# For a hung or looping process -- no crash required.
+$ ./long_running &
+$ gcore $!                        # writes core.<pid> and CONTINUES the process
+$ gdb ./long_running core.12345   # inspect where it is stuck
+```
+
+```text
+   WHAT A CORE DUMP CONTAINS
+
+   +--------------------------------------+
+   |  register state at the moment of death|  <- $pc points at the faulting
+   +--------------------------------------+     instruction
+   |  the full call stack, every thread    |  <- 'bt' and 'thread apply all bt'
+   +--------------------------------------+
+   |  heap, globals, and stack memory      |  <- 'print' any variable
+   +--------------------------------------+
+   |  the signal that killed it            |  <- SIGSEGV / SIGABRT / SIGFPE
+   +--------------------------------------+
+
+   NOT included: debug information. That comes from the BINARY, which
+   must be the exact same build -- keep unstripped binaries for every
+   release, or you get addresses with no names.
+
+   WHICH SIGNAL NARROWS THE CAUSE
+     SIGSEGV  invalid memory access (null, dangling, out of bounds)
+     SIGABRT  assert failed, or the allocator detected heap corruption
+     SIGFPE   integer division by zero
+     SIGBUS   misaligned or invalid mapping access
+```
+
+**Key Takeaways**
+
+- A core dump freezes a crashed process's memory, registers, and stacks, making a crash you never witnessed fully debuggable after the fact.
+- Enable dumps with `ulimit -c unlimited` or `setrlimit` in the program, and check `core_pattern` — on systemd systems use `coredumpctl` rather than looking for a file.
+- The executable must be the exact build that produced the dump, because debug information lives in the binary, not the core.
+- Ship release builds with `-g`: debug info costs file size but no runtime performance, and without it a core dump gives you bare addresses.
+- `bt`, `frame N`, `print` is the standard opening; `thread apply all bt` covers multithreaded crashes, and `gcore` snapshots a hung process without killing it.
+
+> 🧪 Practice
+>
+> 1. Enable core dumps, run `./crash segv`, and use the dump to identify the null field without ever running the program under a debugger.
+> 2. Rebuild without `-g`, produce another dump, and compare how much the backtrace tells you.
+> 3. Start a long-running program, snapshot it with `gcore`, and inspect where it was executing while it continues to run.
+> 4. Interview-style: *"A customer reports a crash you cannot reproduce. What do you ask them for?"* Hint: consider what a debugger would need to reconstruct the moment of failure.
+
 #### Debug Logging Strategies
+
+**Theory**
+
+Debuggers are for problems you can reproduce on demand. Logging is for everything else: intermittent failures, production incidents, performance anomalies, and any bug whose reproduction takes hours. A debugger answers "what is the state right now?"; a log answers "what happened, in what order, over the last week?".
+
+The naive approach — scattering `printf` calls and deleting them later — has three failure modes. The calls get committed by accident, they cannot be turned on in production without a rebuild, and they slow down code even when nobody is reading the output.
+
+A proper logging facility fixes all three, and it needs four properties:
+
+**Levels.** Each message carries a severity — typically `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL` — and a runtime threshold decides which are emitted. One variable then controls verbosity from "silent" to "everything", with no rebuild.
+
+**Zero cost when disabled.** A disabled log call should not evaluate its arguments. Wrapping the call in a level check inside a macro achieves this: if the level is too low, the arguments are never computed. This matters when an argument is expensive, such as formatting a data structure.
+
+**Automatic context.** `__FILE__`, `__LINE__`, and `__func__` cost nothing at runtime and remove any need to write "in function X" into the message by hand. A timestamp and, in threaded programs, a thread ID are equally essential — a log without ordering information is nearly useless for a concurrency bug.
+
+**Compile-time removal for the hot path.** A `TRACE` call in an inner loop costs a comparison even when disabled. Defining a minimum compile-time level lets the preprocessor delete those calls entirely from release builds.
+
+Beyond mechanics, a few practices decide whether logs are useful during an incident:
+
+- **Log at boundaries**: function entry and exit for significant operations, every external call, every error path. Not every line.
+- **Include the data you will want**: identifiers, sizes, error codes, and the actual values involved. "Failed to open file" is much less useful than "failed to open /etc/app.conf: Permission denied".
+- **Never log secrets** — passwords, tokens, keys, personal data. Logs are copied, shipped, and retained.
+- **Make it greppable**: a consistent prefix and a structured format let you filter thousands of lines to the twenty that matter.
+
+For production systems, `syslog` integrates with the platform's log infrastructure; for embedded, a ring buffer in RAM that survives a reset is often the only viable option.
+
+**Examples**
+
+A complete logging facility in one header:
+
+```c
+/* ============================ log.h ============================ */
+#ifndef LOG_H
+#define LOG_H
+
+#include <stdio.h>
+#include <time.h>
+#include <string.h>
+
+typedef enum {
+    LOG_TRACE = 0, LOG_DEBUG, LOG_INFO,
+    LOG_WARN,      LOG_ERROR, LOG_FATAL, LOG_OFF
+} LogLevel;
+
+/* Compile-time floor: calls below this are REMOVED by the preprocessor,
+   so a TRACE in a hot loop costs literally nothing in a release build.
+   Override with -DLOG_COMPILE_LEVEL=LOG_INFO */
+#ifndef LOG_COMPILE_LEVEL
+#  define LOG_COMPILE_LEVEL LOG_TRACE
+#endif
+
+extern LogLevel log_runtime_level;      /* changed at run time, no rebuild */
+
+void log_set_level(LogLevel level);
+void log_set_output(FILE *stream);
+void log_write(LogLevel level, const char *file, int line,
+               const char *func, const char *fmt, ...);
+
+/* Strip the directory so the output stays narrow. */
+#define LOG_FILE_ \
+    (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
+
+/* The core macro. Two guards:
+     1. the #if is COMPILE-time  -- the call vanishes entirely
+     2. the if is RUN-time       -- the arguments are never EVALUATED
+        when the level is too low, so an expensive argument costs nothing.
+   do/while(0) makes the macro a single statement, safe inside an
+   unbraced if/else. */
+#define LOG_AT(level, ...)                                                  \
+    do {                                                                    \
+        if ((level) >= LOG_COMPILE_LEVEL && (level) >= log_runtime_level)   \
+            log_write((level), LOG_FILE_, __LINE__, __func__, __VA_ARGS__); \
+    } while (0)
+
+#if LOG_COMPILE_LEVEL <= LOG_TRACE
+#  define LOG_TRACE_(...) LOG_AT(LOG_TRACE, __VA_ARGS__)
+#else
+#  define LOG_TRACE_(...) ((void)0)      /* removed at compile time */
+#endif
+
+#define LOG_DEBUG_(...) LOG_AT(LOG_DEBUG, __VA_ARGS__)
+#define LOG_INFO_(...)  LOG_AT(LOG_INFO,  __VA_ARGS__)
+#define LOG_WARN_(...)  LOG_AT(LOG_WARN,  __VA_ARGS__)
+#define LOG_ERROR_(...) LOG_AT(LOG_ERROR, __VA_ARGS__)
+#define LOG_FATAL_(...) LOG_AT(LOG_FATAL, __VA_ARGS__)
+
+#endif /* LOG_H */
+```
+
+```c
+/* ============================ log.c ============================ */
+#include "log.h"
+#include <stdarg.h>
+
+LogLevel    log_runtime_level = LOG_INFO;
+static FILE *log_stream = NULL;          /* lazily defaults to stderr */
+
+static const char *level_name(LogLevel l)
+{
+    static const char *names[] =
+        { "TRACE", "DEBUG", "INFO ", "WARN ", "ERROR", "FATAL" };
+    return (l >= LOG_TRACE && l <= LOG_FATAL) ? names[l] : "?????";
+}
+
+void log_set_level(LogLevel level)  { log_runtime_level = level; }
+void log_set_output(FILE *stream)   { log_stream = stream; }
+
+void log_write(LogLevel level, const char *file, int line,
+               const char *func, const char *fmt, ...)
+{
+    FILE *out = log_stream ? log_stream : stderr;   /* diagnostics -> stderr */
+
+    /* A timestamp is not optional: without ordering information a log
+       cannot explain a concurrency or sequencing bug. */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+
+    struct tm tm_buf;
+    localtime_r(&ts.tv_sec, &tm_buf);        /* the _r form: thread-safe */
+
+    char stamp[32];
+    strftime(stamp, sizeof stamp, "%H:%M:%S", &tm_buf);
+
+    fprintf(out, "%s.%03ld [%s] %s:%d %s(): ",
+            stamp, ts.tv_nsec / 1000000, level_name(level), file, line, func);
+
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(out, fmt, ap);
+    va_end(ap);
+
+    fputc('\n', out);
+
+    /* Flush anything serious immediately: an ERROR message must survive
+       the crash it is describing. */
+    if (level >= LOG_ERROR) fflush(out);
+}
+```
+
+```c
+/* ============================ app.c ============================ */
+#include "log.h"
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>      /* errno, used in the error path below */
+
+/* An expensive argument: with a plain printf this would run even when
+   the message is discarded. The macro's runtime guard prevents that. */
+static const char *describe(const int *data, int n)
+{
+    static char buf[128];
+    int off = snprintf(buf, sizeof buf, "[");
+    for (int i = 0; i < n && off < (int)sizeof buf - 8; i++)
+        off += snprintf(buf + off, sizeof buf - (size_t)off, "%d ", data[i]);
+    snprintf(buf + off, sizeof buf - (size_t)off, "]");
+    return buf;
+}
+
+static int process_file(const char *path)
+{
+    LOG_DEBUG_("opening %s", path);         /* log at BOUNDARIES */
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        /* Include the data you will want during an incident: WHICH file,
+           and WHY -- not just "failed to open file". */
+        LOG_ERROR_("cannot open %s: %s", path, strerror(errno));
+        return -1;
+    }
+
+    char line[256];
+    int  count = 0;
+    while (fgets(line, sizeof line, f)) {
+        count++;
+        LOG_TRACE_("line %d: %zu bytes", count, strlen(line));
+    }
+
+    fclose(f);
+    LOG_INFO_("read %d lines from %s", count, path);
+    return count;
+}
+
+int main(int argc, char **argv)
+{
+    (void)argv;
+
+    /* Verbosity from the environment: no rebuild, no code change. */
+    const char *env = getenv("APP_LOG_LEVEL");
+    if (env) log_set_level((LogLevel)atoi(env));
+
+    LOG_INFO_("starting, argc=%d", argc);
+
+    int data[] = { 1, 2, 3, 4, 5 };
+
+    /* describe() is NOT called when TRACE is below the threshold --
+       the runtime guard short-circuits before evaluating the argument. */
+    LOG_TRACE_("data = %s", describe(data, 5));
+
+    process_file("/etc/hostname");
+    process_file("/nonexistent/file");      /* exercises the error path */
+
+    LOG_WARN_("about to finish");
+    LOG_INFO_("done");
+    return 0;
+}
+```
+
+```bash
+$ gcc -g -Wall log.c app.c -o app
+
+# Default level is INFO: DEBUG and TRACE are suppressed.
+$ ./app
+14:32:07.123 [INFO ] app.c:52 main(): starting, argc=1
+14:32:07.124 [INFO ] app.c:41 process_file(): read 1 lines from /etc/hostname
+14:32:07.124 [ERROR] app.c:31 process_file(): cannot open /nonexistent/file: No such file or directory
+14:32:07.124 [WARN ] app.c:63 main(): about to finish
+14:32:07.124 [INFO ] app.c:64 main(): done
+
+# Turn on everything at RUN time -- no rebuild.
+$ APP_LOG_LEVEL=0 ./app
+14:32:19.001 [INFO ] app.c:52 main(): starting, argc=1
+14:32:19.001 [TRACE] app.c:59 main(): data = [1 2 3 4 5 ]
+14:32:19.001 [DEBUG] app.c:24 process_file(): opening /etc/hostname
+14:32:19.001 [TRACE] app.c:36 process_file(): line 1: 8 bytes
+...
+
+# Remove TRACE and DEBUG from the BINARY entirely for release.
+$ gcc -O2 -DLOG_COMPILE_LEVEL=LOG_INFO log.c app.c -o app_release
+$ APP_LOG_LEVEL=0 ./app_release      # TRACE cannot appear: it is not compiled in
+
+# Logs go to stderr, so data on stdout stays pipeable:
+$ ./app 2> app.log | process_the_real_output
+$ grep ERROR app.log
+```
+
+| Approach | Runtime control | Zero cost when off | Context | Suits |
+|---|---|---|---|---|
+| Bare `printf` | no | no | manual | throwaway experiments |
+| `#ifdef DEBUG` blocks | no — needs a rebuild | yes | manual | compile-time variants |
+| Level macros (above) | **yes** | **yes** | automatic | most programs |
+| `syslog` | yes | mostly | automatic | daemons and services |
+| RAM ring buffer | yes | yes | manual | embedded, post-crash |
+
+**Key Takeaways**
+
+- Logging covers what a debugger cannot: intermittent faults, production incidents, and anything whose reproduction takes hours.
+- A level threshold checked at runtime gives verbosity control with no rebuild; a compile-time floor removes hot-path calls from release binaries entirely.
+- Guard the call inside the macro so arguments are never evaluated when the message is discarded — this is what makes an expensive argument free.
+- `__FILE__`, `__LINE__`, and `__func__` supply context for free; a timestamp and thread ID are essential for diagnosing ordering bugs.
+- Log at boundaries and error paths with the identifiers and reasons you will actually want, send logs to `stderr`, and never log secrets.
+
+> 🧪 Practice
+>
+> 1. Build the logging facility and verify that `APP_LOG_LEVEL` changes verbosity with no recompilation.
+> 2. Add a call whose argument is an expensive function, and prove with a counter that it is not evaluated when the level suppresses the message.
+> 3. Add the thread ID to each line and confirm the output makes a two-thread race explicable.
+> 4. Interview-style: *"Why wrap a log call in a macro instead of calling a logging function directly?"* Hint: think about what happens to the arguments of a function call that decides to do nothing.
 
 <a id="132-analysis-and-testing"></a>
 ### 13.2 Analysis and Testing
 
+Debugging finds the bug you already know about. The tools in this section find the ones you do not: memory errors that have not yet crashed anything, undefined behavior that currently happens to work, code paths no test has ever reached, and the hot loop you assumed was elsewhere.
+
 #### Valgrind Memcheck
+
+**Theory**
+
+C's memory errors share a cruel property: they usually do not fail where they are made. Writing one byte past a buffer corrupts whatever the allocator put next, and the symptom appears later, in unrelated code. A leak has no symptom at all until the process runs out of memory hours later.
+
+**Valgrind** finds these by running your program on a synthetic CPU. Every instruction is interpreted, and Memcheck — its default tool — tracks two things for every byte of memory: whether it is **addressable** (may this be accessed?) and whether it is **defined** (has a value been written?).
+
+That bookkeeping catches an unusually complete set of errors:
+
+| Error | What Memcheck reports |
+|---|---|
+| Reading or writing unallocated memory | "Invalid read/write of size N" |
+| Using memory after `free` | "Invalid read/write ... inside a block free'd" |
+| Reading uninitialized memory | "Conditional jump depends on uninitialised value(s)" |
+| Memory leaks | "definitely lost", "indirectly lost", "still reachable" |
+| Mismatched `malloc`/`delete`, double free | "Invalid free() / mismatched" |
+| Overlapping `memcpy` | "Source and destination overlap" |
+
+The **leak categories** are worth understanding precisely, because they call for different responses:
+
+- **Definitely lost** — no pointer to the block exists anywhere. A real leak; fix it.
+- **Indirectly lost** — reachable only from a definitely-lost block, such as the nodes of a leaked list. Fixing the root usually fixes these.
+- **Possibly lost** — only an interior pointer remains. Sometimes a real leak, sometimes a legitimate technique.
+- **Still reachable** — a pointer exists at exit; the memory was simply never freed. Often harmless, though freeing everything makes real leaks stand out.
+
+The decisive advantages of Valgrind are that it **requires no recompilation** — it runs an existing binary, including one you did not build — and that it detects uninitialized *reads* precisely, which the sanitizers do only with a separate, more limited tool.
+
+The cost is speed: **10 to 50 times slower**. That rules it out for production and makes it awkward for large test suites, which is exactly the gap AddressSanitizer fills.
+
+To get useful output, compile with `-g` (so reports name lines, not addresses) and `-O0` or `-O1` (so inlining does not obscure the origin). Run with `--leak-check=full --track-origins=yes`: the second flag makes Valgrind report where an uninitialized value came from, which is usually the whole answer.
+
+Valgrind includes other tools — `--tool=helgrind` for data races and lock-order problems, `--tool=cachegrind` and `callgrind` for cache and call profiling, `massif` for heap usage over time.
+
+**Examples**
+
+A program with one of each classic memory error:
+
+```c
+/* ============================ memerrors.c ============================
+   Build:  gcc -g -O0 memerrors.c -o memerrors
+   Run:    valgrind --leak-check=full --track-origins=yes ./memerrors    */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* 1. Heap buffer overflow: one byte past the end. */
+static void overflow(void)
+{
+    char *buf = malloc(10);
+    if (!buf) return;
+    strcpy(buf, "0123456789");     /* 10 chars + NUL = 11 bytes into 10 */
+    printf("overflow: %s\n", buf);
+    free(buf);
+}
+
+/* 2. Use after free. */
+static void use_after_free(void)
+{
+    int *p = malloc(sizeof *p);
+    if (!p) return;
+    *p = 42;
+    free(p);
+    printf("use-after-free: %d\n", *p);      /* the block is gone */
+}
+
+/* 3. Reading uninitialized memory. */
+static void uninitialized(void)
+{
+    int *arr = malloc(4 * sizeof *arr);      /* malloc does NOT zero */
+    if (!arr) return;
+    arr[0] = 1;
+    arr[1] = 2;
+    /* arr[2] and arr[3] were never written. */
+    printf("uninitialized sum: %d\n", arr[0] + arr[1] + arr[2] + arr[3]);
+    free(arr);
+}
+
+/* 4. A definite leak, with indirectly-lost children. */
+typedef struct Node { int value; struct Node *next; } Node;
+
+static void leak(void)
+{
+    Node *head = malloc(sizeof *head);       /* definitely lost */
+    if (!head) return;
+    head->value = 1;
+    head->next  = malloc(sizeof *head);      /* indirectly lost */
+    if (head->next) { head->next->value = 2; head->next->next = NULL; }
+    /* head goes out of scope: nothing points at either node. */
+}
+
+/* 5. Double free. */
+static void double_free(void)
+{
+    char *p = malloc(16);
+    if (!p) return;
+    free(p);
+    /* free(p); */                            /* would abort the run */
+}
+
+int main(void)
+{
+    overflow();
+    use_after_free();
+    uninitialized();
+    leak();
+    double_free();
+    return 0;
+}
+```
+
+The Valgrind session:
+
+```bash
+$ gcc -g -O0 memerrors.c -o memerrors
+
+# --leak-check=full   : report each leak with the allocating stack
+# --track-origins=yes : say WHERE an uninitialized value came from
+# --show-leak-kinds=all : include 'still reachable'
+$ valgrind --leak-check=full --track-origins=yes ./memerrors
+
+==12345== Memcheck, a memory error detector
+
+# --- 1. the overflow: reported AT THE WRITE, not later ---
+# (the compiler inlined strcpy, so this shows as a 4-byte store rather
+#  than a call into strcpy -- the location is still exact)
+==5635== Invalid write of size 4
+==5635==    at 0x1091BB: overflow (memerrors.c:13)
+==5635==    by 0x10937E: main (memerrors.c:64)
+==5635==  Address 0x4a76047 is 7 bytes inside a block of size 10 alloc'd
+==5635==    at 0x4846828: malloc (vgpreload_memcheck-amd64-linux.so)
+==5635==    by 0x1091A5: overflow (memerrors.c:11)
+#              ^ both the BAD ACCESS and the ALLOCATION are named
+
+# --- 2. use after free: the free site is reported too ---
+==5748== Invalid read of size 4
+==5748==    at 0x109229: use_after_free (memerrors.c:25)
+==5748==    by 0x109383: main (memerrors.c:65)
+==5748==  Address 0x4a770d0 is 0 bytes inside a block of size 4 free'd
+==5748==    at 0x484988F: free (vgpreload_memcheck-amd64-linux.so)
+==5748==    by 0x109224: use_after_free (memerrors.c:24)
+#              ^ the allocation, the free, AND the bad access are all named
+
+# --- 3. uninitialized read: --track-origins names the source ---
+==5762== Use of uninitialised value of size 8
+==5762==    at 0x48C00BB: _itoa_word (_itoa.c:183)
+==5762==    by 0x48C11B2: printf (printf.c:33)
+==5762==    by 0x1092BE: uninitialized (memerrors.c:36)
+#              ^ the value reached printf from OUR line 36; --track-origins
+#                additionally reports where it was created
+
+# --- 4. leaks, categorized ---
+==5773== HEAP SUMMARY:
+==5773==     in use at exit: 32 bytes in 2 blocks
+==5773==   total heap usage: 7 allocs, 5 frees, 4,174 bytes allocated
+==5773==
+==5509== 32 (16 direct, 16 indirect) bytes in 1 blocks are definitely lost
+==5509==    at 0x4846828: malloc (vgpreload_memcheck-amd64-linux.so)
+==5509==    by 0x1092A1: leak (memerrors.c:47)
+#              ^ 16 DIRECT (head) + 16 INDIRECT (head->next)
+==5509==
+==5509== LEAK SUMMARY:
+==5509==    definitely lost: 16 bytes in 1 blocks
+==5509==    indirectly lost: 16 bytes in 1 blocks
+==5509==      possibly lost: 0 bytes in 0 blocks
+==5509==    still reachable: 0 bytes in 0 blocks
+==5647== ERROR SUMMARY: 7 errors from 7 contexts (suppressed: 0 from 0)
+
+# --- CI usage: fail the build on any error ---
+$ valgrind --error-exitcode=1 --leak-check=full ./memerrors || echo "FAILED"
+
+# --- suppress known third-party noise ---
+$ valgrind --gen-suppressions=all ./prog    # generate suppression blocks
+$ valgrind --suppressions=known.supp ./prog # apply them
+
+# --- the other tools ---
+$ valgrind --tool=helgrind ./threaded       # data races, lock ordering
+$ valgrind --tool=callgrind ./prog          # call counts and cache behavior
+$ valgrind --tool=massif ./prog             # heap usage over time
+```
+
+```text
+   HOW MEMCHECK TRACKS EVERY BYTE
+
+   For each byte of memory it maintains two bits of shadow state:
+
+        A-bit  is this byte ADDRESSABLE?   (allocated and not yet freed)
+        V-bit  is this byte DEFINED?       (something has been written)
+
+   malloc(10):   A = yes for 10 bytes, V = no        (allocated, undefined)
+   buf[0] = 'x': V = yes for byte 0                  (now defined)
+   buf[10]:      A = NO -> "Invalid write"           (past the end)
+   free(buf):    A = no for all 10                   (and quarantined)
+   *buf after:   A = no -> "Invalid read"            (use after free)
+   if (buf[5]):  V = no -> "Conditional jump depends
+                            on uninitialised value"
+
+   This is why no recompilation is needed -- the tracking is done by
+   the synthetic CPU, not by instrumentation in your binary.
+```
+
+**Key Takeaways**
+
+- Memcheck tracks addressability and definedness for every byte, catching overflows, use-after-free, uninitialized reads, leaks, and mismatched frees.
+- It needs no recompilation and works on binaries you did not build — but it runs 10–50x slower, so it suits targeted runs rather than every test.
+- Compile with `-g -O0` so reports name source lines, and always pass `--track-origins=yes` to learn where an uninitialized value originated.
+- Distinguish leak categories: "definitely lost" is a real bug, "indirectly lost" usually disappears when you fix its root, and "still reachable" is often harmless.
+- Use `--error-exitcode=1` to fail CI, suppression files for third-party noise, and `helgrind`, `callgrind`, or `massif` for races, profiling, and heap growth.
+
+> 🧪 Practice
+>
+> 1. Run `memerrors.c` under Valgrind and match each reported error to the function that caused it.
+> 2. Fix the leak and re-run, confirming the summary reports zero bytes definitely lost.
+> 3. Remove `--track-origins=yes` and compare how much harder the uninitialized-read report is to act on.
+> 4. Interview-style: *"Valgrind reports a leak in a program that exits immediately. Does it matter?"* Hint: consider what the operating system does at process exit, and what changes if the code becomes a library.
 
 #### AddressSanitizer and UndefinedBehaviorSanitizer
 
+**Theory**
+
+Valgrind's thoroughness comes at a 10–50x slowdown, which puts it out of reach for a large test suite or a fuzzing campaign. The **sanitizers** take the opposite trade: the compiler instruments your code at build time, so checks are compiled in and run at roughly **2x** slowdown — fast enough to make every debug build and every CI run checked by default.
+
+**AddressSanitizer (ASan)** detects memory errors. It surrounds every allocation with poisoned **redzones** and maintains a compact **shadow memory** recording which bytes are valid. Any access is checked against the shadow first, so an overflow is caught at the instruction that performs it.
+
+It finds heap and stack buffer overflows, use after free, use after return, use after scope, double free, and memory leaks (via the built-in LeakSanitizer). Crucially, it catches **stack** overflows, which Valgrind largely cannot.
+
+**UndefinedBehaviorSanitizer (UBSan)** is a different kind of tool: rather than tracking memory, it inserts checks for operations the standard leaves undefined. Signed overflow, oversized shifts, null dereference, misaligned access, division by zero, out-of-bounds indexing with a known bound, and invalid enum or bool values are each checked at the point they occur.
+
+This matters because of the previous chapter's lesson: UB is not merely a wrong answer, it licenses the optimizer to transform surrounding code. UBSan reports the violation at its source, before that reasoning propagates.
+
+There are companion tools with narrower scope:
+
+| Sanitizer | Detects | Cost | Combines with ASan |
+|---|---|---|---|
+| **ASan** | memory errors, leaks | ~2x time, ~3x memory | — |
+| **UBSan** | undefined behavior | ~1.2x | **yes** |
+| **TSan** | data races, lock-order issues | ~5-15x, 5-10x memory | **no** |
+| **MSan** | uninitialized reads | ~3x | **no** |
+| **LSan** | leaks only | small | included in ASan |
+
+`ASan + UBSan` is the standard debug combination. TSan and MSan each conflict with ASan and need separate builds.
+
+Three flags make the output far more useful. `-fno-omit-frame-pointer` gives complete stack traces. `-g` supplies line numbers. And **`-fno-sanitize-recover=all`** makes the program abort on the first UBSan finding rather than printing and continuing — essential in CI, where a warning nobody reads is worthless.
+
+Runtime behavior is tuned through environment variables: `ASAN_OPTIONS=detect_leaks=1:abort_on_error=1`, `UBSAN_OPTIONS=print_stacktrace=1`.
+
+The honest comparison with Valgrind: sanitizers are faster, catch stack errors, and integrate into normal builds — but they require recompiling, so they cannot check a third-party binary, and MSan needs the *entire* program including libraries rebuilt to avoid false positives. Most projects use sanitizers routinely and Valgrind occasionally.
+
+**Examples**
+
+```c
+/* ============================ sanitize.c ============================
+   ASan:   gcc -fsanitize=address -g -fno-omit-frame-pointer sanitize.c
+   UBSan:  gcc -fsanitize=undefined -fno-sanitize-recover=all -g sanitize.c
+   Both:   gcc -fsanitize=address,undefined -g sanitize.c                 */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+
+/* ---- errors AddressSanitizer catches ---- */
+
+static void heap_overflow(void)
+{
+    int *arr = malloc(5 * sizeof *arr);
+    if (!arr) return;
+    arr[5] = 42;                    /* one past the end: heap-buffer-overflow */
+    free(arr);
+}
+
+static void stack_overflow_demo(void)
+{
+    int arr[5];
+    int index = 5;                  /* not a constant, so no compile warning */
+    arr[index] = 42;                /* stack-buffer-overflow -- Valgrind
+                                       largely cannot see this one */
+    printf("%d\n", arr[0]);
+}
+
+static int *dangling(void)
+{
+    int local = 42;
+    return &local;                  /* stack-use-after-return */
+}
+
+static void use_after_free_demo(void)
+{
+    char *p = malloc(32);
+    if (!p) return;
+    strcpy(p, "hello");
+    free(p);
+    printf("%s\n", p);              /* heap-use-after-free */
+}
+
+/* ---- undefined behavior UBSan catches ---- */
+
+static int signed_overflow(int x)   { return x + 1; }          /* at INT_MAX */
+static int bad_shift(int n)         { return 1 << n; }         /* n >= 32    */
+static int divide(int a, int b)     { return a / b; }          /* b == 0     */
+
+static int oob_index(int i)
+{
+    int table[4] = { 10, 20, 30, 40 };
+    return table[i];                /* i outside 0..3 */
+}
+
+int main(int argc, char **argv)
+{
+    const char *which = (argc > 1) ? argv[1] : "none";
+
+    if      (strcmp(which, "heap")    == 0) heap_overflow();
+    else if (strcmp(which, "stack")   == 0) stack_overflow_demo();
+    else if (strcmp(which, "return")  == 0) printf("%d\n", *dangling());
+    else if (strcmp(which, "uaf")     == 0) use_after_free_demo();
+    else if (strcmp(which, "leak")    == 0) { (void)!malloc(100); }
+    else if (strcmp(which, "overflow")== 0) printf("%d\n", signed_overflow(INT_MAX));
+    else if (strcmp(which, "shift")   == 0) printf("%d\n", bad_shift(32));
+    else if (strcmp(which, "divzero") == 0) printf("%d\n", divide(10, 0));
+    else if (strcmp(which, "oob")     == 0) printf("%d\n", oob_index(10));
+    else printf("usage: %s heap|stack|return|uaf|leak|overflow|shift|divzero|oob\n",
+                argv[0]);
+    return 0;
+}
+```
+
+```bash
+# -fno-omit-frame-pointer gives complete stack traces; -g gives line numbers.
+$ gcc -fsanitize=address -fno-omit-frame-pointer -g sanitize.c -o san
+
+$ ./san heap
+=================================================================
+==12345==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x602000000034
+WRITE of size 4 at 0x602000000034 thread T0
+    #0 0x4f8a2c in heap_overflow sanitize.c:14
+    #1 0x4f8d1a in main sanitize.c:64
+
+0x602000000034 is located 0 bytes to the right of 20-byte region
+allocated by thread T0 here:
+    #0 0x4f5b8d in malloc
+    #1 0x4f8a0f in heap_overflow sanitize.c:12
+
+SUMMARY: AddressSanitizer: heap-buffer-overflow sanitize.c:14 in heap_overflow
+Shadow bytes around the buggy address:
+  0x0c047fff8000: fa fa 00 00[04]fa fa fa fa fa fa fa
+#                              ^^ the redzone byte that was hit
+#   00 = addressable   fa = redzone   fd = freed   04 = partially valid
+
+$ ./san stack
+==12346==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x7ffd...
+WRITE of size 4 at ... thread T0
+    #0 0x4f8b1c in stack_overflow_demo sanitize.c:22
+# ^ a STACK overflow -- this is the class Valgrind largely cannot detect
+
+$ ./san uaf
+==12347==ERROR: AddressSanitizer: heap-use-after-free on address 0x602...
+READ of size 1 at ... thread T0
+    #0 in use_after_free_demo sanitize.c:41
+freed by thread T0 here:
+    #1 in use_after_free_demo sanitize.c:40
+previously allocated by thread T0 here:
+    #1 in use_after_free_demo sanitize.c:37
+
+$ ./san leak
+==12348==ERROR: LeakSanitizer: detected memory leaks
+Direct leak of 100 byte(s) in 1 object(s) allocated from:
+    #1 0x4f8e02 in main sanitize.c:69
+
+# ---------- UBSan ----------
+$ gcc -fsanitize=undefined -fno-sanitize-recover=all -g sanitize.c -o ub
+
+$ ./ub overflow
+sanitize.c:48:33: runtime error: signed integer overflow:
+2147483647 + 1 cannot be represented in type 'int'
+
+$ ./ub shift
+sanitize.c:49:35: runtime error: shift exponent 32 is too large
+for 32-bit type 'int'
+
+$ ./ub divzero
+sanitize.c:50:35: runtime error: division by zero
+
+$ ./ub oob
+sanitize.c:55:12: runtime error: index 10 out of bounds for type 'int [4]'
+
+# ---------- the standard debug build ----------
+$ gcc -O1 -g -fno-omit-frame-pointer \
+      -fsanitize=address,undefined -fno-sanitize-recover=all \
+      -Wall -Wextra prog.c -o prog
+
+# ---------- runtime tuning ----------
+$ ASAN_OPTIONS=detect_leaks=1:abort_on_error=1:strict_string_checks=1 ./prog
+$ UBSAN_OPTIONS=print_stacktrace=1 ./prog
+
+# TSan and MSan need SEPARATE builds -- they conflict with ASan.
+$ gcc -fsanitize=thread -g threaded.c -o t_tsan
+$ clang -fsanitize=memory -fsanitize-memory-track-origins -g p.c -o p_msan
+```
+
+```text
+   HOW ASan CATCHES AN OVERFLOW
+
+   Every allocation is surrounded by POISONED REDZONES:
+
+   [ redzone ][  your 20 bytes  ][ redzone ]
+      fa fa      00 00 00 00 00     fa fa
+        ^                             ^
+        |                             +-- arr[5] lands HERE
+        +-- and arr[-1] would land here
+
+   A compact SHADOW MAP records the state of every 8 bytes of memory.
+   Each access checks the shadow first, so the error is reported at the
+   instruction that made it -- not later, when something else breaks.
+
+   VALGRIND vs SANITIZERS
+
+                        Valgrind          ASan + UBSan
+   recompile needed     no                yes
+   slowdown             10-50x            ~2x
+   heap errors          yes               yes
+   STACK errors         mostly no         YES
+   uninitialized reads  YES               only with MSan (separate build)
+   undefined behavior   no                YES (UBSan)
+   third-party binaries yes               no
+
+   Use sanitizers by default; reach for Valgrind for uninitialized
+   reads and for binaries you cannot rebuild.
+```
+
+**Key Takeaways**
+
+- Sanitizers instrument at compile time and run at roughly 2x slowdown, making them practical for every debug build and CI run.
+- ASan catches heap and stack overflows, use after free, use after return, and leaks — including the stack errors Valgrind largely misses.
+- UBSan checks operations the standard leaves undefined, reporting them at the source before the optimizer's assumptions propagate.
+- Combine `-fsanitize=address,undefined` with `-g -fno-omit-frame-pointer`, and add `-fno-sanitize-recover=all` so CI fails on the first finding.
+- TSan and MSan each require their own build because they conflict with ASan; use Valgrind for uninitialized reads and for binaries you cannot recompile.
+
+> 🧪 Practice
+>
+> 1. Build `sanitize.c` with ASan and trigger every memory error mode, matching each report to its cause.
+> 2. Build the same file with UBSan and `-fno-sanitize-recover=all`, and confirm it aborts on the first violation.
+> 3. Run the stack-overflow case under both Valgrind and ASan and compare what each detects.
+> 4. Interview-style: *"Your CI runs the test suite under ASan and it passes. What classes of bug could still be present?"* Hint: name at least two other sanitizers and say what each covers.
+
 #### Static Analyzers and Linters
+
+**Theory**
+
+Every tool so far finds bugs by *running* the program, which means they only see the paths your inputs actually exercise. A defect on an error path nobody tested stays invisible.
+
+**Static analysis** examines source code without executing it. By reasoning about all paths symbolically, it can find bugs in code that has never run — the `NULL` return you did not check, the file handle leaked on the third error branch, the buffer that overflows only when a length argument is zero.
+
+There is a spectrum of tools, and it starts with one you already have:
+
+**Compiler warnings** are the highest-value static analysis available, and they are free. `-Wall -Wextra` catches a substantial fraction of real defects. The essential additions:
+
+| Flag | Catches |
+|---|---|
+| `-Wall -Wextra` | the broad, high-signal set |
+| `-Wpedantic` | non-standard constructs |
+| `-Wshadow` | a local shadowing an outer variable |
+| `-Wconversion` | implicit narrowing that loses data |
+| `-Wformat=2` | `printf` format/argument mismatches |
+| `-Wcast-qual` | casting away `const` |
+| `-Wstrict-prototypes` | `f()` where `f(void)` was meant |
+| `-Wvla` | variable-length arrays |
+| `-Werror` | make every warning fatal |
+
+`-Werror` is the one that changes behavior. Without it, warnings accumulate until nobody reads them; with it, the codebase stays clean because it must.
+
+**Dedicated analyzers** go further by tracking values across function boundaries:
+
+- **`gcc -fanalyzer`** (GCC 10+) — path-sensitive checking for double frees, leaks, null dereferences, and use after free.
+- **`clang --analyze`** (or `scan-build`) — Clang's static analyzer, with excellent HTML reports showing the exact path to the bug.
+- **`cppcheck`** — standalone, fast, low false-positive rate, easy to add to CI.
+- **Commercial tools** — Coverity, PVS-Studio, PC-lint — deeper analysis, used where the cost of a defect is high.
+
+The universal limitation is **false positives**. A path the analyzer believes possible may be impossible for reasons it cannot see. Every team must decide how to handle these: fix the code so the concern disappears (usually best, since it also helps readers), or suppress with a targeted, commented annotation. What fails is ignoring them wholesale, because real findings then drown in noise.
+
+The complementary limitation is **false negatives**: static analysis cannot find everything, particularly bugs that depend on runtime values or timing. It complements sanitizers and tests; it does not replace them.
+
+The practical recommendation is a layered set: `-Wall -Wextra -Werror` on every build, `-fanalyzer` or `cppcheck` in CI, and a deeper tool periodically.
+
+**Examples**
+
+Code containing defects that only static analysis finds:
+
+```c
+/* ============================ analyze.c ============================
+   gcc -Wall -Wextra -fanalyzer -c analyze.c
+   clang --analyze analyze.c
+   cppcheck --enable=all analyze.c                                    */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* 1. Unchecked malloc: the NULL path is never tested, so no run-time
+      tool sees it -- but the analyzer follows it symbolically. */
+static void unchecked_malloc(size_t n)
+{
+    int *arr = malloc(n * sizeof *arr);
+    arr[0] = 42;                       /* dereference without checking NULL */
+    free(arr);
+}
+
+/* 2. A leak on ONE error path only. Tests that never trigger that
+      path will never leak, so only static analysis finds it. */
+static int leak_on_error_path(const char *path, int strict)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    char *buffer = malloc(1024);
+    if (!buffer) { fclose(f); return -1; }
+
+    if (strict && ferror(f))
+        return -1;                     /* LEAKS buffer AND f */
+
+    free(buffer);
+    fclose(f);
+    return 0;
+}
+
+/* 3. Use after free on a conditional path. */
+static void conditional_uaf(int flag)
+{
+    char *p = malloc(32);
+    if (!p) return;
+    strcpy(p, "data");
+
+    if (flag) free(p);
+    printf("%s\n", p);                 /* freed when flag was true */
+    if (!flag) free(p);
+}
+
+/* 4. Double free through two paths converging. */
+static void double_free_path(int a, int b)
+{
+    char *p = malloc(16);
+    if (!p) return;
+    if (a) free(p);
+    if (b) free(p);                    /* freed twice when a && b */
+}
+
+/* 5. Off-by-one the compiler can prove. */
+static void off_by_one(void)
+{
+    int arr[10];
+    for (int i = 0; i <= 10; i++) arr[i] = i;   /* i == 10 is out of bounds */
+    printf("%d\n", arr[0]);
+}
+
+/* 6. Shadowing: the inner 'count' hides the outer one silently. */
+static int shadowing(int count)
+{
+    int total = 0;
+    for (int i = 0; i < 3; i++) {
+        int count = i * 2;             /* -Wshadow flags this */
+        total += count;
+    }
+    return total + count;
+}
+
+/* 7. Format string mismatch: caught by -Wformat=2 at compile time. */
+static void format_mismatch(void)
+{
+    long value = 42;
+    printf("%d\n", value);             /* %d with a long */
+    printf("%s\n", 42);                /* %s with an int -- would crash */
+}
+
+int main(void) { return 0; }
+```
+
+```bash
+# ---------- 1. COMPILER WARNINGS: free, and the highest-value layer ----------
+$ gcc -Wall -Wextra -Wshadow -Wformat=2 -Wconversion -c analyze.c
+
+analyze.c:66:13: warning: declaration of 'count' shadows a parameter [-Wshadow]
+   66 |         int count = i * 2;
+analyze.c:76:20: warning: format '%d' expects argument of type 'int',
+                 but argument 2 has type 'long int' [-Wformat=]
+analyze.c:77:20: warning: format '%s' expects argument of type 'char *',
+                 but argument 2 has type 'int' [-Wformat=]
+analyze.c:58:31: warning: array subscript 10 is above array bounds
+                 of 'int[10]' [-Warray-bounds]
+
+# ---------- 2. GCC'S PATH-SENSITIVE ANALYZER ----------
+$ gcc -fanalyzer -c analyze.c
+
+analyze.c:12:11: warning: dereference of possibly-NULL 'arr' [CWE-690]
+   12 |     arr[0] = 42;
+  'unchecked_malloc': events 1-2
+    |    9 |     int *arr = malloc(n * sizeof *arr);
+    |      |                ^~~~~~ (1) this call could return NULL
+    |   12 |     arr[0] = 42;
+    |      |     ~~~~~~ (2) 'arr' could be NULL here
+#          ^ the analyzer PRINTS THE PATH, which is what makes it actionable
+
+analyze.c:29:16: warning: leak of FILE 'f' [CWE-775]
+analyze.c:29:16: warning: leak of 'buffer' [CWE-401]
+   29 |         return -1;
+  'leak_on_error_path': events 1-4
+    |   21 |     FILE *f = fopen(path, "r");     (1) opened here
+    |   25 |     char *buffer = malloc(1024);    (2) allocated here
+    |   28 |     if (strict && ferror(f))        (3) following 'true' branch
+    |   29 |         return -1;                  (4) 'buffer' leaks here
+
+analyze.c:44:5: warning: use after 'free' of 'p' [CWE-416]
+analyze.c:54:9: warning: double-'free' of 'p' [CWE-415]
+
+# ---------- 3. CLANG'S ANALYZER ----------
+$ clang --analyze -Xanalyzer -analyzer-output=text analyze.c
+
+analyze.c:12:5: warning: Array access results in a null pointer dereference
+    arr[0] = 42;
+    ^~~~~~
+
+# scan-build wraps a whole build and produces browsable HTML:
+$ scan-build make
+scan-build: 7 bugs found.
+scan-build: Run 'scan-view /tmp/scan-build-2024-01-15' to examine.
+
+# ---------- 4. CPPCHECK ----------
+$ cppcheck --enable=all --inconclusive --std=c11 analyze.c
+analyze.c:12:5: error: Common realloc mistake / null pointer dereference
+analyze.c:29:9: error: Memory leak: buffer [memleak]
+analyze.c:44:5: error: Dereferencing 'p' after it is deallocated [deallocuse]
+analyze.c:54:9: error: Memory pointed to by 'p' is freed twice [doubleFree]
+
+# ---------- 5. THE RECOMMENDED PROJECT SETUP ----------
+# In your Makefile or CMakeLists:
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror \
+         -Wshadow -Wconversion -Wformat=2 -Wcast-qual \
+         -Wstrict-prototypes -Wmissing-prototypes -Wvla
+
+# In CI, additionally:
+$ gcc -fanalyzer -c $(SOURCES)
+$ cppcheck --enable=all --error-exitcode=1 src/
+
+# Suppress a genuine false positive NARROWLY, with a reason:
+/* cppcheck-suppress memleak ; ownership transfers to the registry */
+```
+
+| Layer | Tool | Speed | Finds |
+|---|---|---|---|
+| Compiler warnings | `-Wall -Wextra -Werror` | instant | type errors, format bugs, obvious mistakes |
+| Path analysis | `gcc -fanalyzer` | seconds | leaks, double free, null derefs on untested paths |
+| Deep analysis | `clang --analyze`, `cppcheck` | seconds to minutes | the above, plus cross-function issues |
+| Commercial | Coverity, PVS-Studio | minutes to hours | whole-program, inter-procedural |
+| Runtime | sanitizers, Valgrind | 2-50x runtime | only what the tests actually execute |
+
+**Key Takeaways**
+
+- Static analysis reasons about paths that were never executed, so it finds defects on untested error branches that no runtime tool can see.
+- Compiler warnings are the highest-value layer and cost nothing — enable `-Wall -Wextra -Wshadow -Wconversion -Wformat=2` and make them fatal with `-Werror`.
+- `gcc -fanalyzer` and `clang --analyze` track values across branches and print the exact path to a leak, double free, or null dereference.
+- False positives are inevitable; fix the code so the concern disappears, or suppress narrowly with a comment explaining why — never ignore the output wholesale.
+- Static and dynamic analysis are complementary: analyzers cover untested paths, sanitizers cover runtime values and timing.
+
+> 🧪 Practice
+>
+> 1. Compile `analyze.c` with an escalating set of warning flags and record which defect each new flag reveals.
+> 2. Run `gcc -fanalyzer` and follow the printed event path for the leak, explaining each numbered step.
+> 3. Add `-Werror` to a small project and fix every warning that appears.
+> 4. Interview-style: *"Static analysis reports 200 warnings on a legacy codebase. What do you do?"* Hint: consider what happens to real findings when they sit alongside 195 false ones.
 
 #### Unit Testing Frameworks
 
+**Theory**
+
+Every tool so far detects a defect once it exists. Tests do something different: they **encode intent** so a future change that breaks it fails immediately. A test suite is a specification that runs.
+
+C has no built-in testing support, so a test is just a program that exercises your code and reports success or failure. That is genuinely enough to start — an `assert`-based `main` catches real regressions — but it lacks four things a framework provides: continuing after a failure, informative messages showing expected versus actual, per-test isolation so one crash does not end the run, and machine-readable output for CI.
+
+The C landscape offers several options:
+
+| Framework | Style | Notes |
+|---|---|---|
+| **Unity** | two files, no dependencies | popular in embedded; trivial to vendor |
+| **Check** | fork per test | a crash cannot take down the runner |
+| **CMocka** | mocking built in | good for testing against hardware interfaces |
+| **Criterion** | auto-registering tests | modern, minimal boilerplate |
+| **greatest / µnit** | single header | drop-in, no build changes |
+| Hand-rolled | ~50 lines | fine for small projects |
+
+The structure that has proven itself is **arrange, act, assert**: set up the inputs, perform the operation, check the result. Each test should verify one behavior and be independent of the others, so a failure names a specific broken thing and the suite can run in any order.
+
+What to test matters more than the framework:
+
+- **The contract**, not the implementation — a test coupled to internals breaks on every refactor.
+- **Boundaries**: zero, one, maximum, empty, full, and one past each. This is where bugs live.
+- **Error paths**, which are the least exercised code in most programs.
+- **Regressions**: every fixed bug gets a test, so it cannot return.
+
+**Coverage** measures which lines the tests executed. `gcov` (with `--coverage`) reports it, and it is best used as a *finding* tool rather than a target: 100% line coverage proves every line ran, not that behavior is correct. Branch coverage is more informative than line coverage, since it distinguishes taking an `if` from merely reaching it.
+
+Two practices make a suite worth keeping. **Tests must be fast**, or they will not be run; a suite that takes ten minutes gets skipped. And **tests must be deterministic** — a test that fails one run in twenty trains people to ignore failures, which is worse than having no test.
+
+Running the suite under sanitizers doubles its value: the tests supply the inputs, and ASan and UBSan catch errors that produce no visible failure.
+
+**Examples**
+
+The code under test:
+
+```c
+/* ============================ strutil.h ============================ */
+#ifndef STRUTIL_H
+#define STRUTIL_H
+
+#include <stddef.h>
+#include <stdbool.h>
+
+/* Copy src into dst, always NUL-terminating.
+   Returns the length that WOULD have been needed, so a value >= cap
+   means the result was truncated. dst may be NULL only if cap is 0. */
+size_t su_copy(char *dst, size_t cap, const char *src);
+
+/* Trim ASCII whitespace in place; returns s. */
+char *su_trim(char *s);
+
+/* Case-insensitive comparison, returning a sign like strcmp. */
+int su_casecmp(const char *a, const char *b);
+
+/* True if s starts with prefix. An empty prefix always matches. */
+bool su_starts_with(const char *s, const char *prefix);
+
+#endif
+```
+
+```c
+/* ============================ strutil.c ============================ */
+#include "strutil.h"
+#include <string.h>
+#include <ctype.h>
+
+size_t su_copy(char *dst, size_t cap, const char *src)
+{
+    size_t len = strlen(src);
+
+    if (cap > 0) {
+        size_t n = (len < cap - 1) ? len : cap - 1;
+        memcpy(dst, src, n);
+        dst[n] = '\0';                 /* ALWAYS terminate */
+    }
+    return len;                        /* >= cap means truncated */
+}
+
+char *su_trim(char *s)
+{
+    char *start = s;
+    while (isspace((unsigned char)*start)) start++;      /* the cast matters */
+
+    if (*start == '\0') { s[0] = '\0'; return s; }
+
+    char *end = start + strlen(start) - 1;
+    while (end > start && isspace((unsigned char)*end)) end--;
+    end[1] = '\0';
+
+    if (start != s) memmove(s, start, (size_t)(end - start) + 2);
+    return s;
+}
+
+int su_casecmp(const char *a, const char *b)
+{
+    while (*a && *b) {
+        int ca = tolower((unsigned char)*a);
+        int cb = tolower((unsigned char)*b);
+        if (ca != cb) return (ca > cb) - (ca < cb);
+        a++; b++;
+    }
+    return (*a != 0) - (*b != 0);
+}
+
+bool su_starts_with(const char *s, const char *prefix)
+{
+    return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+```
+
+A minimal framework and a suite that uses it:
+
+```c
+/* ============================ test_strutil.c ============================
+   Build: gcc -g -fsanitize=address,undefined -Wall \
+              strutil.c test_strutil.c -o tests                            */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "strutil.h"
+
+/* ---- a ~40-line framework: enough for a real project ---- */
+static int tests_run = 0, tests_failed = 0;
+static int current_failed = 0;
+
+#define CHECK(cond)                                                       \
+    do {                                                                  \
+        if (!(cond)) {                                                    \
+            printf("    FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);    \
+            current_failed = 1;                                           \
+        }                                                                 \
+    } while (0)
+
+/* Report EXPECTED and ACTUAL -- a bare "assertion failed" wastes the
+   debugging time the test was supposed to save. */
+#define CHECK_INT(actual, expected)                                       \
+    do {                                                                  \
+        long a_ = (long)(actual), e_ = (long)(expected);                  \
+        if (a_ != e_) {                                                   \
+            printf("    FAIL %s:%d: %s -- expected %ld, got %ld\n",       \
+                   __FILE__, __LINE__, #actual, e_, a_);                  \
+            current_failed = 1;                                           \
+        }                                                                 \
+    } while (0)
+
+#define CHECK_STR(actual, expected)                                       \
+    do {                                                                  \
+        const char *a_ = (actual), *e_ = (expected);                      \
+        if (strcmp(a_, e_) != 0) {                                        \
+            printf("    FAIL %s:%d: %s -- expected \"%s\", got \"%s\"\n", \
+                   __FILE__, __LINE__, #actual, e_, a_);                  \
+            current_failed = 1;                                           \
+        }                                                                 \
+    } while (0)
+
+#define RUN(test)                                                         \
+    do {                                                                  \
+        printf("  %s\n", #test);                                          \
+        current_failed = 0;                                               \
+        tests_run++;                                                      \
+        test();                                                           \
+        if (current_failed) tests_failed++;                               \
+    } while (0)
+
+/* ---- tests: arrange, act, assert ---- */
+
+static void test_copy_normal(void)
+{
+    char dst[16];                                  /* arrange */
+    size_t needed = su_copy(dst, sizeof dst, "hello");   /* act */
+    CHECK_STR(dst, "hello");                       /* assert */
+    CHECK_INT(needed, 5);
+}
+
+/* BOUNDARIES are where the bugs are: exact fit, one over, empty, zero cap. */
+static void test_copy_boundaries(void)
+{
+    char dst[6];
+
+    CHECK_INT(su_copy(dst, sizeof dst, "12345"), 5);   /* exact fit */
+    CHECK_STR(dst, "12345");
+
+    size_t needed = su_copy(dst, sizeof dst, "123456"); /* one too long */
+    CHECK_INT(needed, 6);                               /* reports the need */
+    CHECK_STR(dst, "12345");                            /* truncated */
+    CHECK_INT(strlen(dst), 5);                          /* still terminated */
+
+    CHECK_INT(su_copy(dst, sizeof dst, ""), 0);         /* empty source */
+    CHECK_STR(dst, "");
+
+    CHECK_INT(su_copy(NULL, 0, "anything"), 8);         /* cap 0: measure only */
+}
+
+static void test_trim(void)
+{
+    char a[] = "  hello  ";  CHECK_STR(su_trim(a), "hello");
+    char b[] = "hello";      CHECK_STR(su_trim(b), "hello");   /* no change */
+    char c[] = "     ";      CHECK_STR(su_trim(c), "");        /* all spaces */
+    char d[] = "";           CHECK_STR(su_trim(d), "");        /* empty */
+    char e[] = "\t\n x \r "; CHECK_STR(su_trim(e), "x");       /* mixed */
+    char f[] = "a  b";       CHECK_STR(su_trim(f), "a  b");    /* inner kept */
+}
+
+static void test_casecmp(void)
+{
+    CHECK_INT(su_casecmp("abc", "ABC") == 0, 1);
+    CHECK_INT(su_casecmp("abc", "abd")  < 0, 1);
+    CHECK_INT(su_casecmp("abd", "abc")  > 0, 1);
+    CHECK_INT(su_casecmp("", "")   == 0, 1);
+    CHECK_INT(su_casecmp("a", "")   > 0, 1);        /* prefix cases */
+    CHECK_INT(su_casecmp("", "a")   < 0, 1);
+    CHECK_INT(su_casecmp("abc", "abcd") < 0, 1);
+}
+
+static void test_starts_with(void)
+{
+    CHECK_INT(su_starts_with("hello world", "hello"), 1);
+    CHECK_INT(su_starts_with("hello", "hello"),       1);   /* whole string */
+    CHECK_INT(su_starts_with("hello", ""),            1);   /* empty matches */
+    CHECK_INT(su_starts_with("hi", "hello"),          0);   /* prefix longer */
+    CHECK_INT(su_starts_with("", "x"),                0);
+}
+
+/* A regression test: every bug that is fixed gets one, so it cannot return. */
+static void test_regression_trim_single_char(void)
+{
+    char s[] = " x ";
+    CHECK_STR(su_trim(s), "x");
+}
+
+int main(void)
+{
+    printf("running tests\n");
+
+    RUN(test_copy_normal);
+    RUN(test_copy_boundaries);
+    RUN(test_trim);
+    RUN(test_casecmp);
+    RUN(test_starts_with);
+    RUN(test_regression_trim_single_char);
+
+    printf("\n%d tests, %d failed\n", tests_run, tests_failed);
+    return tests_failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;  /* CI reads this */
+}
+```
+
+```bash
+# Run the suite under sanitizers: the tests supply inputs, ASan and UBSan
+# catch errors that produce no visible failure.
+$ gcc -g -Wall -Wextra -fsanitize=address,undefined \
+      strutil.c test_strutil.c -o tests
+$ ./tests
+running tests
+  test_copy_normal
+  test_copy_boundaries
+  test_trim
+  test_casecmp
+  test_starts_with
+  test_regression_trim_single_char
+
+6 tests, 0 failed
+$ echo $?
+0
+
+# ---------- COVERAGE ----------
+$ gcc --coverage -g strutil.c test_strutil.c -o tests_cov
+$ ./tests_cov > /dev/null
+$ gcov strutil.c
+File 'strutil.c'
+Lines executed:93.75% of 32
+
+$ cat strutil.c.gcov | grep -n '####'      # lines never executed
+    #####:   18:        if (cap == 0) return len;
+#           ^ an untested branch: write a test for it
+
+# Branch coverage is more informative than line coverage:
+$ gcov -b strutil.c
+Lines executed:93.75% of 32
+Branches executed:100.00% of 22
+Taken at least once:86.36% of 22
+```
+
+**Key Takeaways**
+
+- Tests encode intent so that a future change breaking a documented behavior fails immediately; the framework matters far less than what you choose to test.
+- Structure each test as arrange, act, assert, keep tests independent, and have failures report expected versus actual rather than just "assertion failed".
+- Test the contract rather than the implementation, concentrate on boundaries and error paths, and add a regression test for every bug you fix.
+- Run the suite under ASan and UBSan — the tests provide the inputs and the sanitizers catch errors that produce no visible failure.
+- Use coverage to find untested paths rather than as a target; branch coverage is more informative than line coverage, and neither proves correctness.
+
+> 🧪 Practice
+>
+> 1. Add tests for `su_copy` with a capacity of 1, and for `su_trim` on a string of a single non-space character.
+> 2. Measure coverage with `gcov -b`, find an unexecuted branch, and write the test that reaches it.
+> 3. Introduce an off-by-one into `su_copy` and confirm exactly which test catches it and what the message tells you.
+> 4. Interview-style: *"Your test suite has 100% line coverage. What can still be wrong?"* Hint: consider input values, branch combinations, and whether the assertions check anything meaningful.
+
 #### Fuzzing
 
+**Theory**
+
+Tests check the inputs you thought of. Attackers and users supply the ones you did not.
+
+**Fuzzing** automates finding those: generate large volumes of input, feed them to the program, and watch for crashes, hangs, or sanitizer reports. It is remarkably effective on code that parses anything — file formats, network protocols, configuration, command lines — because parsers have many states and humans are poor at enumerating them.
+
+Naive random input rarely gets far: a parser rejects random bytes in the first few instructions, so the interesting code is never reached. The breakthrough is **coverage-guided fuzzing**. The fuzzer instruments the program to record which branches each input executes; an input that reaches a *new* branch is kept and mutated further. The corpus evolves toward inputs that explore the program, and the fuzzer effectively learns the input format without being told it.
+
+The two standard tools:
+
+- **libFuzzer** — built into Clang. You write a single entry point, `LLVMFuzzerTestOneInput`, and link with `-fsanitize=fuzzer`. In-process and very fast.
+- **AFL++** — runs the target as a separate process, works on binaries without source, and is extremely effective at long campaigns.
+
+Fuzzing is only as good as its **oracle** — the signal that says something went wrong. A crash is the obvious one, but a memory error that does not crash produces no signal at all. This is why **fuzzing is always run with sanitizers**: ASan turns a silent one-byte overflow into an immediate, reported failure. Fuzzing without sanitizers finds a small fraction of what is there.
+
+Beyond crashes, two other oracles are valuable. **Assertions** encode invariants the fuzzer can violate. And **differential fuzzing** compares two implementations of the same thing, flagging any disagreement — which finds logic errors that neither crashes nor triggers a sanitizer.
+
+Three practices make a campaign productive:
+
+**Seed the corpus** with valid inputs. Starting from real examples saves the fuzzer from rediscovering the format, often reducing time-to-first-bug by orders of magnitude.
+
+**Write the harness to be fast and deterministic.** Any input should either be processed or rejected quickly, with no I/O, no randomness, and no global state carried between runs.
+
+**Minimize and triage findings.** Fuzzers produce large inputs that reproduce a bug; `-minimize_crash` shrinks them to a few bytes, which usually makes the cause obvious.
+
+Fuzzing has found tens of thousands of bugs in widely used software. Google's OSS-Fuzz alone accounts for many thousands in projects that already had good tests — which is the point: fuzzing finds a different class of defect than tests do.
+
+**Examples**
+
+A parser with deliberate bugs, and a libFuzzer harness for it:
+
+```c
+/* ============================ parser.c ============================
+   A small binary parser -- exactly the kind of code fuzzing excels at. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include "parser.h"
+
+/* Format:  [magic 2][version 1][count 1][ records: (len 1)(data len) ] */
+
+int parse_message(const uint8_t *data, size_t size, ParseResult *out)
+{
+    memset(out, 0, sizeof *out);
+
+    /* Every field is bounds-checked before it is read. */
+    if (size < 4) return PARSE_TOO_SHORT;
+
+    if (data[0] != 0xAB || data[1] != 0xCD) return PARSE_BAD_MAGIC;
+
+    out->version = data[2];
+    if (out->version != 1) return PARSE_BAD_VERSION;
+
+    uint8_t count = data[3];
+    out->count = count;
+
+    size_t offset = 4;
+    for (uint8_t i = 0; i < count; i++) {
+
+        if (offset >= size) return PARSE_TRUNCATED;   /* need the length byte */
+
+        uint8_t len = data[offset++];
+
+        /* BUG 1 (fixed): without this check, a declared length longer than
+           the remaining input reads past the buffer. */
+        if (offset + len > size) return PARSE_TRUNCATED;
+
+        /* BUG 2 (fixed): without this, a record longer than the field
+           overflows out->records[i]. A fuzzer finds it in seconds. */
+        if (len >= sizeof out->records[i]) return PARSE_TOO_LONG;
+
+        memcpy(out->records[i], data + offset, len);
+        out->records[i][len] = '\0';
+        offset += len;
+
+        /* BUG 3 (fixed): 'count' comes from the input and can be 255,
+           while the array holds only MAX_RECORDS. */
+        if (i + 1 >= MAX_RECORDS && i + 1 < count) return PARSE_TOO_MANY;
+    }
+    return PARSE_OK;
+}
+```
+
+```c
+/* ============================ parser.h ============================ */
+#ifndef PARSER_H
+#define PARSER_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#define MAX_RECORDS 8
+#define MAX_RECORD_LEN 32
+
+enum {
+    PARSE_OK = 0, PARSE_TOO_SHORT, PARSE_BAD_MAGIC, PARSE_BAD_VERSION,
+    PARSE_TRUNCATED, PARSE_TOO_LONG, PARSE_TOO_MANY
+};
+
+typedef struct {
+    uint8_t version;
+    uint8_t count;
+    char    records[MAX_RECORDS][MAX_RECORD_LEN];
+} ParseResult;
+
+int parse_message(const uint8_t *data, size_t size, ParseResult *out);
+
+#endif
+```
+
+```c
+/* ============================ fuzz_parser.c ============================
+   Build: clang -g -fsanitize=fuzzer,address,undefined \
+                parser.c fuzz_parser.c -o fuzz_parser
+   Run:   ./fuzz_parser corpus/ -max_len=256                              */
+#include <stdint.h>
+#include <stddef.h>
+#include "parser.h"
+
+/* libFuzzer calls this with a different input each time. The harness must
+   be FAST, DETERMINISTIC, and free of global state carried between runs. */
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    ParseResult result;
+
+    /* The parser must handle ANY byte sequence without crashing --
+       that is the entire contract being tested. */
+    int rc = parse_message(data, size, &result);
+
+    /* An ASSERTION is a second oracle: the fuzzer can violate an invariant
+       even when nothing crashes and no sanitizer fires. */
+    if (rc == PARSE_OK) {
+        if (result.count > MAX_RECORDS) __builtin_trap();   /* invariant */
+        for (uint8_t i = 0; i < result.count && i < MAX_RECORDS; i++) {
+            /* Every returned record must be NUL-terminated in range. */
+            size_t n = 0;
+            while (n < MAX_RECORD_LEN && result.records[i][n]) n++;
+            if (n >= MAX_RECORD_LEN) __builtin_trap();
+        }
+    }
+
+    return 0;                      /* non-zero is reserved by libFuzzer */
+}
+```
+
+```bash
+# ---------- libFuzzer ----------
+# ALWAYS with sanitizers: without ASan, a silent overflow produces no signal
+# and the fuzzer happily reports success.
+$ clang -g -fsanitize=fuzzer,address,undefined parser.c fuzz_parser.c -o fuzz_parser
+
+# SEED THE CORPUS with valid inputs -- this is the single highest-value step.
+$ mkdir corpus
+$ printf '\xAB\xCD\x01\x01\x05hello' > corpus/valid1
+$ printf '\xAB\xCD\x01\x00'          > corpus/empty
+$ printf '\xAB\xCD\x01\x02\x03abc\x03def' > corpus/two
+
+$ ./fuzz_parser corpus/ -max_len=256 -runs=1000000
+INFO: Seed: 3847562910
+INFO: Loaded 3 files from corpus/
+#2      INITED cov: 24 ft: 25 corp: 3/18b
+#512    NEW    cov: 31 ft: 38 corp: 5/42b     <- found new branches
+#8192   NEW    cov: 38 ft: 47 corp: 9/91b     <- the corpus is EVOLVING
+#65536  pulse  cov: 41 ft: 52 corp: 12/134b
+Done 1000000 runs in 12 second(s)
+
+# What a finding looks like (with the bounds check removed):
+==12345==ERROR: AddressSanitizer: stack-buffer-overflow
+WRITE of size 200 at 0x7ffd... thread T0
+    #0 in parse_message parser.c:38
+    #1 in LLVMFuzzerTestOneInput fuzz_parser.c:16
+artifact_prefix='./'; Test unit written to ./crash-8f3a2b1c
+Base64: q80BAch...
+
+# Reproduce it deterministically:
+$ ./fuzz_parser crash-8f3a2b1c
+
+# Shrink it to the smallest input that still triggers the bug:
+$ ./fuzz_parser -minimize_crash=1 -runs=10000 crash-8f3a2b1c
+INFO: Minimized to 7 bytes                     # now the cause is obvious
+
+# Useful options:
+$ ./fuzz_parser corpus/ -max_total_time=300    # a time-boxed CI run
+$ ./fuzz_parser corpus/ -jobs=8 -workers=8     # parallel
+$ ./fuzz_parser corpus/ -dict=format.dict      # give it format keywords
+
+# Merge and shrink the corpus, keeping coverage:
+$ ./fuzz_parser -merge=1 corpus_min/ corpus/
+
+# ---------- AFL++ ----------
+$ afl-clang-fast -fsanitize=address parser.c afl_main.c -o afl_target
+$ afl-fuzz -i corpus/ -o findings/ -- ./afl_target @@
+```
+
+```text
+   WHY COVERAGE GUIDANCE CHANGES EVERYTHING
+
+   BLIND RANDOM FUZZING
+     random bytes -> rejected at the magic check -> 99.99% of runs
+     explore only the first two instructions. The parser body is
+     never reached.
+
+   COVERAGE-GUIDED FUZZING
+     input reaches a NEW branch -> keep it, mutate it further
+
+     "\x00..."        rejected at magic         discard
+     "\xAB\x00..."    got one byte further      KEEP  <- new coverage
+     "\xAB\xCD..."    passed the magic check    KEEP  <- new coverage
+     "\xAB\xCD\x01"   passed version            KEEP
+     "\xAB\xCD\x01\x05..."  entered the record loop   KEEP
+
+   The fuzzer LEARNS the format from coverage feedback alone.
+
+   THE ORACLE PROBLEM
+     crash            -> obvious signal
+     silent overflow  -> NO SIGNAL without ASan
+     wrong output     -> no signal without an assertion or a reference
+                         implementation to compare against
+
+   This is why fuzzing without sanitizers finds a fraction of the bugs.
+```
+
+**Key Takeaways**
+
+- Fuzzing generates large volumes of input to find the cases you never thought of, and is especially effective against parsers of any kind.
+- Coverage guidance is what makes it work: inputs reaching new branches are kept and mutated, so the fuzzer learns the format without being told it.
+- Always fuzz with sanitizers — without ASan a silent memory error produces no signal and the campaign reports success.
+- Seed the corpus with valid inputs, keep the harness fast and deterministic, and add assertions as a second oracle for invariants that do not crash.
+- Minimize every crash before debugging it; a seven-byte reproducer usually makes the cause self-evident.
+
+> 🧪 Practice
+>
+> 1. Remove the `offset + len > size` check from `parse_message`, fuzz it with ASan, and see how quickly a crash appears.
+> 2. Compare time-to-first-crash with an empty corpus versus one seeded with three valid messages.
+> 3. Add an assertion that every returned record is shorter than `MAX_RECORD_LEN` and confirm the fuzzer can violate it if the check is removed.
+> 4. Interview-style: *"Why must fuzzing be combined with sanitizers?"* Hint: ask what happens when a bug corrupts memory without crashing.
+
 #### Profiling and Benchmarking
+
+**Theory**
+
+Optimization without measurement is guesswork, and programmers are famously bad at guessing. The bottleneck is routinely somewhere nobody suspected — a string comparison in a loop, an allocation per iteration, a cache miss pattern invisible in the source.
+
+The discipline has an order: **measure, find the hot spot, optimize it, measure again.** Skipping the first step wastes effort on code that contributes 2% of runtime. Skipping the last means you never learn whether the change helped.
+
+**Profiling** answers "where does the time go?". Two mechanisms exist, and they see different things:
+
+**Sampling profilers** interrupt the program periodically and record the stack. They add almost no overhead, work on unmodified optimized binaries, and give a statistically accurate picture of where time is spent. `perf` on Linux is the standard tool.
+
+**Instrumenting profilers** insert counting code at every function entry and exit. They give exact call counts and precise call graphs, but the overhead is large and can distort what they measure — a tiny function called a million times looks worse than it is. `gprof` and Valgrind's `callgrind` work this way.
+
+Sampling is the right default; instrumentation is for when you need exact call counts.
+
+The distinction between **inclusive** and **exclusive** time matters when reading any profile. Inclusive (or "total") time counts everything a function called; exclusive (or "self") time counts only the function's own instructions. A function with high inclusive and low exclusive time is not itself slow — its callees are.
+
+**Benchmarking** answers "is this change faster?", and it is easy to do wrong:
+
+- **The compiler deletes unused work.** A benchmark computing a value nobody reads gets optimized away entirely, reporting an impossibly fast result. Consume the value — store it in a `volatile`, or feed it into the return code.
+- **One run is noise.** Frequency scaling, cache state, other processes, and address-space layout all perturb timing. Run many iterations and report the median or minimum.
+- **Warm up first.** The first iteration pays for cold caches and lazy page faults.
+- **Measure the right clock.** `CLOCK_MONOTONIC` for elapsed time, `clock()` for CPU time — as covered in the standard library chapter.
+
+Finally, know the counters that explain *why* something is slow. `perf stat` reports cache misses, branch mispredictions, and instructions per cycle; a low IPC with high cache-miss rates points at memory layout rather than at the algorithm.
+
+**Examples**
+
+A program with a deliberately misleading performance profile:
+
+```c
+/* ============================ profile_me.c ============================
+   Build for profiling: gcc -O2 -g -fno-omit-frame-pointer profile_me.c   */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#define TABLE_N 4000        /* lookup-table entries */
+#define DIM     2048        /* matrix is DIM x DIM ints = 16 MB, well past L3 */
+
+/* Looks expensive -- it is called constantly but does almost nothing. */
+static int cheap_but_frequent(int x) { return x * 2 + 1; }
+
+/* Looks innocuous -- and is where the time actually goes, because each
+   call is a linear scan doing thousands of string comparisons. */
+static int expensive_lookup(char **table, int n, const char *key)
+{
+    for (int i = 0; i < n; i++)
+        if (strcmp(table[i], key) == 0) return i;    /* linear scan */
+    return -1;
+}
+
+/* A cache-hostile access pattern: the same work, the wrong order. */
+static long column_major_sum(int (*m)[DIM], int rows)
+{
+    long total = 0;
+    for (int col = 0; col < DIM; col++)
+        for (int row = 0; row < rows; row++)
+            total += m[row][col];        /* strides 8 KB per step: a miss
+                                            on almost every access */
+    return total;
+}
+
+static long row_major_sum(int (*m)[DIM], int rows)
+{
+    long total = 0;
+    for (int row = 0; row < rows; row++)
+        for (int col = 0; col < DIM; col++)
+            total += m[row][col];        /* sequential: prefetcher-friendly */
+    return total;
+}
+
+static double elapsed_since(struct timespec t0)
+{
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);          /* monotonic: never jumps */
+    return (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+}
+
+int main(void)
+{
+    /* ---- build a lookup table ---- */
+    char **table = malloc(TABLE_N * sizeof *table);
+    if (!table) return 1;
+    for (int i = 0; i < TABLE_N; i++) {
+        table[i] = malloc(24);
+        if (table[i]) snprintf(table[i], 24, "key%06d", i);
+    }
+
+    struct timespec t0;
+
+    /* ---- the frequent-but-cheap function: 20 MILLION calls ---- */
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    volatile long sink = 0;            /* volatile: stops the compiler
+                                          deleting the whole loop */
+    for (int i = 0; i < 20000000; i++) sink += cheap_but_frequent(i);
+    printf("cheap_but_frequent (20M calls): %.4f s\n", elapsed_since(t0));
+
+    /* ---- the rare-but-expensive function: only 20 THOUSAND calls ---- */
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    long found = 0;
+    for (int i = 0; i < 20000; i++) {
+        char key[24];
+        snprintf(key, sizeof key, "key%06d", (i * 7919) % TABLE_N);
+        found += expensive_lookup(table, TABLE_N, key);
+    }
+    printf("expensive_lookup (20k calls):   %.4f s\n", elapsed_since(t0));
+
+    /* ---- the same work, two memory orders ---- */
+    int (*matrix)[DIM] = malloc(sizeof(int[DIM][DIM]));
+    if (matrix) {
+        memset(matrix, 1, sizeof(int[DIM][DIM]));
+
+        /* WARM UP first: the first pass pays for page faults, and would
+           otherwise be charged to whichever order happened to run first. */
+        volatile long warm = row_major_sum(matrix, DIM);
+        (void)warm;
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        long a = row_major_sum(matrix, DIM);
+        double row_time = elapsed_since(t0);
+
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        long b = column_major_sum(matrix, DIM);
+        double col_time = elapsed_since(t0);
+
+        printf("row-major sum:    %.4f s\n", row_time);
+        printf("column-major sum: %.4f s  (%.1fx slower, same work)\n",
+               col_time, col_time / row_time);
+        printf("(sums agree: %s)\n", a == b ? "yes" : "no");
+        free(matrix);
+    }
+
+    printf("(sink=%ld found=%ld)\n", (long)sink, found);   /* consume results */
+
+    for (int i = 0; i < TABLE_N; i++) free(table[i]);
+    free(table);
+    return 0;
+}
+```
+
+```bash
+$ gcc -O2 -g -fno-omit-frame-pointer profile_me.c -o profile_me
+$ ./profile_me
+cheap_but_frequent (20M calls): 0.0616 s
+expensive_lookup (20k calls):   0.1385 s   <- 2.2x more time, 1000x fewer calls
+row-major sum:    0.0016 s
+column-major sum: 0.0630 s  (40.3x slower, same work)
+
+# ---------- SAMPLING: perf ----------
+# Near-zero overhead, works on optimized binaries.
+$ perf record -g ./profile_me
+$ perf report
+
+  Overhead  Command      Symbol
+    44.9%   profile_me   [.] __strcmp_avx2
+    24.1%   profile_me   [.] column_major_sum
+    20.6%   profile_me   [.] main
+     5.2%   profile_me   [.] expensive_lookup
+     0.6%   profile_me   [.] row_major_sum
+#     ^ half the time is inside strcmp, reached only from expensive_lookup --
+#       the function called 1000x LESS often than cheap_but_frequent, which
+#       the compiler inlined into main and which barely registers.
+#       Optimizing the "frequent" function would be wasted effort: exactly
+#       the mistake that measuring first prevents.
+
+# Hardware counters explain WHY something is slow:
+$ perf stat -e cycles,instructions,cache-misses,branch-misses ./profile_me
+     8,234,567,890  cycles
+    12,456,789,012  instructions       #  1.51  insn per cycle
+        45,678,901  cache-misses
+         2,345,678  branch-misses
+
+# Annotate the hot function down to individual instructions:
+$ perf annotate expensive_lookup
+
+# ---------- INSTRUMENTING: callgrind ----------
+# Exact call counts, at a large slowdown.
+$ valgrind --tool=callgrind ./profile_me
+$ callgrind_annotate callgrind.out.12345
+--------------------------------------------------------------------------------
+        Ir  file:function
+--------------------------------------------------------------------------------
+ 4,012,345  profile_me.c:expensive_lookup
+   234,567  profile_me.c:cheap_but_frequent
+$ kcachegrind callgrind.out.12345      # graphical call graph
+
+# ---------- gprof ----------
+$ gcc -pg -O2 profile_me.c -o profile_gprof && ./profile_gprof
+$ gprof ./profile_gprof gmon.out | head -20
+  %   cumulative   self              self     total
+ time   seconds   seconds    calls   s/call   s/call  name
+ 79.2      0.41      0.41     2000     0.00     0.00  expensive_lookup
+#           ^ note SELF vs TOTAL: self excludes callees
+```
+
+A benchmark harness that avoids the usual mistakes:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+
+static int cmp_double(const void *a, const void *b)
+{
+    double x = *(const double *)a, y = *(const double *)b;
+    return (x > y) - (x < y);
+}
+
+/* Run fn REPS times, discard warm-up, and report the MEDIAN -- a single
+   run is dominated by frequency scaling, cache state, and other processes. */
+static void benchmark(const char *name, void (*fn)(void), int reps)
+{
+    double *samples = malloc((size_t)reps * sizeof *samples);
+    if (!samples) return;
+
+    for (int i = 0; i < 3; i++) fn();          /* WARM UP: cold caches and
+                                                  lazy page faults */
+    for (int i = 0; i < reps; i++) {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);   /* monotonic, not wall clock */
+        fn();
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        samples[i] = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    }
+
+    qsort(samples, (size_t)reps, sizeof *samples, cmp_double);
+    printf("%-20s median %.6f s   min %.6f s   max %.6f s\n",
+           name, samples[reps / 2], samples[0], samples[reps - 1]);
+    free(samples);
+}
+
+/* The result MUST be consumed, or the optimizer deletes the whole loop
+   and the benchmark reports an impossibly fast time. */
+static volatile long sink;
+
+static void bench_multiply(void)
+{
+    long total = 0;
+    for (int i = 0; i < 1000000; i++) total += (long)i * 3;
+    sink = total;                              /* consume it */
+}
+
+static void bench_divide(void)
+{
+    long total = 0;
+    for (int i = 1; i <= 1000000; i++) total += 1000000L / i;
+    sink = total;
+}
+
+int main(void)
+{
+    benchmark("multiply", bench_multiply, 21);
+    benchmark("divide",   bench_divide,   21);
+    printf("(sink=%ld)\n", sink);
+    return 0;
+}
+```
+
+| Tool | Type | Overhead | Gives |
+|---|---|---|---|
+| `perf record` | sampling | ~1% | where time goes, on optimized builds |
+| `perf stat` | counters | ~0% | cache misses, IPC, branch misses |
+| `callgrind` | instrumenting | 20-100x | exact call counts and call graph |
+| `gprof` | instrumenting | ~2x | flat profile plus call graph |
+| `massif` | heap sampling | moderate | memory usage over time |
+| manual timing | direct | none | one specific answer |
+
+**Key Takeaways**
+
+- Measure first: the bottleneck is routinely not where you expect, and optimizing a function that accounts for 2% of runtime is wasted effort.
+- Sampling profilers such as `perf` add almost no overhead and work on optimized binaries; instrumenting profilers give exact counts but distort what they measure.
+- Distinguish inclusive from exclusive time — high inclusive with low exclusive means the callees are slow, not this function.
+- In a benchmark, consume the result or the optimizer deletes the work; warm up, run many iterations, and report the median.
+- `perf stat`'s cache-miss and IPC counters explain *why* code is slow, which is what distinguishes a memory-layout problem from an algorithmic one.
+
+> 🧪 Practice
+>
+> 1. Profile `profile_me.c` with `perf record` and confirm that the frequently called function accounts for a small share of runtime.
+> 2. Replace the linear lookup with a hash table and measure the improvement, then re-profile to find the new bottleneck.
+> 3. Write a benchmark that computes a value without consuming it, compile at `-O2`, and explain the impossible timing you get.
+> 4. Interview-style: *"A function shows 90% inclusive time but 2% exclusive time. What does that tell you?"* Hint: ask where the other 88% actually executed.
 
 <a id="133-secure-and-maintainable-c"></a>
 ### 13.3 Secure and Maintainable C
 
+C's vulnerabilities are not exotic — they are the everyday mistakes of this language, weaponized. This section covers the four defect classes behind most C security advisories, the standards that codify how to avoid them, and a review checklist that turns all of it into something you can actually apply.
+
 #### Input Validation and Bounds Checking
+
+**Theory**
+
+Almost every serious C vulnerability reduces to the same sentence: **the program trusted a value it should not have trusted.** A length field from the network, a size from a file header, an index from a user, an environment variable — each is data supplied by someone else, and treating it as correct is how buffer overflows happen.
+
+The mental model that prevents this is a **trust boundary**. Data crossing into your program from outside — network, file, command line, environment, IPC, or any other process — is untrusted until validated. Validation happens once, at the boundary, and everything inside can then rely on the invariants it established.
+
+A buffer overflow is what happens when that boundary is not enforced. Writing past the end of a buffer corrupts whatever the compiler placed after it: another variable, a saved frame pointer, or the function's return address. Overwriting a return address lets an attacker choose where the function returns — the foundation of exploitation for thirty years.
+
+Validation should check several independent properties, and missing any one leaves a hole:
+
+| Check | Question | Failure if omitted |
+|---|---|---|
+| Presence | is it there at all? | null dereference |
+| Type | is it the right kind of value? | misparse |
+| Range | is it within acceptable bounds? | overflow, resource exhaustion |
+| Length | does it fit the destination? | **buffer overflow** |
+| Format | does it match the expected syntax? | injection |
+| Consistency | does it agree with other fields? | logic errors |
+
+Three principles make validation reliable in practice.
+
+**Allowlist rather than denylist.** Enumerating what is permitted is finite and safe; enumerating what is forbidden always misses a case. "Letters, digits, underscore" is complete; "no semicolons, no quotes" is not.
+
+**Validate at the boundary, once.** Scattered re-checking is where inconsistencies creep in — one path checks, another does not. Convert to a validated internal form as data arrives.
+
+**Fail closed.** On invalid input, reject it. Do not attempt to sanitize into validity, which is how truncation and normalization bugs arise.
+
+The two mechanical rules that eliminate most overflows: **always pass the destination's size** to any function that writes into it, and **never trust a length that came from outside** — compare it against your capacity before using it, and remember that the arithmetic doing the comparison can itself overflow.
+
+**Examples**
+
+```c
+/* ============================ validate.c ============================ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+
+/* =====================================================================
+   THE VULNERABILITY: a length taken from input and trusted.
+   ===================================================================== */
+typedef struct { uint8_t type; uint16_t length; uint8_t payload[256]; } Packet;
+
+/* VULNERABLE -- do not ship this.
+   'length' comes from the wire and can be up to 65535, while payload
+   holds 256. This is a remotely triggerable buffer overflow. */
+static int parse_vulnerable(const uint8_t *data, size_t size, Packet *out)
+{
+    if (size < 3) return -1;
+
+    out->type   = data[0];
+    out->length = (uint16_t)((data[1] << 8) | data[2]);
+
+    memcpy(out->payload, data + 3, out->length);   /* OVERFLOW */
+    return 0;
+}
+
+/* SAFE: every property is checked before the length is used. */
+static int parse_safe(const uint8_t *data, size_t size, Packet *out)
+{
+    if (!data || !out) return -1;                  /* PRESENCE */
+    if (size < 3)      return -1;                  /* enough for the header */
+
+    out->type = data[0];
+
+    /* Allowlist the type: enumerate what is ALLOWED, not what is banned. */
+    if (out->type != 1 && out->type != 2 && out->type != 3) return -1;  /* TYPE */
+
+    uint16_t declared = (uint16_t)((data[1] << 8) | data[2]);
+
+    /* RANGE: does it fit OUR buffer? */
+    if (declared > sizeof out->payload) return -1;
+
+    /* CONSISTENCY: does it agree with how much data actually arrived?
+       Written as a subtraction so the addition cannot itself overflow. */
+    if (declared > size - 3) return -1;
+
+    out->length = declared;
+    memcpy(out->payload, data + 3, declared);      /* now provably safe */
+    return 0;
+}
+
+/* =====================================================================
+   Validating a numeric string: range, format, and overflow.
+   ===================================================================== */
+static bool parse_port(const char *s, uint16_t *out)
+{
+    if (!s || *s == '\0') return false;            /* PRESENCE */
+
+    errno = 0;
+    char *end;
+    long v = strtol(s, &end, 10);
+
+    if (end == s)          return false;           /* FORMAT: no digits    */
+    if (*end != '\0')      return false;           /* FORMAT: trailing junk */
+    if (errno == ERANGE)   return false;           /* long overflow         */
+    if (v < 1 || v > 65535) return false;          /* RANGE                 */
+
+    *out = (uint16_t)v;
+    return true;
+}
+
+/* =====================================================================
+   Validating a string: allowlist, not denylist.
+   ===================================================================== */
+static bool valid_identifier(const char *s, size_t max_len)
+{
+    if (!s || *s == '\0') return false;
+    if (strlen(s) > max_len) return false;                     /* LENGTH */
+
+    if (!isalpha((unsigned char)s[0]) && s[0] != '_') return false;
+
+    for (const char *p = s; *p; p++) {
+        unsigned char c = (unsigned char)*p;        /* the ctype cast rule */
+        /* ALLOWLIST: everything not explicitly permitted is rejected. */
+        if (!isalnum(c) && c != '_') return false;
+    }
+    return true;
+}
+
+/* A denylist, for contrast: it will always miss something. */
+static bool valid_identifier_broken(const char *s)
+{
+    for (const char *p = s; *p; p++)
+        if (*p == ';' || *p == '\'' || *p == '"') return false;
+    return true;      /* accepts newlines, NULs via other paths, unicode,
+                         backticks, $(), and anything else not listed */
+}
+
+/* =====================================================================
+   Bounds-checked array access.
+   ===================================================================== */
+#define TABLE_SIZE 16
+static int table[TABLE_SIZE];
+
+static bool table_get(size_t index, int *out)
+{
+    /* size_t is UNSIGNED, so a negative int argument would wrap to a
+       huge value -- a single '< TABLE_SIZE' check catches both ends. */
+    if (index >= TABLE_SIZE) return false;
+    *out = table[index];
+    return true;
+}
+
+int main(void)
+{
+    /* --- the attack that parse_safe refuses --- */
+    uint8_t hostile[] = { 1, 0xFF, 0xFF, 'A', 'B', 'C' };   /* claims 65535 */
+    Packet  pkt;
+
+    printf("hostile packet (declares 65535 bytes, supplies 3):\n");
+    printf("  parse_safe: %s\n",
+           parse_safe(hostile, sizeof hostile, &pkt) == 0 ? "accepted" : "REJECTED");
+    printf("  (parse_vulnerable would memcpy 65535 bytes into a 256-byte buffer)\n");
+    (void)parse_vulnerable;              /* shown for contrast, never called */
+
+    uint8_t good[] = { 1, 0, 3, 'a', 'b', 'c' };
+    printf("  valid packet: %s\n",
+           parse_safe(good, sizeof good, &pkt) == 0 ? "accepted" : "rejected");
+
+    /* --- numeric validation --- */
+    const char *ports[] = { "8080", "0", "65536", "80abc", "", "99999999999" };
+    printf("\nport validation:\n");
+    for (size_t i = 0; i < sizeof ports / sizeof *ports; i++) {
+        uint16_t p;
+        printf("  %-14s %s\n", ports[i][0] ? ports[i] : "(empty)",
+               parse_port(ports[i], &p) ? "valid" : "REJECTED");
+    }
+
+    /* --- allowlist vs denylist --- */
+    const char *names[] = { "valid_name", "_x1", "9bad", "has space",
+                            "semi;colon", "back`tick" };
+    printf("\nidentifier validation:\n");
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++)
+        printf("  %-12s allowlist:%-9s denylist:%s\n", names[i],
+               valid_identifier(names[i], 32) ? "valid" : "REJECTED",
+               valid_identifier_broken(names[i]) ? "valid" : "REJECTED");
+    printf("  ^ the denylist accepts spaces and backticks it never listed\n");
+
+    /* --- bounds checking --- */
+    int value;
+    printf("\nbounds: index 5 -> %s, index 100 -> %s\n",
+           table_get(5, &value)   ? "ok" : "rejected",
+           table_get(100, &value) ? "ok" : "rejected");
+    return 0;
+}
+```
+
+```text
+   HOW A BUFFER OVERFLOW BECOMES CODE EXECUTION
+
+   STACK (grows down)
+   +------------------------+
+   |  return address        |  <- where the function goes when it returns
+   +------------------------+
+   |  saved frame pointer   |
+   +------------------------+
+   |  char buffer[64]       |  <- memcpy writes HERE
+   +------------------------+
+        |
+        | memcpy(buffer, input, attacker_controlled_length)
+        v
+   writing past 64 bytes overwrites the saved frame pointer, then the
+   RETURN ADDRESS. The attacker now chooses where execution continues.
+
+   THE DEFENCE IS AT THE SOURCE
+        if (length > sizeof buffer) return ERROR;
+   Stack canaries, ASLR, and NX make exploitation harder, but the
+   BOUNDS CHECK is what makes the bug not exist.
+
+   THE TRUST BOUNDARY
+
+     network / file / argv / env / IPC
+                  |
+        ==========|========== VALIDATE HERE, ONCE
+                  v
+     internal code may now rely on the invariants
+```
+
+**Key Takeaways**
+
+- Nearly every serious C vulnerability is a value from outside that was trusted; define a trust boundary and validate once as data crosses it.
+- Check presence, type, range, length, format, and consistency — a length that fits the buffer may still exceed the data actually received.
+- Allowlist what is permitted rather than denylisting what is forbidden; a denylist always misses a case.
+- Never use an externally supplied length without comparing it against your capacity, and write the comparison so the arithmetic itself cannot overflow.
+- Fail closed by rejecting invalid input rather than sanitizing it into validity, which introduces truncation and normalization bugs.
+
+> 🧪 Practice
+>
+> 1. Compile `parse_vulnerable` with ASan, feed it the hostile packet, and read the report. Then confirm `parse_safe` rejects it.
+> 2. Write a validator for an email-shaped string using an allowlist, and list three inputs a denylist version would wrongly accept.
+> 3. Add a check to `parse_safe` for a minimum payload length per message type, keeping all existing checks correct.
+> 4. Interview-style: *"A function receives a length parameter from a network peer. What must you check before using it?"* Hint: there are at least three separate conditions, and one involves arithmetic that can itself overflow.
 
 #### Avoiding Format String Vulnerabilities
 
+**Theory**
+
+`printf` interprets its first argument as a program. Conversion specifiers are instructions telling it to fetch and format arguments — and if that string comes from an attacker, the attacker is writing the program.
+
+The vulnerability is one missing `"%s"`:
+
+```c
+printf(user_input);            /* VULNERABLE */
+printf("%s", user_input);      /* safe */
+```
+
+The first form is dangerous because a format string can do more than print. Its capabilities, in increasing severity:
+
+**Crash the process.** `%s` with no corresponding argument makes `printf` read whatever the calling convention says is the next argument — usually a garbage pointer — and dereference it. `printf("%s%s%s%s")` reliably segfaults.
+
+**Read memory.** `%x` and `%p` print values from the argument registers and the stack, leaking stack contents, saved pointers, and canary values. `%s` with a leaked address reads arbitrary memory.
+
+**Read from a chosen address.** Positional specifiers such as `%7$s` select the seventh argument, letting an attacker index precisely into the stack rather than walking it.
+
+**Write to memory.** `%n` stores the number of characters written so far *through a pointer argument*. Combined with width specifiers to control the count and stack control to supply the pointer, this is an arbitrary write — historically the path to full code execution.
+
+The fix is trivial and absolute: **the format string must always be a literal, or at minimum a value your program controls.** Data goes in the arguments, never in the format.
+
+The compiler will enforce this for you:
+
+- **`-Wformat-security`** warns on a non-literal format string with no arguments.
+- **`-Wformat=2`** enables the whole family, including `-Wformat-nonliteral`.
+- **`-Werror=format-security`** makes it a build failure.
+
+For wrapper functions that legitimately take a format string and pass it on, `__attribute__((format(printf, n, m)))` tells GCC and Clang to type-check calls to *your* function exactly as it checks `printf` — one of the highest-value annotations available in C.
+
+The same rule extends to `scanf`, `syslog`, `err`/`warn`, and any `v`-prefixed variant. And note that `snprintf` bounds the *output* but does nothing about a hostile format string; bounding the buffer is a different problem from controlling the format.
+
+Modern glibc has hardening (`_FORTIFY_SOURCE` refuses `%n` in writable format strings) and many platforms disable `%n` entirely, but these are mitigations. The bug is passing untrusted data as a format string, and the fix is not doing that.
+
+**Examples**
+
+```c
+/* ============================ format.c ============================
+   Build:  gcc -Wall -Wformat=2 -Werror=format-security format.c      */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+
+/* =====================================================================
+   THE VULNERABILITY
+   ===================================================================== */
+static void vulnerable(const char *user_input)
+{
+    /* If user_input contains %s, %x, or %n, printf executes those
+       directives against whatever happens to be in the argument
+       registers and on the stack.
+           printf(user_input);          <- VULNERABLE
+       Compilers reject this with -Werror=format-security. */
+    printf("%s", user_input);            /* the fix: data is an ARGUMENT */
+}
+
+/* =====================================================================
+   The same rule everywhere a format string is taken.
+   ===================================================================== */
+static void safe_variants(const char *untrusted)
+{
+    char buf[128];
+
+    /* snprintf bounds the OUTPUT but does nothing about a hostile
+       FORMAT -- these are two independent problems. */
+    snprintf(buf, sizeof buf, "%s", untrusted);      /* correct */
+    printf("  snprintf result: %s\n", buf);
+
+    fprintf(stdout, "  fprintf: %s\n", untrusted);   /* correct */
+
+    /* Also applies to: scanf, sscanf, syslog, err, warn, and every
+       v-prefixed variant. */
+}
+
+/* =====================================================================
+   A logging wrapper, annotated so the compiler checks ITS callers.
+   ===================================================================== */
+#if defined(__GNUC__)
+/* format(printf, 2, 3): argument 2 is the format, arguments from 3 on
+   are the values. GCC and Clang now type-check every call to log_msg
+   exactly as they check printf. */
+#  define PRINTF_LIKE(fmt_idx, first_arg) \
+       __attribute__((format(printf, fmt_idx, first_arg)))
+#else
+#  define PRINTF_LIKE(fmt_idx, first_arg)
+#endif
+
+static void log_msg(const char *level, const char *fmt, ...) PRINTF_LIKE(2, 3);
+
+static void log_msg(const char *level, const char *fmt, ...)
+{
+    fprintf(stderr, "[%s] ", level);
+
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);       /* the format came from OUR caller,
+                                        and the attribute made the compiler
+                                        verify it at every call site */
+    va_end(ap);
+    fputc('\n', stderr);
+}
+
+/* =====================================================================
+   When the format genuinely must be chosen at run time, choose from a
+   FIXED SET your program controls -- never from input.
+   ===================================================================== */
+typedef enum { FMT_PLAIN, FMT_QUOTED, FMT_BRACKETED } OutputStyle;
+
+static void print_styled(OutputStyle style, const char *value)
+{
+    /* Every entry is a literal the program owns. Input selects WHICH,
+       it never supplies the string itself. */
+    static const char *const formats[] = { "%s\n", "\"%s\"\n", "[%s]\n" };
+
+    if (style < FMT_PLAIN || style > FMT_BRACKETED) style = FMT_PLAIN;
+    printf(formats[style], value);   /* safe: formats[] is entirely ours */
+}
+
+int main(int argc, char **argv)
+{
+    /* A string that would be an attack if used as a format. */
+    const char *hostile = (argc > 1) ? argv[1] : "%s%s%s%s %x %x %n";
+
+    printf("treating hostile input as DATA:\n");
+    vulnerable(hostile);
+    putchar('\n');
+
+    printf("\nother safe variants:\n");
+    safe_variants(hostile);
+
+    printf("\nwhat each directive would have done if it were a FORMAT:\n");
+    printf("  %%s  read and print from a pointer that is not there -> crash\n");
+    printf("  %%x  print stack contents            -> memory disclosure\n");
+    printf("  %%p  print pointers                  -> defeats ASLR\n");
+    printf("  %%7$s index the stack precisely      -> read a chosen address\n");
+    printf("  %%n  WRITE the character count       -> arbitrary memory write\n");
+
+    printf("\nchecked logging wrapper:\n");
+    log_msg("INFO", "processed %d items in %.2f seconds", 42, 1.5);
+    log_msg("WARN", "user input was: %s", hostile);   /* data, not format */
+    /* log_msg("INFO", "%d", "not an int");   <- the attribute makes this
+                                                 a COMPILE-TIME error */
+
+    printf("\nrun-time format selection from a fixed set:\n");
+    print_styled(FMT_PLAIN,     "plain");
+    print_styled(FMT_QUOTED,    "quoted");
+    print_styled(FMT_BRACKETED, "bracketed");
+    return 0;
+}
+```
+
+```bash
+# The compiler catches this class for free.
+$ gcc -Wall -Wformat=2 -Werror=format-security bad.c
+bad.c:8:5: error: format string is not a string literal
+           (potentially insecure) [-Werror=format-security]
+    8 |     printf(user_input);
+      |     ^~~~~~
+
+# The attribute extends that checking to YOUR functions:
+$ gcc -Wall format.c
+format.c:95:24: warning: format '%d' expects argument of type 'int',
+                but argument 3 has type 'char *' [-Wformat=]
+#   ^ log_msg is checked exactly like printf, because of the attribute
+
+# Demonstrate the crash (in a throwaway program, never in real code):
+$ cat > demo.c <<'EOF'
+#include <stdio.h>
+int main(int argc, char **argv) {
+    if (argc > 1) printf(argv[1]);   /* deliberately vulnerable */
+    return 0;
+}
+EOF
+$ gcc -Wno-format-security demo.c -o demo
+$ ./demo '%s%s%s%s%s%s%s%s'
+Segmentation fault           # printf dereferenced garbage as a char*
+$ ./demo '%p %p %p %p'
+0x7ffd8a3c 0x1 0x7f8b2c4a 0x0    # stack contents leaked
+
+# Hardening (a mitigation, not the fix):
+$ gcc -D_FORTIFY_SOURCE=2 -O2 prog.c    # glibc refuses %n in writable formats
+
+# The recommended project flags:
+CFLAGS += -Wall -Wextra -Wformat=2 -Werror=format-security
+```
+
+| Pattern | Safe | Why |
+|---|---|---|
+| `printf("%s", input)` | **yes** | input is data |
+| `printf(input)` | **no** | input is the program |
+| `printf(fmt, input)` where `fmt` is a literal | yes | format is controlled |
+| `snprintf(buf, n, input)` | **no** | bounds the output, not the format |
+| `printf(formats[i], input)` with a static table | yes | every format is yours |
+| `fprintf(f, input)` | **no** | same bug, different stream |
+| `syslog(LOG_INFO, input)` | **no** | same bug, worse consequences |
+
+**Key Takeaways**
+
+- A format string is a small program; passing attacker-controlled data as one lets the attacker read memory, crash the process, and with `%n` write to memory.
+- The rule is absolute: the format string must be a literal or a value your program controls, and untrusted data goes in the arguments.
+- `snprintf` bounds the output buffer but does nothing about a hostile format — these are independent problems.
+- Enable `-Wformat=2 -Werror=format-security` so the compiler rejects the pattern at build time.
+- Annotate your own printf-style wrappers with `__attribute__((format(printf, n, m)))` to get the same checking at every call site.
+
+> 🧪 Practice
+>
+> 1. Write a deliberately vulnerable program, pass `%p %p %p %p` to it, and identify what the leaked values are.
+> 2. Add `-Werror=format-security` to a project and fix every site it rejects.
+> 3. Add the `format` attribute to a logging wrapper, then introduce a type mismatch at a call site and confirm it fails to compile.
+> 4. Interview-style: *"Why is `%n` considered the most dangerous conversion specifier?"* Hint: every other specifier reads; this one does something else.
+
 #### Integer Overflow Defenses
+
+**Theory**
+
+Integer overflow is dangerous in C for a reason unique to the language: **signed overflow is undefined behavior**, so the compiler assumes it cannot happen and optimizes accordingly, while **unsigned overflow silently wraps**. Both cause security bugs, by different routes.
+
+The classic exploit chain is short and has appeared in real software many times:
+
+```c
+size_t total = count * sizeof(Item);   /* wraps if count is large */
+Item *array = malloc(total);           /* allocates a TINY buffer */
+for (size_t i = 0; i < count; i++)
+    array[i] = items[i];               /* writes far past the end */
+```
+
+With `count = 2^61` on a 64-bit machine and a 16-byte `Item`, the multiplication wraps to a small number. `malloc` succeeds with a small allocation, the loop then writes `2^61` elements, and the heap is destroyed. The bounds check that "obviously" protects the loop was computed with the same wrapped arithmetic.
+
+Four situations produce these bugs:
+
+**Allocation size calculations** — the case above, and the most common.
+
+**Signed to unsigned conversion.** A negative `int` passed where a `size_t` is expected becomes an enormous positive value. `if (len < capacity)` passes trivially when `len` is `-1` converted to `SIZE_MAX`.
+
+**Narrowing conversions.** Assigning an `int` to a `short` or `uint8_t` silently discards the high bits, so a length of 256 becomes 0.
+
+**Checking after the fact.** `if (a + b < a)` is a valid overflow test for *unsigned* types and undefined for signed ones — and, as the previous chapter showed, the compiler may delete it entirely.
+
+The defenses, in order of preference:
+
+**Compiler builtins.** `__builtin_add_overflow`, `__builtin_sub_overflow`, and `__builtin_mul_overflow` perform the operation and report overflow in one step, compiling to a single instruction plus a flag test. They are correct for both signed and unsigned types and have no undefined behavior. Use them whenever available.
+
+**Pre-checks against the type's limits.** Test the operands before the operation: `if (b > 0 && a > INT_MAX - b)`. Portable, and correct if written carefully.
+
+**Safe wrapper functions.** `calloc(n, size)` checks the multiplication for you and is the right way to allocate an array. `reallocarray` (BSD and glibc 2.26+) does the same for `realloc`.
+
+**UBSan in testing.** `-fsanitize=signed-integer-overflow,unsigned-integer-overflow` catches what review missed.
+
+A final rule worth internalizing: **use `size_t` for sizes and counts, and never mix signed and unsigned in a comparison.** The usual arithmetic conversions turn the signed operand unsigned, which is exactly how a negative length becomes a huge one. `-Wsign-compare` (in `-Wextra`) flags these.
+
+**Examples**
+
+```c
+/* ============================ intsafe.c ============================
+   Build:  gcc -Wall -Wextra -Wconversion -fsanitize=undefined intsafe.c */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <limits.h>
+
+typedef struct { uint64_t id; uint64_t data; } Item;      /* 16 bytes */
+
+/* =====================================================================
+   THE CLASSIC EXPLOIT CHAIN
+   ===================================================================== */
+
+/* VULNERABLE: the multiplication wraps, malloc succeeds with a tiny
+   buffer, and the loop writes far past it. */
+static Item *alloc_items_vulnerable(size_t count)
+{
+    size_t total = count * sizeof(Item);   /* WRAPS for large count */
+    Item  *array = malloc(total);          /* succeeds -- but far too small */
+    return array;                          /* the caller then writes count items */
+}
+
+/* SAFE 1: check the multiplication before performing it. */
+static Item *alloc_items_checked(size_t count)
+{
+    if (count == 0) return NULL;
+    /* Division cannot overflow, so this is the portable pre-check. */
+    if (count > SIZE_MAX / sizeof(Item)) return NULL;
+    return malloc(count * sizeof(Item));
+}
+
+/* SAFE 2: the builtin does the multiply and reports overflow in one step. */
+static Item *alloc_items_builtin(size_t count)
+{
+    size_t total;
+    if (__builtin_mul_overflow(count, sizeof(Item), &total)) return NULL;
+    return malloc(total);
+}
+
+/* SAFE 3: calloc checks the multiplication itself, and zeroes the result.
+   Note: built normally, calloc returns NULL on an overflowing request.
+   Built with -fsanitize=address, ASan treats the same request as a hard
+   error and aborts instead -- which confirms the check exists, but ends
+   the program rather than letting it print "REJECTED". */
+static Item *alloc_items_calloc(size_t count)
+{
+    return calloc(count, sizeof(Item));    /* the idiomatic answer */
+}
+
+/* =====================================================================
+   Checked arithmetic, portable and builtin forms.
+   ===================================================================== */
+static bool add_checked(int a, int b, int *out)
+{
+    /* Test the OPERANDS. Testing the result afterwards is undefined and
+       may be optimized away entirely. */
+    if (b > 0 && a > INT_MAX - b) return false;
+    if (b < 0 && a < INT_MIN - b) return false;
+    *out = a + b;
+    return true;
+}
+
+static bool mul_checked(int a, int b, int *out)
+{
+    if (a == 0 || b == 0) { *out = 0; return true; }
+    if (a > 0 && b > 0 && a > INT_MAX / b) return false;
+    if (a < 0 && b < 0 && a < INT_MAX / b) return false;
+    if (a > 0 && b < 0 && b < INT_MIN / a) return false;
+    if (a < 0 && b > 0 && a < INT_MIN / b) return false;
+    *out = a * b;
+    return true;
+}
+
+/* =====================================================================
+   Signed/unsigned confusion: how a negative length becomes enormous.
+   ===================================================================== */
+static void copy_broken(char *dst, size_t cap, const char *src, int len)
+{
+    /* 'len' is signed. Comparing it with a size_t converts it to
+       UNSIGNED, so len == -1 becomes SIZE_MAX and passes the check. */
+    if ((size_t)len < cap)
+        memcpy(dst, src, (size_t)len);     /* memcpy of SIZE_MAX bytes */
+}
+
+static bool copy_safe(char *dst, size_t cap, const char *src, int len)
+{
+    if (len < 0)              return false;    /* reject negatives FIRST */
+    if ((size_t)len >= cap)   return false;    /* only then compare */
+    memcpy(dst, src, (size_t)len);
+    dst[len] = '\0';
+    return true;
+}
+
+int main(void)
+{
+    /* --- the wrap that starts the exploit --- */
+    size_t huge = SIZE_MAX / 8;                /* large enough to wrap x16 */
+    printf("count             = %zu\n", huge);
+    printf("count * 16 wraps to %zu   <- malloc would succeed!\n",
+           huge * sizeof(Item));
+
+    printf("\nallocation attempts with that count:\n");
+    printf("  checked: %s\n", alloc_items_checked(huge) ? "allocated" : "REJECTED");
+    printf("  builtin: %s\n", alloc_items_builtin(huge) ? "allocated" : "REJECTED");
+    printf("  calloc:  %s\n", alloc_items_calloc(huge)  ? "allocated" : "REJECTED");
+    (void)alloc_items_vulnerable;
+
+    Item *ok = alloc_items_calloc(100);
+    printf("  normal count 100: %s\n", ok ? "allocated" : "failed");
+    free(ok);
+
+    /* --- checked arithmetic --- */
+    int r;
+    printf("\nchecked arithmetic:\n");
+    printf("  add(INT_MAX, 1)  -> %s\n", add_checked(INT_MAX, 1, &r) ? "ok" : "REJECTED");
+    bool ok_add = add_checked(2, 3, &r);
+    printf("  add(2, 3)        -> %s (%d)\n", ok_add ? "ok" : "rejected", r);
+    printf("  mul(INT_MAX, 2)  -> %s\n", mul_checked(INT_MAX, 2, &r) ? "ok" : "REJECTED");
+
+    /* The builtins: one instruction plus a flag test, no UB. */
+    int b;
+    printf("  builtin add(INT_MAX,1): %s\n",
+           __builtin_add_overflow(INT_MAX, 1, &b) ? "OVERFLOW" : "ok");
+    printf("  builtin mul(1<<20,1<<20): %s\n",
+           __builtin_mul_overflow(1 << 20, 1 << 20, &b) ? "OVERFLOW" : "ok");
+
+    /* --- signed/unsigned --- */
+    printf("\nsigned/unsigned conversion:\n");
+    printf("  (size_t)(-1) = %zu\n", (size_t)(-1));
+    printf("  so 'if ((size_t)len < cap)' with len = -1 PASSES\n");
+
+    char dst[16];
+    printf("  copy_safe with len = -1: %s\n",
+           copy_safe(dst, sizeof dst, "hello", -1) ? "copied" : "REJECTED");
+    printf("  copy_safe with len =  5: %s\n",
+           copy_safe(dst, sizeof dst, "hello", 5) ? "copied" : "rejected");
+    (void)copy_broken;
+
+    /* --- narrowing --- */
+    printf("\nnarrowing:\n");
+    int large = 256;
+    uint8_t narrowed = (uint8_t)large;
+    printf("  (uint8_t)256 = %u   <- a length of 256 became 0\n", narrowed);
+    return 0;
+}
+```
+
+```text
+   THE ALLOCATION OVERFLOW EXPLOIT
+
+   count = 2^61,  sizeof(Item) = 16
+
+   count * 16  =  2^65  which does not fit in 64 bits
+               =  2^65 mod 2^64
+               =  0            <- WRAPPED
+
+   malloc(0)          -> succeeds, returns a minimal block
+   for (i < count)    -> loops 2^61 times
+     array[i] = ...   -> writes far beyond the allocation
+
+   Every "bounds check" downstream used the SAME wrapped value,
+   so none of them helps.
+
+   THE FIX, THREE WAYS
+     if (count > SIZE_MAX / sizeof(Item)) return NULL;   portable
+     if (__builtin_mul_overflow(count, sizeof(Item), &total)) return NULL;
+     calloc(count, sizeof(Item));                        checks internally
+
+   SIGNED vs UNSIGNED
+
+     signed overflow    UNDEFINED -> the optimizer may delete your check
+     unsigned overflow  WRAPS     -> defined, silent, still a bug
+
+     mixing them in a comparison converts the signed operand to unsigned:
+        int len = -1;  (size_t)len == 18446744073709551615
+```
+
+**Key Takeaways**
+
+- Signed overflow is undefined behavior the optimizer may exploit, while unsigned overflow silently wraps — both cause security bugs, by different routes.
+- The classic exploit is an allocation size that wraps, producing a small buffer that subsequent loops write far past.
+- Prefer `__builtin_mul_overflow` and friends, or `calloc`/`reallocarray`, which perform the check as part of the operation.
+- Where you must check by hand, test the operands against the type's limits *before* the operation; testing the result afterwards is undefined for signed types.
+- Use `size_t` for sizes, reject negative lengths before any comparison, and enable `-Wconversion` and `-Wsign-compare` to catch mixed-sign comparisons.
+
+> 🧪 Practice
+>
+> 1. Call `alloc_items_vulnerable` with a huge count under ASan and observe the failure; then confirm all three safe versions refuse it.
+> 2. Implement `sub_checked` and `div_checked`, handling `INT_MIN / -1` explicitly.
+> 3. Write a function taking a signed length and demonstrate the `(size_t)` conversion bug, then fix it.
+> 4. Interview-style: *"Why is `malloc(count * size)` dangerous, and what should you write instead?"* Hint: consider what the multiplication does before `malloc` ever sees it.
 
 #### Safe String and Memory Practices
 
+**Theory**
+
+C strings have no length; they end at a NUL byte the programmer must remember to place. Every classic C string function inherits this, and their failure modes are the reason "buffer overflow" and "C" appear in the same sentence so often.
+
+The dangerous functions and their problems:
+
+| Function | Problem |
+|---|---|
+| `gets` | no bounds at all — **removed from C11** |
+| `strcpy` | no destination size |
+| `strcat` | no destination size |
+| `sprintf` | no destination size |
+| `strncpy` | does not always terminate; pads to `n` |
+| `strncat` | `n` is bytes to *append*, not the buffer size |
+| `scanf("%s")` | unbounded read into the buffer |
+
+`strncpy` deserves its reputation. It was designed for fixed-width fields in early Unix directory entries, not for safe copying. If the source is at least `n` bytes, **the result has no NUL terminator**, and any subsequent `strlen` runs off the end. It also zero-pads a short source out to the full `n`, which surprises people benchmarking it.
+
+The safe alternatives, in order of preference:
+
+**`snprintf(dst, size, "%s", src)`** — standard C, always terminates, and its return value tells you the length that *would* have been needed, so truncation is detectable. This is the portable default.
+
+**`strlcpy` / `strlcat`** — BSD, also in glibc 2.38+. They take the destination size, always terminate, and return the length attempted. Cleaner than `snprintf` for plain copies but not universally available.
+
+**`memcpy` with an explicit length** — when you know the length and the data is not a C string.
+
+The C11 Annex K functions (`strcpy_s`, `sprintf_s`) exist but are optional, poorly supported outside Windows, and widely criticized; do not rely on them.
+
+For memory, the same theme of tracking sizes explicitly applies, plus four rules:
+
+- **Free exactly once.** Setting the pointer to `NULL` after freeing makes a double free harmless, since `free(NULL)` is defined as a no-op.
+- **Match allocation and deallocation.** Memory from a library's allocator must go back to that library's `free`.
+- **Never return a pointer to a local.** The stack frame is gone.
+- **Erase secrets deliberately.** A plain `memset` before `free` can be removed by the optimizer as a dead store; use `explicit_bzero` or `memset_s`.
+
+The deepest fix is architectural: pass a **pointer and a length together** everywhere, so no function is ever in the position of writing into a buffer whose size it does not know. A tiny `Slice` struct costs nothing and eliminates the entire class.
+
+**Examples**
+
+```c
+/* ============================ safestr.c ============================ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+/* =====================================================================
+   1. Why strncpy is not a safe strcpy.
+   ===================================================================== */
+static void strncpy_traps(void)
+{
+    char dst[8];
+
+    /* Source is longer than the destination: strncpy copies 8 bytes and
+       does NOT terminate. A following strlen reads past the buffer. */
+    strncpy(dst, "0123456789", sizeof dst);
+    dst[sizeof dst - 1] = '\0';                 /* YOU must terminate */
+    printf("  strncpy + manual NUL: \"%s\"\n", dst);
+
+    /* Short source: strncpy zero-PADS to the full n, which is an
+       unexpected cost when n is large. */
+    char padded[16];
+    memset(padded, 'X', sizeof padded);
+    strncpy(padded, "hi", sizeof padded);
+    printf("  strncpy padded bytes: ");
+    for (size_t i = 0; i < sizeof padded; i++)
+        printf("%c", padded[i] ? padded[i] : '.');
+    printf("   (dots are the zero padding)\n");
+}
+
+/* =====================================================================
+   2. The portable safe copy: snprintf, which reports truncation.
+   ===================================================================== */
+static bool safe_copy(char *dst, size_t cap, const char *src)
+{
+    if (cap == 0) return false;
+
+    int needed = snprintf(dst, cap, "%s", src);
+
+    if (needed < 0) return false;                    /* encoding error */
+    return (size_t)needed < cap;                     /* false == truncated */
+}
+
+/* A safe concatenation that always terminates and reports overflow. */
+static bool safe_append(char *dst, size_t cap, const char *src)
+{
+    size_t len = strlen(dst);
+    if (len >= cap) return false;
+    return safe_copy(dst + len, cap - len, src);
+}
+
+/* =====================================================================
+   3. The architectural fix: carry the length WITH the pointer, so no
+      function is ever handed a buffer whose size it does not know.
+   ===================================================================== */
+typedef struct { char *data; size_t len, cap; } Slice;
+
+static Slice slice_from(char *buf, size_t cap)
+{
+    Slice s = { buf, 0, cap };
+    if (cap > 0) buf[0] = '\0';
+    return s;
+}
+
+static bool slice_append(Slice *s, const char *text)
+{
+    size_t n = strlen(text);
+    if (s->len + n + 1 > s->cap) return false;       /* checked, always */
+    memcpy(s->data + s->len, text, n + 1);           /* includes the NUL */
+    s->len += n;
+    return true;
+}
+
+/* =====================================================================
+   4. Memory hygiene.
+   ===================================================================== */
+
+/* free() then NULL: a second free becomes a harmless no-op. */
+#define FREE_AND_NULL(p) do { free(p); (p) = NULL; } while (0)
+
+/* Erasing a secret: a plain memset before free is a DEAD STORE the
+   optimizer may delete, because the buffer is never read afterwards. */
+static void erase_secret(char *secret, size_t len)
+{
+#if defined(__GLIBC__) || defined(__OpenBSD__)
+    explicit_bzero(secret, len);        /* guaranteed not to be optimized away */
+#else
+    /* Portable fallback: a volatile pointer forces the writes. */
+    volatile char *p = (volatile char *)secret;
+    while (len--) *p++ = 0;
+#endif
+}
+
+int main(void)
+{
+    printf("1. strncpy traps\n");
+    strncpy_traps();
+
+    printf("\n2. snprintf-based copying\n");
+    char small[8], big[64];
+
+    printf("  safe_copy(\"hello\", cap 8):        %s -> \"%s\"\n",
+           safe_copy(small, sizeof small, "hello") ? "fit" : "TRUNCATED", small);
+    printf("  safe_copy(\"0123456789\", cap 8):   %s -> \"%s\"\n",
+           safe_copy(small, sizeof small, "0123456789") ? "fit" : "TRUNCATED", small);
+    printf("  (truncated result is still NUL-terminated: len=%zu)\n", strlen(small));
+
+    safe_copy(big, sizeof big, "Hello");
+    safe_append(big, sizeof big, ", world");
+    safe_append(big, sizeof big, "!");
+    printf("  built by appending: \"%s\"\n", big);
+
+    printf("\n3. length carried with the pointer\n");
+    char storage[32];
+    Slice s = slice_from(storage, sizeof storage);
+
+    printf("  append \"Hello\":  %s\n", slice_append(&s, "Hello")  ? "ok" : "full");
+    printf("  append \", C!\":   %s\n", slice_append(&s, ", C!")   ? "ok" : "full");
+    printf("  result: \"%s\" (len %zu of %zu)\n", s.data, s.len, s.cap);
+
+    char *toolong = malloc(64);
+    if (toolong) {
+        memset(toolong, 'x', 63); toolong[63] = '\0';
+        printf("  append 63 more:  %s   <- refused, not overflowed\n",
+               slice_append(&s, toolong) ? "ok" : "FULL");
+        FREE_AND_NULL(toolong);
+        FREE_AND_NULL(toolong);          /* free(NULL) is a defined no-op */
+        printf("  double FREE_AND_NULL is harmless\n");
+    }
+
+    printf("\n4. erasing a secret\n");
+    char *password = malloc(32);
+    if (password) {
+        snprintf(password, 32, "hunter2");
+        printf("  before erase: \"%s\"\n", password);
+        erase_secret(password, 32);      /* survives the optimizer */
+        printf("  after erase:  first byte = %d\n", password[0]);
+        FREE_AND_NULL(password);
+    }
+    return 0;
+}
+```
+
+| Instead of | Use | Because |
+|---|---|---|
+| `gets(buf)` | `fgets(buf, sizeof buf, stdin)` | `gets` has no bound at all |
+| `strcpy(d, s)` | `snprintf(d, sizeof d, "%s", s)` | passes the destination size |
+| `strcat(d, s)` | `snprintf` with both parts, or track the length | same |
+| `sprintf(d, ...)` | `snprintf(d, sizeof d, ...)` | same |
+| `strncpy` | `snprintf` or `strlcpy` | `strncpy` may not terminate |
+| `scanf("%s", b)` | `fgets` then parse, or `scanf("%63s", b)` | unbounded read |
+| `memset` on a secret | `explicit_bzero` / `memset_s` | a dead store can be removed |
+| bare `char *` parameters | pointer plus length, or a `Slice` | the callee knows the size |
+
+**Key Takeaways**
+
+- C strings carry no length, so every function that writes into a buffer must be told its size — `strcpy`, `strcat`, and `sprintf` never are.
+- `strncpy` is not a safe `strcpy`: it omits the terminator when the source fills the buffer and zero-pads a short source to the full length.
+- `snprintf(dst, size, "%s", src)` is the portable safe copy, and comparing its return value against the capacity detects truncation.
+- Set pointers to `NULL` after freeing so a second free is a defined no-op, and never return a pointer to a local variable.
+- Erase secrets with `explicit_bzero` or a volatile write loop, since a plain `memset` before `free` is a dead store the optimizer may delete.
+
+> 🧪 Practice
+>
+> 1. Demonstrate that `strncpy` leaves an unterminated buffer, then show `strlen` reading past it under ASan.
+> 2. Implement `str_copy(char *dst, size_t cap, const char *src)` returning the length needed, and test it at exact fit and one over.
+> 3. Extend the `Slice` type with `slice_appendf` taking a printf-style format, keeping every write bounded.
+> 4. Interview-style: *"Your codebase has 500 calls to `strcpy`. How would you approach fixing them?"* Hint: consider which calls are provably safe and how you would stop new ones appearing.
+
 #### Coding Standards (MISRA, CERT C)
 
+**Theory**
+
+Everything in this chapter so far is a technique. A **coding standard** is the organizational answer: a written set of rules that makes those techniques the default rather than something each developer remembers individually.
+
+The value is not that any single rule is profound — it is that a rule applied consistently, and checked automatically, removes a whole class of defect from the codebase permanently. That matters most where the cost of a bug is high or the team is large.
+
+Two standards dominate C.
+
+**MISRA C** comes from the automotive industry and is used across safety-critical work — automotive, aerospace, medical, rail. It defines roughly 150 rules, classified as **Mandatory** (no deviation permitted), **Required** (deviation needs formal justification), and **Advisory** (recommended).
+
+MISRA's character is *restriction*: it removes language features whose behavior is subtle or error-prone, accepting less expressiveness in exchange for more analyzability. Representative rules:
+
+- No dynamic memory allocation (`malloc`/`free`).
+- No recursion.
+- No `goto` (or in later versions, tightly restricted).
+- Every `if`/`else if` chain ends with an `else`; every `switch` has a `default`.
+- All loop bodies and conditional bodies use braces.
+- One `return` per function (advisory in recent versions).
+- No use of `union` for type punning.
+- Explicit types (`int32_t`) rather than plain `int`.
+
+**CERT C** comes from Carnegie Mellon's Software Engineering Institute and targets *security* rather than functional safety. It is organized as rules (violations are defects) and recommendations, each documented with a non-compliant example, a compliant solution, and a severity/likelihood/cost assessment. Its identifiers appear in vulnerability reports: `INT30-C` for unsigned wrap, `STR31-C` for buffer sizes, `MEM30-C` for use after free.
+
+CERT C's character is *practical guidance for ordinary code* — it does not ban dynamic allocation, it tells you how to use it safely.
+
+| | MISRA C | CERT C |
+|---|---|---|
+| Origin | automotive (MIRA) | CMU SEI |
+| Goal | functional safety | security |
+| Approach | restrict the language | document safe usage |
+| Dynamic allocation | forbidden | permitted, with rules |
+| Typical users | embedded, safety-critical | general and security-sensitive |
+| Enforcement | commercial checkers | analyzers, partly compilers |
+
+A third document worth knowing is **CWE** (Common Weakness Enumeration), a taxonomy of vulnerability classes — CWE-787 out-of-bounds write, CWE-125 out-of-bounds read, CWE-416 use after free. It is not a coding standard but the vocabulary used to classify what happens when one is not followed.
+
+Adopting a standard has a real cost: some rules feel arbitrary, existing code needs adaptation, and full compliance may require commercial tooling. The pragmatic path most teams take is to adopt the rules that address their actual risks, enforce them automatically, and document deliberate deviations with reasons — a rule nobody checks is documentation, not a standard.
+
+**Examples**
+
+```c
+/* ============================ style.c ============================
+   Contrasting non-compliant and compliant forms for common rules.   */
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+/* =====================================================================
+   MISRA: use explicit-width types, not plain int/long.
+   Rationale: plain int's width varies, so range analysis is impossible.
+   ===================================================================== */
+static int32_t compliant_types(int32_t a, int32_t b) { return a + b; }
+
+/* =====================================================================
+   MISRA 15.6: every conditional body is braced.
+   Rationale: adding a second statement to an unbraced if silently
+   changes control flow -- the "goto fail" bug in Apple's TLS stack.
+   ===================================================================== */
+static int32_t braces_matter(int32_t x)
+{
+    int32_t result = 0;
+
+    /* NON-COMPLIANT:  if (x > 0) result = 1;
+       Adding a line below it would NOT become part of the if. */
+    if (x > 0) {                        /* COMPLIANT: always braced */
+        result = 1;
+    }
+    return result;
+}
+
+/* =====================================================================
+   MISRA 15.7 / 16.4: an if/else-if chain ends with else; a switch has
+   a default. Rationale: an unhandled case becomes visible, not silent.
+   ===================================================================== */
+typedef enum { STATE_IDLE = 0, STATE_RUNNING, STATE_STOPPED } State;
+
+static const char *describe_state(State s)
+{
+    const char *text;
+
+    switch (s) {
+    case STATE_IDLE:    text = "idle";    break;
+    case STATE_RUNNING: text = "running"; break;
+    case STATE_STOPPED: text = "stopped"; break;
+    default:                                       /* REQUIRED */
+        text = "unknown";
+        break;
+    }
+    return text;
+}
+
+/* =====================================================================
+   CERT INT30-C / INT32-C: prevent wrap and overflow.
+   ===================================================================== */
+static bool cert_int30(uint32_t a, uint32_t b, uint32_t *out)
+{
+    /* NON-COMPLIANT:  *out = a + b;   -- wraps silently */
+    if (a > UINT32_MAX - b) return false;           /* COMPLIANT */
+    *out = a + b;
+    return true;
+}
+
+/* =====================================================================
+   CERT STR31-C: ensure storage is sufficient for the data and the NUL.
+   ===================================================================== */
+static bool cert_str31(char *dst, size_t cap, const char *src)
+{
+    /* NON-COMPLIANT:  strcpy(dst, src);  -- no size is passed */
+    if (cap == 0) return false;
+    int n = snprintf(dst, cap, "%s", src);          /* COMPLIANT */
+    return (n >= 0) && ((size_t)n < cap);
+}
+
+/* =====================================================================
+   CERT MEM30-C: do not access freed memory.
+   ===================================================================== */
+static void cert_mem30(void)
+{
+    char *p = malloc(32);
+    if (p == NULL) { return; }
+
+    (void)snprintf(p, 32, "data");
+    free(p);
+    p = NULL;                    /* COMPLIANT: a later use faults loudly,
+                                    and a second free is a defined no-op */
+    free(p);                     /* free(NULL) is explicitly permitted */
+}
+
+/* =====================================================================
+   MISRA 17.7: do not discard a function's return value silently.
+   The (void) cast documents that discarding is DELIBERATE.
+   ===================================================================== */
+static void explicit_discard(void)
+{
+    char buf[16];
+    (void)snprintf(buf, sizeof buf, "value");       /* COMPLIANT */
+}
+
+/* =====================================================================
+   MISRA: no recursion (stack depth must be statically bounded).
+   ===================================================================== */
+static uint32_t factorial_iterative(uint32_t n)
+{
+    uint32_t result = 1U;
+    for (uint32_t i = 2U; i <= n; i++) {            /* bounded stack use */
+        result *= i;
+    }
+    return result;
+}
+
+/* =====================================================================
+   A documented deviation. A rule nobody may deviate from becomes a rule
+   people quietly ignore -- so record the reason.
+   ===================================================================== */
+static int32_t cleanup_ladder(int32_t flag)
+{
+    int32_t status = -1;
+    char   *a = malloc(16);
+    char   *b = NULL;
+
+    if (a == NULL) { goto done; }
+    /* MISRA C:2012 Rule 15.1 deviation (goto)
+       Justification: a single-exit cleanup ladder is measurably less
+       error-prone than nested conditionals for multi-resource release.
+       Approved: 2026-01-15, reviewed by the safety team. */
+    b = malloc(16);
+    if (b == NULL) { goto done; }
+    if (flag != 0) { goto done; }
+
+    status = 0;
+done:
+    free(b);
+    free(a);
+    return status;
+}
+
+int main(void)
+{
+    printf("explicit types:   %d\n", compliant_types(20, 22));
+    printf("braced if:        %d\n", braces_matter(5));
+    printf("switch default:   %s\n", describe_state((State)99));
+
+    uint32_t sum;
+    printf("INT30-C wrap:     %s\n",
+           cert_int30(UINT32_MAX, 1U, &sum) ? "ok" : "REJECTED");
+
+    char buf[8];
+    printf("STR31-C fit:      %s\n",
+           cert_str31(buf, sizeof buf, "0123456789") ? "fit" : "TRUNCATED");
+
+    cert_mem30();
+    explicit_discard();
+
+    printf("no recursion:     5! = %u\n", factorial_iterative(5U));
+    printf("documented goto:  status %d\n", cleanup_ladder(0));
+    return 0;
+}
+```
+
+```bash
+# Compiler flags approximating many MISRA and CERT rules -- free, and
+# the right first step before buying a checker.
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Werror \
+         -Wshadow -Wconversion -Wsign-conversion \
+         -Wcast-qual -Wcast-align -Wstrict-prototypes \
+         -Wmissing-prototypes -Wredundant-decls \
+         -Wswitch-enum -Wswitch-default -Wvla \
+         -Wformat=2 -Werror=format-security \
+         -Wunused-result -Wnull-dereference
+
+# cppcheck ships MISRA and CERT add-ons:
+$ cppcheck --addon=misra --enable=all src/
+$ cppcheck --addon=cert  --enable=all src/
+
+# clang-tidy has CERT checks built in:
+$ clang-tidy -checks='cert-*,bugprone-*,clang-analyzer-*' src/*.c
+
+# Commercial checkers give full MISRA coverage with certification
+# evidence: PC-lint Plus, Polyspace, LDRA, Parasoft, PVS-Studio.
+
+# Enforce mechanically -- a rule nobody checks is not a standard:
+$ cat .pre-commit-config.yaml
+  - repo: local
+    hooks:
+      - id: cppcheck
+        entry: cppcheck --addon=misra --error-exitcode=1
+```
+
+**Key Takeaways**
+
+- A coding standard's value is consistency and automatic enforcement, not the depth of any individual rule.
+- MISRA C targets functional safety by restricting the language — no dynamic allocation, no recursion, mandatory braces and defaults — and dominates automotive and aerospace work.
+- CERT C targets security and documents safe usage rather than banning features; its rule identifiers such as `INT30-C` and `STR31-C` appear throughout vulnerability reports.
+- CWE is the taxonomy used to classify the resulting weaknesses, not a coding standard itself.
+- Adopt the rules that address your actual risks, enforce them in CI, and document every deliberate deviation with a justification — an unchecked rule is documentation, not a standard.
+
+> 🧪 Practice
+>
+> 1. Compile an existing file with the full MISRA-approximating flag set and categorize every warning by the rule it corresponds to.
+> 2. Run `cppcheck --addon=misra` on a small project and pick three findings to fix and one to document as a justified deviation.
+> 3. Rewrite a recursive function iteratively and explain what the change guarantees about stack usage.
+> 4. Interview-style: *"MISRA forbids dynamic memory allocation. Why would a standard ban a core language feature?"* Hint: think about what a safety-critical system must be able to prove before it ships.
+
 #### Code Review Checklist for C
+
+**Theory**
+
+Tools find defects mechanically; review finds the ones that require understanding intent. A reviewer can see that a function's contract is wrong, that an error path leaves an object half-updated, or that a new API invites misuse — none of which a sanitizer can detect.
+
+C review deserves its own checklist because the language has failure modes most others do not: manual memory management, no bounds checking, undefined behavior, and no exceptions. A generic "is this readable?" review misses all of them.
+
+The most valuable ordering is by consequence. Memory and bounds errors are exploitable; a naming inconsistency is not. Reviewers should spend their attention accordingly.
+
+**Memory and resources**
+
+- Is every allocation paired with exactly one free, on *every* path including errors?
+- Is `malloc`'s return value checked before use?
+- Is `realloc`'s result assigned to a temporary, so a failure does not leak the original?
+- Are pointers set to `NULL` after freeing?
+- Are all resources — files, sockets, locks, descriptors — released on every exit path?
+- Does any function return a pointer to a local?
+
+**Bounds and input**
+
+- Does every buffer write have a size check, and is the size the *destination's*?
+- Is every externally supplied length validated against capacity before use?
+- Can any index be negative, or a signed value converted to `size_t`?
+- Are string operations bounded, and is the result guaranteed NUL-terminated?
+- Are array loop conditions `<` rather than `<=`?
+
+**Arithmetic**
+
+- Can any addition or multiplication overflow, especially in a size calculation?
+- Are signed and unsigned values compared anywhere?
+- Are narrowing conversions intentional and safe?
+- Is division guarded against zero, including `INT_MIN / -1`?
+
+**Error handling**
+
+- Is every fallible call's return value checked?
+- Does each failure path leave the object in a consistent state?
+- Do error messages identify *which* object failed and why?
+- Is `errno` read immediately after the failing call, before anything else runs?
+
+**Concurrency**, where relevant
+
+- Is every shared variable protected, and by a documented lock?
+- Is the lock ordering consistent, so no cycle can form?
+- Are condition variables waited on in a `while` loop?
+- Is anything relying on `volatile` for synchronization?
+
+**Interface and maintainability**
+
+- Is ownership documented for every pointer crossing the API?
+- Are `const` and `static` used wherever they apply?
+- Do the tests cover the boundaries and the error paths, not just the happy path?
+
+Two process points matter as much as the list. **Review small changes**: a 200-line diff gets a real review, a 2000-line one gets a rubber stamp. And **let tools do what tools do well** — formatting, warnings, and static analysis should be automated so human attention goes to logic, contracts, and design.
+
+**Examples**
+
+A patch under review, with the defects a checklist surfaces:
+
+```c
+/* ============================ under_review.c ============================
+   Every numbered comment marks a defect a checklist catches.             */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+typedef struct { char *name; int32_t *values; size_t count; } Dataset;
+
+/* =====================================================================
+   BEFORE REVIEW: eight defects.
+   ===================================================================== */
+Dataset *load_before(const char *name, const int32_t *src, int count)
+{
+    Dataset *d = malloc(sizeof *d);
+    /* [1] malloc result not checked before use */
+
+    d->name = malloc(strlen(name) + 1);
+    strcpy(d->name, name);
+    /* [2] second malloc unchecked; [3] strcpy with no size check */
+
+    d->values = malloc(count * sizeof(int32_t));
+    /* [4] 'count' is a SIGNED int: negative wraps when converted
+       [5] the multiplication can overflow */
+
+    memcpy(d->values, src, count * sizeof(int32_t));
+    /* [6] unchecked allocation, and the same overflowing size */
+
+    d->count = count;
+    return d;
+    /* [7] on any failure above, earlier allocations LEAK
+       [8] no way for the caller to distinguish failure causes */
+}
+
+/* =====================================================================
+   AFTER REVIEW: every finding addressed.
+   ===================================================================== */
+typedef enum { DS_OK = 0, DS_INVALID = -1, DS_NOMEM = -2, DS_TOO_LARGE = -3 } DsStatus;
+
+/* Ownership is documented: on success the CALLER owns *out and must
+   release it with dataset_free. On failure *out is untouched. */
+DsStatus load_after(const char *name, const int32_t *src, size_t count,
+                    Dataset **out)
+{
+    if (name == NULL || src == NULL || out == NULL) return DS_INVALID;  /* [1] */
+    if (count == 0) return DS_INVALID;
+
+    /* [5] guard the multiplication BEFORE it happens */
+    if (count > SIZE_MAX / sizeof(int32_t)) return DS_TOO_LARGE;
+
+    DsStatus status = DS_NOMEM;
+
+    Dataset *d = calloc(1, sizeof *d);      /* calloc: members start NULL */
+    if (d == NULL) return DS_NOMEM;         /* [1] checked */
+
+    size_t name_len = strlen(name);
+    d->name = malloc(name_len + 1);
+    if (d->name == NULL) goto fail;         /* [2] checked */
+
+    memcpy(d->name, name, name_len + 1);    /* [3] bounded, size known */
+
+    d->values = malloc(count * sizeof(int32_t));   /* now provably safe */
+    if (d->values == NULL) goto fail;              /* [6] checked */
+
+    memcpy(d->values, src, count * sizeof(int32_t));
+    d->count = count;                       /* [4] size_t throughout */
+
+    *out = d;                               /* commit ONLY on success */
+    return DS_OK;
+
+fail:                                       /* [7] one cleanup path */
+    free(d->name);
+    free(d->values);
+    free(d);
+    return status;                          /* [8] a specific cause */
+}
+
+void dataset_free(Dataset *d)
+{
+    if (d == NULL) return;                  /* NULL-tolerant, like free */
+    free(d->name);
+    free(d->values);
+    free(d);
+}
+
+int main(void)
+{
+    int32_t data[] = { 1, 2, 3, 4, 5 };
+    Dataset *d = NULL;
+
+    DsStatus rc = load_after("measurements", data, 5, &d);
+    printf("load: %d\n", (int)rc);
+    if (rc == DS_OK) {
+        printf("name=%s count=%zu first=%d\n", d->name, d->count, d->values[0]);
+        dataset_free(d);
+    }
+
+    /* Every rejected case returns a DISTINCT, actionable status. */
+    printf("NULL name:   %d\n", (int)load_after(NULL, data, 5, &d));
+    printf("zero count:  %d\n", (int)load_after("x", data, 0, &d));
+    printf("huge count:  %d\n", (int)load_after("x", data, SIZE_MAX, &d));
+
+    (void)load_before;
+    return 0;
+}
+```
+
+```bash
+# Automate everything a tool can decide, so review time goes to logic.
+$ cat .github/workflows/ci.yml
+  - name: build with warnings as errors
+    run: gcc -std=c11 -Wall -Wextra -Wpedantic -Werror
+             -Wshadow -Wconversion -Wformat=2 -Werror=format-security -c src/*.c
+  - name: static analysis
+    run: gcc -fanalyzer -c src/*.c && cppcheck --enable=all --error-exitcode=1 src/
+  - name: tests under sanitizers
+    run: gcc -fsanitize=address,undefined -fno-sanitize-recover=all
+             -g src/*.c tests/*.c -o tests && ./tests
+  - name: leak check
+    run: valgrind --leak-check=full --error-exitcode=1 ./tests
+  - name: formatting
+    run: clang-format --dry-run --Werror src/*.c
+```
+
+```text
+   REVIEW PRIORITY -- ORDER BY CONSEQUENCE
+
+   1. MEMORY / RESOURCES     exploitable, and often silent
+        every path frees exactly once?  malloc checked?
+        realloc via a temporary?  pointers NULLed after free?
+
+   2. BOUNDS / INPUT         the source of most CVEs
+        destination size passed?  external length validated?
+        signed value converted to size_t?  NUL-terminated?
+
+   3. ARITHMETIC             overflow -> undersized buffer -> overflow
+        size calculations guarded?  signed/unsigned compared?
+
+   4. ERROR HANDLING         determines whether recovery is possible
+        every fallible call checked?  state consistent on failure?
+
+   5. CONCURRENCY            rare but very expensive to debug
+        shared data locked?  consistent lock order?  while-loop waits?
+
+   6. INTERFACE / STYLE      affects the next reader, not this release
+        ownership documented?  const/static used?  tests cover errors?
+
+   AUTOMATE 6 AND MOST OF 3. Spend human attention on 1, 2, 4, and 5 --
+   the ones that require understanding what the code is FOR.
+```
+
+**Key Takeaways**
+
+- Review finds what tools cannot: wrong contracts, half-updated state on error paths, and APIs that invite misuse.
+- Order attention by consequence — memory and bounds defects are exploitable, style issues are not.
+- Check that every allocation is freed on *every* path, that every buffer write knows the destination's size, and that every external length is validated before use.
+- Verify that failure paths leave objects consistent and that errors identify which object failed and why.
+- Automate formatting, warnings, static analysis, and sanitizer runs in CI, and keep changes small enough to receive a real review.
+
+> 🧪 Practice
+>
+> 1. Review `load_before` against the checklist and confirm you find all eight defects before reading the annotations.
+> 2. Apply the checklist to a file from a project you did not write, and record which categories produced the most findings.
+> 3. Set up a CI pipeline running warnings-as-errors, static analysis, and a sanitized test run, and verify each stage can fail the build.
+> 4. Interview-style: *"What do you look for first when reviewing C that you would not look for in a memory-safe language?"* Hint: name the two categories that produce most C vulnerabilities.
