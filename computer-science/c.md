@@ -20088,213 +20088,15782 @@ int main(void)
 
 ## 9. Standard Library
 
+The C standard library is the small, portable toolbox that every hosted C implementation must provide: formatted I/O, string and memory manipulation, conversions, math, time, and the machinery for reporting failure. It is deliberately minimal — there are no containers, no networking, no threads before C11 — but what it does contain is on every platform you will ever target, which makes knowing it exactly the difference between portable code and code that only compiles on your machine. This chapter covers the stream I/O model in depth, the utility headers you reach for daily, and the several competing conventions C uses to signal that something went wrong.
+
 <a id="91-formatted-and-stream-io"></a>
 ### 9.1 Formatted and Stream I/O
 
+Everything in `<stdio.h>` is built on one abstraction: the **stream**, a buffered sequence of bytes attached to a file, a terminal, or a pipe. This section covers producing and consuming formatted text, opening and closing files, reading and writing blocks and lines, moving the file position, and controlling the buffer that sits invisibly between your program and the operating system.
+
 #### printf and Format Specifiers
+
+**Theory**
+
+C has no way to write a function that prints "whatever you give it". There is no overloading, no runtime type information, and no way for a function to ask "what type was that argument?". So the standard library solves the problem the only way C allows: you pass a **format string** that describes the arguments, followed by the arguments themselves as variadic parameters.
+
+This makes `printf` a tiny interpreter. It walks the format string one character at a time, copying ordinary characters straight to the output and, whenever it meets a `%`, reading a *conversion specification* that tells it how to pull the next argument off the variadic list and render it.
+
+The consequence is the single most important fact about `printf`: **the format string is a promise the compiler cannot verify by default, and `printf` cannot check at all**. If you write `%d` and pass a `double`, `printf` will read the bytes of a `double` as though they were an `int`. There is no error, no exception — just garbage, or a crash. This is undefined behavior, not a mistake that gets caught.
+
+A conversion specification has this shape, with everything but the `%` and the conversion character optional:
+
+```text
+%[flags][width][.precision][length modifier]conversion
+
+  %-10.3f
+  | |  | |
+  | |  | +-- conversion: f = decimal floating point
+  | |  +---- precision: 3 digits after the decimal point
+  | +------- width: pad to at least 10 characters
+  +--------- flag: '-' means left-justify within the width
+```
+
+The **conversion character** is what selects the argument type:
+
+| Conversion | Argument type | Prints |
+|---|---|---|
+| `%d`, `%i` | `int` | signed decimal |
+| `%u` | `unsigned int` | unsigned decimal |
+| `%x`, `%X` | `unsigned int` | hexadecimal (lower/upper) |
+| `%o` | `unsigned int` | octal |
+| `%f`, `%F` | `double` | decimal notation, 6 digits default |
+| `%e`, `%E` | `double` | scientific notation |
+| `%g`, `%G` | `double` | shortest of `%e`/`%f` |
+| `%a`, `%A` | `double` | hexadecimal float (exact, C99) |
+| `%c` | `int` (as `char`) | one character |
+| `%s` | `char *` | NUL-terminated string |
+| `%p` | `void *` | implementation-defined pointer form |
+| `%%` | — | a literal `%` |
+| `%n` | `int *` | stores characters written so far |
+
+The **length modifier** adjusts the size of the integer or float argument. Getting this wrong is the most common `printf` bug in real code, because `%d` with a `long` happens to work on platforms where they are the same size and silently breaks elsewhere.
+
+| Modifier | With `d`/`i` | With `u`/`x`/`o` |
+|---|---|---|
+| `hh` | `signed char` | `unsigned char` |
+| `h` | `short` | `unsigned short` |
+| (none) | `int` | `unsigned int` |
+| `l` | `long` | `unsigned long` |
+| `ll` | `long long` | `unsigned long long` |
+| `j` | `intmax_t` | `uintmax_t` |
+| `z` | — | `size_t` |
+| `t` | `ptrdiff_t` | — |
+| `L` | — | `long double` (with `f`/`e`/`g`) |
+
+Two of these deserve emphasis. **`%zu` is the correct way to print a `size_t`** — which means every `sizeof`, every `strlen`, and every array index of that type. And **fixed-width types from `<stdint.h>` have no fixed modifier**, because `int32_t` might be `int` on one platform and `long` on another; `<inttypes.h>` provides macros (`PRId32`, `PRIu64`, ...) that expand to the right specifier, concatenated into the format string as adjacent string literals.
+
+The `%n` conversion writes through a pointer you supply. It exists for measuring output, but because it turns a format string into something that can *write memory*, it is the payload of classic format-string attacks and is disabled or restricted on many modern platforms. Treat it as a red flag.
+
+The return value is the number of characters written, or a negative value on error. Almost nobody checks it, and for `stdout` that is usually defensible — but for a file stream, ignoring it means silently losing data on a full disk.
+
+Finally, the family: `printf` writes to `stdout`, `fprintf` to a stream you name, `sprintf` into a buffer, and `snprintf` into a buffer *with a size limit*. **Use `snprintf`, never `sprintf`** — `sprintf` has no idea how big your buffer is and is a buffer overflow waiting for the right input. `snprintf` returns the length the output *would have had*, which is how you detect truncation: if the return value is `>= size`, the output was cut short.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <inttypes.h>   /* PRId64, PRIu32, ... */
+#include <string.h>
+
+int main(void)
+{
+    int         count  = 42;
+    double      ratio  = 3.14159;
+    const char *name   = "buffer";
+    size_t      len    = strlen(name);
+    int64_t     big    = 9000000000LL;
+    unsigned    flags  = 0xDEADBEEFu;
+
+    /* --- basic conversions ------------------------------------------ */
+    printf("count = %d\n", count);              /* 42                   */
+    printf("ratio = %f\n", ratio);              /* 3.141590 (6 digits)  */
+    printf("ratio = %.2f\n", ratio);            /* 3.14                 */
+    printf("name  = %s\n", name);               /* buffer               */
+    printf("flags = 0x%08X\n", flags);          /* 0xDEADBEEF           */
+    printf("100%%\n");                          /* a literal percent    */
+
+    /* --- the ones people get wrong ---------------------------------- */
+    printf("len = %zu\n", len);                 /* %zu for size_t       */
+    printf("big = %" PRId64 "\n", big);         /* literal concatenation */
+    printf("ptr = %p\n", (void *)name);         /* MUST cast to void *  */
+
+    /* --- width, precision, flags ------------------------------------ */
+    printf("[%10s]\n",   "hi");                 /* [        hi]         */
+    printf("[%-10s]\n",  "hi");                 /* [hi        ]         */
+    printf("[%10.3f]\n", ratio);                /* [     3.142]         */
+    printf("[%+d] [%+d]\n", 5, -5);             /* [+5] [-5]            */
+    printf("[%05d]\n",   42);                   /* [00042]              */
+
+    /* Width and precision taken from arguments with '*'. */
+    int w = 12, p = 4;
+    printf("[%*.*f]\n", w, p, ratio);           /* [      3.1416]       */
+
+    return 0;
+}
+```
+
+Safe buffer formatting, and how to detect truncation:
+
+```c
+#include <stdio.h>
+
+/* Returns 0 on success, -1 if the result did not fit. */
+static int make_path(char *out, size_t cap, const char *dir, const char *file)
+{
+    /* snprintf returns the length it WANTED to write, excluding the NUL. */
+    int n = snprintf(out, cap, "%s/%s", dir, file);
+
+    if (n < 0)              return -1;      /* encoding error            */
+    if ((size_t)n >= cap)   return -1;      /* truncated: n needed >= cap */
+    return 0;
+}
+
+int main(void)
+{
+    char small[8], big[64];
+
+    printf("%d\n", make_path(big,   sizeof big,   "/etc", "hosts"));  /*  0 */
+    printf("%d\n", make_path(small, sizeof small, "/very/long", "path")); /* -1 */
+
+    /* A common two-pass idiom: ask for the size, then allocate it. */
+    int need = snprintf(NULL, 0, "id=%d;name=%s", 7, "alice");
+    printf("needs %d bytes plus NUL\n", need);
+    return 0;
+}
+```
+
+Let the compiler check your format strings — this is free and catches nearly every mismatch:
+
+```bash
+# GCC and Clang understand printf semantics when warnings are enabled.
+$ gcc -Wall -Wextra -Wformat=2 prog.c
+prog.c:9:20: warning: format '%d' expects argument of type 'int',
+             but argument 2 has type 'double' [-Wformat=]
+```
+
+**Key Takeaways**
+
+- `printf` is an interpreter over the format string; it cannot know the real types of its variadic arguments, so a mismatched specifier is undefined behavior, not an error.
+- Memorize the length modifiers: `%zu` for `size_t`, `%lld` for `long long`, `PRId64`-style macros from `<inttypes.h>` for fixed-width types.
+- `%p` requires an argument of type `void *` — cast any other pointer explicitly.
+- Prefer `snprintf` over `sprintf` always; compare its return value against the buffer size to detect truncation, and call it with `NULL, 0` to size a buffer first.
+- Compile with `-Wall -Wformat=2` so the compiler verifies format strings for you; never pass a runtime string as the format argument.
+
+> 🧪 Practice
+>
+> 1. Print the same `double` with `%f`, `%.10f`, `%e`, `%g`, and `%a`, and explain in one line what each is best for.
+> 2. Write a function that formats a `struct { int id; double score; }` into a caller-supplied buffer, returns the number of bytes needed, and never overflows regardless of buffer size.
+> 3. Deliberately pass a `long long` to `%d` and a `char *` to `%d`, compile without warnings, and run under `-fsanitize=undefined`. Describe both outcomes.
+> 4. Interview-style: *"Why is `printf(user_input)` a security vulnerability while `printf("%s", user_input)` is not?"* Hint: think about what `%n` and `%s` do when there is no matching argument on the stack.
 
 #### scanf and Input Pitfalls
 
+**Theory**
+
+`scanf` is `printf` run backwards: a format string describes what you expect to read, and matching input is converted and stored through pointers you supply. It looks like the natural counterpart, and for reading a fixed, well-formed data file it is genuinely convenient. For reading anything a human or a network typed, it is a trap-lined path, and experienced C programmers reach for it rarely.
+
+The reasons are worth understanding in detail, because each one is a distinct failure mode.
+
+**It does not consume the whole line.** `scanf("%d", &n)` reads the digits and stops. The newline you pressed stays in the buffer. The next `scanf("%c", &c)` then reads that newline instead of the character you meant to type. This single behavior accounts for most "my program skipped the prompt" bugs.
+
+**Whitespace handling is inconsistent between conversions.** Most conversions (`%d`, `%f`, `%s`) skip leading whitespace automatically. `%c` and `%[...]` do not. So a mixed format string behaves differently depending on which conversion comes next, and the rule is invisible in the code.
+
+**On a mismatch it stops and leaves the offending text in the stream.** If you ask for `%d` and the user types `hello`, `scanf` converts nothing, returns a count lower than you expected, and — crucially — does *not* remove `hello` from the input. A naive retry loop then hits the same text forever. Recovering requires explicitly draining input to the next newline.
+
+**`%s` is `gets` with extra steps.** `scanf("%s", buf)` reads an unbounded run of non-whitespace characters into `buf`. There is no size argument. This is a buffer overflow with a friendly face. The fix is a **field width**: `scanf("%63s", buf)` for a `char buf[64]` — note the width is the number of characters *excluding* the NUL, so it is always one less than the array size, and it must be a literal baked into the format string.
+
+**The return value is the only truth.** `scanf` returns the number of items successfully assigned, `0` if the first conversion failed, or `EOF` on end of input or a read error. Not checking it means using variables that were never written — reading uninitialized memory.
+
+The standard advice, and what production code actually does, is to **separate reading from parsing**: use `fgets` to pull in one whole line (bounded, predictable), then use `sscanf`, `strtol`, or a hand-written parser on that in-memory string. Now a malformed line affects one iteration instead of corrupting the stream, and the recovery logic is trivial — you already have the whole line and can discard it.
+
+**Examples**
+
+```c
+#include <stdio.h>
+
+int main(void)
+{
+    int  n;
+    char c;
+
+    printf("Enter a number: ");
+    scanf("%d", &n);        /* reads 42, leaves '\n' in the input buffer */
+
+    printf("Enter a letter: ");
+    scanf("%c", &c);        /* BUG: reads the leftover '\n' immediately  */
+
+    printf("n=%d c=[%c]\n", n, c);   /* c is a newline, not your letter  */
+    return 0;
+}
+```
+
+Two fixes, and why the second is better:
+
+```c
+#include <stdio.h>
+
+/* Fix 1: a leading space in the format tells scanf to skip whitespace. */
+static void patched_scanf(void)
+{
+    int n; char c;
+    if (scanf("%d", &n) != 1)  return;       /* ALWAYS check the count  */
+    if (scanf(" %c", &c) != 1) return;       /* the space skips '\n'    */
+    printf("n=%d c=[%c]\n", n, c);
+}
+
+/* Fix 2: read a whole line, then parse it. This is the robust pattern. */
+static void line_based(void)
+{
+    char line[256];
+    int  n;
+    char c;
+
+    if (fgets(line, sizeof line, stdin) == NULL) return;
+    if (sscanf(line, "%d", &n) != 1) {        /* parse a COPY, not the stream */
+        fprintf(stderr, "not a number: %s", line);
+        return;                               /* the bad line is already gone */
+    }
+
+    if (fgets(line, sizeof line, stdin) == NULL) return;
+    if (sscanf(line, " %c", &c) != 1) return;
+
+    printf("n=%d c=[%c]\n", n, c);
+}
+```
+
+Bounded string input and stream recovery:
+
+```c
+#include <stdio.h>
+
+/* Discard everything up to and including the next newline. */
+static void drain_line(FILE *f)
+{
+    int ch;
+    while ((ch = fgetc(f)) != '\n' && ch != EOF)
+        ;                                 /* body intentionally empty */
+}
+
+int main(void)
+{
+    char name[64];
+    int  age;
+
+    /* Width 63 = sizeof(name) - 1. The NUL is added on top of the width. */
+    if (scanf("%63s", name) != 1) return 1;
+
+    /* Retry loop that actually terminates, because it drains on failure. */
+    while (printf("age? "), scanf("%d", &age) != 1) {
+        if (feof(stdin)) return 1;        /* distinguish EOF from bad input */
+        drain_line(stdin);                /* without this: infinite loop    */
+        fprintf(stderr, "please enter digits\n");
+    }
+
+    printf("%s is %d\n", name, age);
+    return 0;
+}
+```
+
+```text
+   WHY THE NAIVE RETRY LOOP SPINS FOREVER
+
+   input buffer:  h e l l o \n
+                  ^
+   scanf("%d")  --> sees 'h', cannot convert, returns 0
+                    position UNCHANGED -- 'h' is still there
+   loop retries --> sees 'h', returns 0 ... forever
+
+   drain_line() moves the position past '\n', so the next
+   iteration sees fresh input and the loop can make progress.
+```
+
+| Approach | Bounded? | Recovers from bad input? | Handles a whole line? |
+|---|---|---|---|
+| `scanf("%s", buf)` | no — overflow | no | no |
+| `scanf("%63s", buf)` | yes | only with manual draining | no |
+| `fgets` + `sscanf` | yes | yes, trivially | yes |
+| `fgets` + `strtol` | yes | yes, with error position | yes |
+
+**Key Takeaways**
+
+- `scanf` leaves the newline in the stream, so a following `%c` or `fgets` reads it instead of the user's next entry; a leading space in the format skips whitespace for `%c`.
+- Always check the return value — it is the count of successful assignments, and anything less means some variables were never written.
+- On a conversion failure `scanf` does not advance past the bad input, so any retry loop must explicitly drain to the next newline or it will spin forever.
+- `%s` without a field width is a buffer overflow; the width must be `sizeof(buf) - 1` and cannot be passed as a variable.
+- Prefer `fgets` into a buffer followed by `sscanf` or `strtol`: it bounds the read, keeps parsing failures local to one line, and makes recovery automatic.
+
+> 🧪 Practice
+>
+> 1. Reproduce the leftover-newline bug with `scanf("%d")` followed by `scanf("%c")`, then fix it two ways and explain the difference.
+> 2. Write `read_int(const char *prompt, int *out)` that uses `fgets` plus `strtol`, rejects trailing garbage such as `12abc`, and returns `0`/`-1`.
+> 3. Feed a program using `scanf("%s", buf)` with `buf[8]` a 200-character token under AddressSanitizer and report the diagnostic.
+> 4. Interview-style: *"When would you still choose `scanf` over `fgets` plus parsing?"* Hint: consider trusted, machine-generated, strictly-formatted input where a failure should abort anyway.
+
 #### fopen, fclose, and Modes
+
+**Theory**
+
+Before you can read or write a file you need a **stream**: an object of type `FILE` that holds the operating system's file handle, a buffer, the current position, and the error and end-of-file flags. `fopen` creates one; `fclose` flushes and destroys it. You never manipulate a `FILE` directly — you only ever hold a `FILE *` and hand it back to library functions. It is an opaque handle, deliberately.
+
+`fopen` takes a filename and a **mode string**, and the mode string is doing more work than its two or three characters suggest. It encodes three independent decisions:
+
+1. **What operations are allowed** — read, write, or both.
+2. **What happens to existing content** — preserve it, destroy it, or append to it.
+3. **What happens if the file does not exist** — fail, or create it.
+
+The six base modes:
+
+| Mode | Read | Write | If it exists | If it does not exist | Position |
+|---|---|---|---|---|---|
+| `"r"` | yes | no | opened as-is | **fails** (`NULL`) | start |
+| `"w"` | no | yes | **truncated to zero** | created | start |
+| `"a"` | no | yes | preserved | created | end; writes always append |
+| `"r+"` | yes | yes | opened as-is | **fails** | start |
+| `"w+"` | yes | yes | **truncated to zero** | created | start |
+| `"a+"` | yes | yes | preserved | created | reads anywhere, writes at end |
+
+The two footguns are highlighted: **`"w"` destroys the file's contents the instant `fopen` succeeds**, before you write a single byte, and `"r"` is the only common mode that will not create a file for you. A surprising amount of data loss traces to a typo of `"w"` where `"r"` was meant.
+
+Appending is stronger than "position at end". With `"a"`, every write goes to the end *at the moment of the write*, regardless of any `fseek` you performed. That makes appends safe when several processes write to the same log.
+
+A `b` may be appended (`"rb"`, `"w+b"`) to request **binary mode**. On POSIX systems it does nothing — text and binary streams are identical. On Windows, text mode translates `\n` to `\r\n` on output and back on input, and may treat a Control-Z byte as end of file. So: **always use `b` for non-text data**, and understand that a program reading a binary file in text mode is portable only by accident.
+
+C11 adds exclusive modes `"wx"`, `"w+x"`: create the file, but fail if it already exists. This is the standard way to avoid clobbering, and it closes the race window that a "check then create" sequence leaves open.
+
+`fopen` returns `NULL` on failure and sets `errno`. **Check it every single time.** The failure is not hypothetical: missing file, wrong permissions, a directory where a file was expected, out of file descriptors. Using the `NULL` return dereferences a null pointer inside the library.
+
+`fclose` matters more than it looks. Because streams are buffered, data you "wrote" may still be sitting in memory. `fclose` flushes it, and **flushing can fail** — a full disk, a broken pipe, a network filesystem error. So `fclose` returns `0` or `EOF`, and for any stream you wrote to, checking that return value is the last chance to notice that your output never made it. After `fclose` the `FILE *` is dangling; using it, or closing it twice, is undefined behavior.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+
+int main(void)
+{
+    /* ---- opening for reading: NULL means "handle it", not "ignore it" ---- */
+    FILE *in = fopen("config.txt", "r");
+    if (in == NULL) {
+        /* strerror(errno) turns the error code into a human-readable string */
+        fprintf(stderr, "cannot open config.txt: %s\n", strerror(errno));
+        return EXIT_FAILURE;
+    }
+
+    char line[256];
+    while (fgets(line, sizeof line, in) != NULL)
+        fputs(line, stdout);
+
+    fclose(in);                 /* read-only stream: failure is uninteresting */
+
+    /* ---- writing: check fclose, because that is where flushing happens --- */
+    FILE *out = fopen("report.txt", "w");   /* TRUNCATES report.txt now */
+    if (out == NULL) {
+        perror("report.txt");
+        return EXIT_FAILURE;
+    }
+
+    fprintf(out, "generated report\n");
+
+    if (fclose(out) != 0) {     /* buffered bytes are written HERE */
+        perror("closing report.txt");
+        return EXIT_FAILURE;    /* the data may not be on disk */
+    }
+    return EXIT_SUCCESS;
+}
+```
+
+Mode selection in practice, including the exclusive-create idiom:
+
+```c
+#include <stdio.h>
+
+int main(void)
+{
+    /* Append: safe for logs, even with several writers. */
+    FILE *log = fopen("app.log", "a");
+    if (log) { fprintf(log, "started\n"); fclose(log); }
+
+    /* Binary: mandatory for any non-text payload, portable everywhere. */
+    FILE *img = fopen("logo.png", "rb");
+    if (img) { /* ... fread ... */ fclose(img); }
+
+    /* C11 exclusive create: refuses to touch an existing file. No race. */
+    FILE *lock = fopen("build.lock", "wx");
+    if (lock == NULL) {
+        fprintf(stderr, "another build is already running\n");
+    } else {
+        fprintf(lock, "pid placeholder\n");
+        fclose(lock);
+        remove("build.lock");          /* <stdio.h> also gives remove/rename */
+    }
+    return 0;
+}
+```
+
+```text
+   WHAT A MODE STRING DECIDES
+
+              "r"        "w"        "a"        "r+"       "w+"       "a+"
+   read        yes        no         no         yes        yes        yes
+   write       no         yes        yes        yes        yes        yes(end)
+   truncate    no         YES        no         no         YES        no
+   create      no         yes        yes        no         yes        yes
+
+   Add 'b' for binary:  "rb", "wb", "a+b"   (no-op on POSIX, required on Windows)
+   Add 'x' to "w":      "wx"                (C11: fail if the file exists)
+```
+
+**Key Takeaways**
+
+- `FILE *` is an opaque handle bundling a descriptor, a buffer, a position, and error flags; you only ever pass it to library functions.
+- `"w"` truncates the file at open time, before any write; `"r"` is the mode that refuses to create a missing file.
+- `"a"` writes at the end of the file at the moment of each write, regardless of seeking — which makes concurrent appends safe.
+- Add `b` for binary data: it is harmless on POSIX and essential on Windows, where text mode rewrites newlines.
+- Always check `fopen` for `NULL`, and check `fclose` on written streams — the flush happens there, and it can fail.
+
+> 🧪 Practice
+>
+> 1. Open a non-existent file with `"r"`, `"w"`, and `"a"` in turn and print `strerror(errno)` for each result. Explain the three outcomes.
+> 2. Write a `copy_file(const char *src, const char *dst)` that opens both in binary mode, checks every call, and closes both on every exit path including errors.
+> 3. Use `"wx"` to implement a simple lock file, then run two copies of the program at once and confirm the second one refuses to start.
+> 4. Interview-style: *"Why can `fclose` fail, and what should a program do about it?"* Hint: think about where the bytes actually are between `fprintf` and the disk.
 
 #### fread, fwrite, fgets, fputs
 
+**Theory**
+
+Once a stream is open, four functions cover almost all reading and writing. They split cleanly into two pairs, one for **binary blocks** and one for **text lines**, and choosing the wrong pair is a common source of subtly broken code.
+
+**`fread` and `fwrite` move raw bytes.** Their signature is unusual — a size and a count, separately:
+
+```c
+size_t fread (void *ptr, size_t size, size_t nmemb, FILE *stream);
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
+```
+
+They transfer `size * nmemb` bytes and return **the number of complete items transferred**, not the number of bytes. That return value is the whole error-handling story: a short return means end of file or an error, and you distinguish them with `feof` and `ferror`. The conventional call passes `size = sizeof(element)` and `nmemb = count`, so the return is directly comparable to `count`.
+
+Because they copy bytes verbatim, `fread`/`fwrite` are the right tools for binary formats — but writing a `struct` straight to disk bakes in your compiler's padding, your CPU's endianness, and your platform's type sizes. The file is then readable only by the same build. For anything that crosses machines, serialize field by field with an explicit layout.
+
+**`fgets` and `fputs` move text lines.**
+
+```c
+char *fgets(char *s, int n, FILE *stream);   /* reads at most n-1 chars */
+int   fputs(const char *s, FILE *stream);    /* writes a NUL-terminated string */
+```
+
+`fgets` reads until a newline, end of file, or `n-1` characters — whichever comes first — and always NUL-terminates. Three details matter constantly:
+
+- **It keeps the newline** if one was read. Almost every program using `fgets` must strip it.
+- **If the line was longer than the buffer**, there is no newline in the result and the rest of the line is still waiting in the stream. Detecting this is exactly "did the result contain a `\n`?".
+- **It returns `NULL` at end of file or on error**, which is the natural loop condition.
+
+`fputs` writes the string without adding a newline (unlike `puts`, which appends one). Its size argument does not exist because the string's own NUL terminates it.
+
+`gets` — which read a line with no size limit at all — was the canonical C buffer overflow and was **removed from the language in C11**. If you see it, the code predates 2011 or was never compiled with warnings on.
+
+For single characters there are `fgetc`/`fputc` and their `getc`/`putc` macro forms. Note that `fgetc` returns an **`int`**, not a `char`, precisely so that `EOF` (a negative value) is distinguishable from every valid byte, including `0xFF`. Storing it in a `char` first is a real bug that can either lose `EOF` detection or create a false one.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+/* Read a text file line by line, stripping the newline and detecting
+   lines too long for the buffer. */
+static void read_lines(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) { perror(path); return; }
+
+    char line[128];
+    unsigned long lineno = 0;
+
+    while (fgets(line, sizeof line, f) != NULL) {
+        size_t len = strlen(line);
+
+        if (len > 0 && line[len - 1] == '\n') {
+            line[--len] = '\0';           /* strip the newline fgets kept */
+            lineno++;
+        } else if (!feof(f)) {
+            /* No newline and not at EOF: the line did not fit. The rest of
+               it is still in the stream and the next fgets will return it. */
+            fprintf(stderr, "line %lu truncated\n", lineno + 1);
+        }
+
+        printf("[%s]\n", line);
+    }
+
+    if (ferror(f)) perror("read error");  /* NULL can mean EOF *or* error */
+    fclose(f);
+}
+```
+
+Binary block I/O with correct short-count handling:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct { int id; float score; } Record;
+
+static int save_records(const char *path, const Record *recs, size_t n)
+{
+    FILE *f = fopen(path, "wb");          /* 'b': raw bytes, no translation */
+    if (!f) return -1;
+
+    /* Returns the count of ITEMS written, not bytes. */
+    size_t written = fwrite(recs, sizeof *recs, n, f);
+    if (written != n) { fclose(f); return -1; }
+
+    return fclose(f) == 0 ? 0 : -1;       /* the flush can still fail */
+}
+
+static Record *load_records(const char *path, size_t *out_n)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+
+    /* Size the file, then allocate exactly once. */
+    fseek(f, 0, SEEK_END);
+    long bytes = ftell(f);
+    rewind(f);
+    if (bytes < 0 || (size_t)bytes % sizeof(Record) != 0) { fclose(f); return NULL; }
+
+    size_t  n    = (size_t)bytes / sizeof(Record);
+    Record *recs = malloc(n * sizeof *recs);
+    if (!recs) { fclose(f); return NULL; }
+
+    if (fread(recs, sizeof *recs, n, f) != n) {   /* short read = failure */
+        free(recs); fclose(f); return NULL;
+    }
+
+    fclose(f);
+    *out_n = n;
+    return recs;
+}
+```
+
+The `fgetc` return-type trap:
+
+```c
+#include <stdio.h>
+
+int main(void)
+{
+    /* WRONG: on platforms where char is signed, the byte 0xFF becomes -1,
+       which compares equal to EOF and ends the loop early. On platforms
+       where char is unsigned, EOF (-1) becomes 255 and the loop never ends. */
+    /* char c; while ((c = fgetc(stdin)) != EOF) ... */
+
+    int c;                                  /* RIGHT: int holds every byte plus EOF */
+    while ((c = fgetc(stdin)) != EOF)
+        fputc(c, stdout);
+
+    return 0;
+}
+```
+
+| Function | Unit | Adds/keeps newline | Bounded | Returns |
+|---|---|---|---|---|
+| `fgets` | line | keeps the `\n` it read | yes (`n-1` chars) | buffer or `NULL` |
+| `fputs` | string | adds nothing | n/a | non-negative or `EOF` |
+| `puts` | string | **appends** `\n` | n/a | non-negative or `EOF` |
+| `fread` | items | n/a | yes (`size*nmemb`) | items read |
+| `fwrite` | items | n/a | yes | items written |
+| `fgetc` | byte | n/a | n/a | `int`: byte or `EOF` |
+
+**Key Takeaways**
+
+- `fread`/`fwrite` return the number of complete *items*, not bytes; a short count means EOF or error, resolved with `feof` and `ferror`.
+- Writing a raw `struct` with `fwrite` embeds padding, endianness, and type sizes — fine for a private cache, wrong for a portable file format.
+- `fgets` keeps the trailing newline, always NUL-terminates, and signals an over-long line by returning a buffer with no `\n` while not at EOF.
+- `fputs` does not append a newline; `puts` does. `gets` was removed in C11 and must never appear.
+- `fgetc` returns `int` so that `EOF` cannot collide with a valid byte value — storing its result in a `char` is a genuine bug.
+
+> 🧪 Practice
+>
+> 1. Write a program that counts lines in a file with `fgets` and correctly reports how many lines exceeded a 32-byte buffer.
+> 2. Save an array of 1000 `struct { int; double; }` with `fwrite`, reload it with `fread`, and compare. Then print `sizeof` the struct and explain why the file is not portable.
+> 3. Implement `cat` twice: once with `fgetc`/`fputc` and once with a 4096-byte `fread`/`fwrite` loop. Time both on a 100 MB file and explain the gap.
+> 4. Interview-style: *"Why does `fgetc` return `int` rather than `char`?"* Hint: count how many distinct values a function must be able to return.
+
 #### fseek, ftell, and Positioning
+
+**Theory**
+
+Every open stream carries a **file position indicator**: the offset at which the next read or write will happen. Sequential I/O advances it implicitly. Random access means moving it deliberately, and that is what `fseek`, `ftell`, and `rewind` are for.
+
+```c
+int  fseek(FILE *stream, long offset, int whence);
+long ftell(FILE *stream);
+void rewind(FILE *stream);
+```
+
+`whence` selects the reference point, and the three constants are the whole vocabulary:
+
+| `whence` | Meaning | Typical use |
+|---|---|---|
+| `SEEK_SET` | offset from the beginning | jump to an absolute position |
+| `SEEK_CUR` | offset from the current position | skip forward, or back up |
+| `SEEK_END` | offset from the end (usually negative or 0) | measure size, read a trailer |
+
+The classic idiom — seek to the end, ask where you are, rewind — measures a file's size:
+
+```c
+fseek(f, 0, SEEK_END);
+long size = ftell(f);
+rewind(f);
+```
+
+This works, is portable, and has two caveats worth knowing. First, `long` may be 32 bits, capping the measurable size at 2 GB; POSIX offers `fseeko`/`ftello` with `off_t` for large files. Second, **on a text stream the standard only guarantees meaningful behavior for offsets obtained from `ftell`** — because of newline translation, byte offsets and character counts can differ. For genuine random access, open the file in binary mode.
+
+`fseek` also has a **side effect that is easy to miss**: it clears the end-of-file flag. That is why a loop that hits EOF and then seeks back can continue reading. It also discards any pushed-back character from `ungetc`.
+
+There is one rule that catches people in update modes (`"r+"`, `"w+"`, `"a+"`): **between a read and a write on the same stream you must call `fseek`, `fflush`, or `rewind`**, and between a write and a read you must call one of those or reach end of file. The buffer serves both directions and cannot switch silently. Omitting the call is undefined behavior — usually manifesting as data written to the wrong offset.
+
+For positions too large for `long`, or for a portable opaque position, C provides `fgetpos`/`fsetpos` with an `fpos_t`. It is a token, not a number: you can store it and return to it, but you cannot do arithmetic on it. That is exactly right for text streams and multibyte encodings, where a "position" is more than an offset.
+
+Finally, seeking is meaningless on non-seekable streams — pipes, terminals, sockets. `fseek` returns `-1` there, and code that assumes a file must handle that.
+
+**Examples**
+
+```c
+#include <stdio.h>
+
+/* Fixed-size records give you O(1) random access: record i lives at
+   offset i * sizeof(Record). This is the whole idea behind a flat-file
+   database index. */
+typedef struct { int id; char name[32]; double balance; } Record;
+
+static int read_record(FILE *f, size_t index, Record *out)
+{
+    long offset = (long)(index * sizeof(Record));
+
+    if (fseek(f, offset, SEEK_SET) != 0) return -1;   /* seek can fail */
+    return fread(out, sizeof *out, 1, f) == 1 ? 0 : -1;
+}
+
+static int write_record(FILE *f, size_t index, const Record *in)
+{
+    if (fseek(f, (long)(index * sizeof(Record)), SEEK_SET) != 0) return -1;
+    if (fwrite(in, sizeof *in, 1, f) != 1) return -1;
+    return fflush(f);            /* required before switching back to reading */
+}
+
+int main(void)
+{
+    FILE *db = fopen("accounts.dat", "r+b");    /* read AND write, binary */
+    if (!db) { perror("accounts.dat"); return 1; }
+
+    /* How many records are there? */
+    fseek(db, 0, SEEK_END);
+    long bytes = ftell(db);
+    printf("%ld records\n", bytes / (long)sizeof(Record));
+
+    Record r;
+    if (read_record(db, 5, &r) == 0)          /* jump straight to record 5 */
+        printf("id=%d name=%s\n", r.id, r.name);
+
+    r.balance += 100.0;
+    write_record(db, 5, &r);                  /* update it in place */
+
+    fclose(db);
+    return 0;
+}
+```
+
+Reading a fixed-size trailer, and detecting a non-seekable stream:
+
+```c
+#include <stdio.h>
+
+static void read_footer(FILE *f)
+{
+    char magic[8];
+
+    /* Negative offset from SEEK_END: the last 8 bytes. */
+    if (fseek(f, -8L, SEEK_END) != 0) {
+        /* Pipes and terminals are not seekable -- this is a normal outcome. */
+        perror("not seekable");
+        return;
+    }
+    if (fread(magic, 1, sizeof magic, f) == sizeof magic)
+        printf("footer: %.8s\n", magic);
+}
+
+int main(void)
+{
+    /* fseek clears the EOF flag, so this loop can run twice. */
+    FILE *f = fopen("data.bin", "rb");
+    if (!f) return 1;
+
+    int c, count = 0;
+    while ((c = fgetc(f)) != EOF) count++;
+    printf("first pass: %d bytes, feof=%d\n", count, feof(f));
+
+    rewind(f);                       /* == fseek(f,0,SEEK_SET) + clearerr(f) */
+    printf("after rewind: feof=%d\n", feof(f));
+
+    read_footer(f);
+    fclose(f);
+    return 0;
+}
+```
+
+```text
+   THE POSITION INDICATOR
+
+   file:   [ b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 ]
+                        ^
+                        position = 4
+
+   fseek(f, 0, SEEK_SET)  -> 0       (start)
+   fseek(f, 2, SEEK_CUR)  -> 6       (relative)
+   fseek(f, 0, SEEK_END)  -> 10      (one past the last byte = size)
+   fseek(f,-3, SEEK_END)  -> 7       (last three bytes)
+
+   READ <-> WRITE on an update stream ("r+","w+","a+"):
+       read ... [ fseek | fflush | rewind ] ... write     REQUIRED
+       write ... [ fseek | fflush | rewind | EOF ] ... read  REQUIRED
+```
+
+**Key Takeaways**
+
+- `fseek` moves the position relative to `SEEK_SET`, `SEEK_CUR`, or `SEEK_END`; `ftell` reports it; `rewind` returns to the start and clears the error flag too.
+- The seek-to-end/`ftell`/rewind idiom measures file size, but `long` may cap it at 2 GB — use `fseeko`/`ftello` for large files.
+- Random access is only well defined on binary streams; on text streams, only positions previously returned by `ftell` are portable.
+- On update modes you must call `fseek`, `fflush`, or `rewind` when switching between reading and writing — skipping it is undefined behavior.
+- `fseek` clears the EOF indicator, and returns `-1` on non-seekable streams such as pipes and terminals.
+
+> 🧪 Practice
+>
+> 1. Write `file_size(const char *path)` using `fseek`/`ftell` and compare its result against `wc -c` on a text file containing `\r\n` line endings.
+> 2. Build a fixed-record file of 100 entries, then write a program that updates entry 42 in place without rewriting the rest.
+> 3. Run a program that calls `fseek(stdin, 0, SEEK_SET)` both interactively and with input redirected from a file. Explain the difference.
+> 4. Interview-style: *"Why must you call `fflush` or `fseek` between a read and a write on an `\"r+\"` stream?"* Hint: there is one buffer, and it has a direction.
 
 #### Buffering and fflush
 
+**Theory**
+
+A system call is expensive — it crosses from your process into the kernel. Writing a 10,000-character report one `putchar` at a time would mean 10,000 of those crossings. The standard library avoids this by putting a **buffer** between you and the operating system: your writes accumulate in memory, and only when the buffer fills (or something forces the issue) does a single large `write` happen.
+
+This is a pure performance optimization, and normally invisible. It becomes visible in exactly three situations, and each one confuses people who do not know the buffer is there:
+
+1. **Output appears out of order** relative to another stream, or relative to what a debugger shows.
+2. **A prompt does not appear** before the program blocks waiting for input.
+3. **Output vanishes entirely** when the program crashes or is killed — the bytes were in the buffer, not on the disk.
+
+C defines three buffering modes:
+
+| Mode | Constant | Flushed when | Default for |
+|---|---|---|---|
+| Unbuffered | `_IONBF` | immediately, every write | `stderr` |
+| Line buffered | `_IOLBF` | on `\n`, when full, or on input | `stdout` **to a terminal** |
+| Fully buffered | `_IOFBF` | only when the buffer fills | files, pipes, `stdout` **redirected** |
+
+The critical row is the last one. **`stdout` changes its buffering depending on where it points.** Interactively it is line buffered, so `printf("x\n")` appears at once. Redirect to a file or a pipe and it becomes fully buffered, so nothing appears until 4 KB have accumulated. This is why `./prog | grep foo` can seem to hang, and why interleaved `printf` and `fprintf(stderr, ...)` output looks correctly ordered on a terminal and scrambled in a log file.
+
+`fflush(stream)` forces the buffered output out now. `fflush(NULL)` flushes every output stream. Note the asymmetry: **`fflush` is defined only for output streams**. `fflush(stdin)` is undefined behavior — a widely copied "fix" for the `scanf` newline problem that happens to work on glibc and does nothing or misbehaves elsewhere. Drain the input with a read loop instead.
+
+Flushing happens automatically in more places than people expect: when the buffer fills, when `fclose` is called, when the stream is line buffered and a newline is written, when `exit` or a `return` from `main` runs, and (on many implementations) when a line-buffered stream reads from a terminal. It does **not** happen on `abort`, on `_Exit`, or when the process is killed by a signal — which is precisely why a program that crashes appears to have produced less output than it really did.
+
+You can choose the mode yourself with `setvbuf`, but it must be called **after opening the stream and before any I/O on it**:
+
+```c
+int setvbuf(FILE *stream, char *buf, int mode, size_t size);
+```
+
+Passing `NULL` for `buf` lets the library allocate. The common uses are forcing `stdout` to line-buffered or unbuffered for debugging, and giving a large buffer to a stream doing heavy sequential I/O.
+
+`stderr` is unbuffered by default for a reason: an error message must survive the crash it is describing.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <unistd.h>   /* sleep -- POSIX, for demonstration */
+
+int main(void)
+{
+    /* The classic missing-prompt bug. No newline, so a line-buffered
+       stdout holds the text while the program blocks on input. */
+    printf("Enter your name: ");     /* may not appear yet */
+    fflush(stdout);                  /* force it out before we block */
+
+    char name[64];
+    if (fgets(name, sizeof name, stdin) == NULL) return 1;
+
+    /* Progress output that must appear as it happens. */
+    for (int i = 0; i < 3; i++) {
+        printf("step %d... ", i);    /* still no newline */
+        fflush(stdout);              /* so flush explicitly */
+        sleep(1);
+    }
+    printf("done\n");                /* newline flushes a line-buffered stream */
+    return 0;
+}
+```
+
+Seeing buffering change behavior, without changing the program:
+
+```c
+#include <stdio.h>
+
+int main(void)
+{
+    printf("to stdout\n");                    /* buffered (mode depends) */
+    fprintf(stderr, "to stderr\n");           /* unbuffered: immediate  */
+    printf("to stdout again\n");
+    return 0;
+}
+```
+
+```bash
+# Terminal: stdout is LINE buffered, so ordering looks natural.
+$ ./prog
+to stdout
+to stderr
+to stdout again
+
+# Redirected: stdout is FULLY buffered and flushes at exit, so stderr
+# (unbuffered) overtakes it entirely.
+$ ./prog > out.txt 2>&1 ; cat out.txt
+to stderr
+to stdout
+to stdout again
+
+# Force line buffering from outside the program, for debugging pipelines:
+$ stdbuf -oL ./prog | cat
+```
+
+Choosing a buffering mode explicitly:
+
+```c
+#include <stdio.h>
+
+int main(void)
+{
+    /* Unbuffered stdout: every character hits the OS immediately.
+       Slow, but the output survives a crash mid-line. Must come
+       before any output on the stream. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+    /* A big buffer for a stream doing bulk sequential writes. */
+    FILE *f = fopen("bulk.dat", "wb");
+    if (f) {
+        static char big[1 << 20];              /* 1 MB, static storage */
+        setvbuf(f, big, _IOFBF, sizeof big);   /* fewer, larger writes */
+        /* ... fwrite loop ... */
+        fclose(f);                             /* flushes 'big' */
+    }
+    return 0;
+}
+```
+
+```text
+   WHERE YOUR BYTES ACTUALLY ARE
+
+   printf("hi")
+        |
+        v
+   +----------------+     fflush / buffer full / fclose / exit
+   | stdio buffer   | -------------------------------------------> write()
+   | (your process) |                                                 |
+   +----------------+                                                 v
+                                                           +--------------------+
+   A crash here loses the buffer contents.                 | kernel page cache  |
+   Only stderr (unbuffered) is safe by default.            +--------------------+
+                                                                      |
+                                                              fsync   v
+                                                                   [ disk ]
+```
+
+**Key Takeaways**
+
+- Buffering exists to turn many small writes into few system calls; it is invisible until output ordering, prompts, or crash behavior expose it.
+- `stdout` is line buffered on a terminal but fully buffered when redirected to a file or pipe — the same program behaves differently under redirection.
+- `stderr` is unbuffered so error messages survive the failure that produced them.
+- `fflush` applies to output streams only; `fflush(stdin)` is undefined behavior, not a way to clear pending input.
+- Buffers are flushed by `fclose`, `exit`, and a full buffer — but not by `abort`, `_Exit`, or a fatal signal.
+
+> 🧪 Practice
+>
+> 1. Write a program that prints a prompt without a newline and reads a line. Run it interactively and piped through `cat`; explain both behaviors and fix it.
+> 2. Interleave five `printf` and five `fprintf(stderr, ...)` calls, then compare `./prog` against `./prog > log 2>&1`. Account for the ordering.
+> 3. Use `setvbuf` to give a file stream a 1 MB buffer and measure the number of `write` syscalls with `strace -c` against the default.
+> 4. Interview-style: *"A program's log file is missing its last few lines after a crash. Why, and what would you change?"* Hint: consider where the lines were when the process died, and what `abort` skips.
+
 #### stdin, stdout, stderr
+
+**Theory**
+
+Every hosted C program starts with three streams already open, no `fopen` required. They are declared in `<stdio.h>` and connected by the environment that launched the program:
+
+| Stream | Descriptor | Purpose | Default destination | Default buffering |
+|---|---|---|---|---|
+| `stdin` | 0 | normal input | keyboard | line buffered |
+| `stdout` | 1 | normal output — the program's *result* | terminal | line buffered to a tty, else full |
+| `stderr` | 2 | diagnostics — errors, warnings, progress | terminal | unbuffered |
+
+The separation of `stdout` from `stderr` is not decoration; it is the foundation of the entire Unix pipeline model. `stdout` carries **data meant for the next program**. `stderr` carries **messages meant for a human**. Keeping them apart is what allows this to work:
+
+```bash
+./convert input.txt > output.txt        # data goes to the file
+                                        # errors still appear on your screen
+./convert input.txt 2> errors.log       # or the other way around
+./convert input.txt | sort | uniq       # diagnostics never pollute the pipe
+```
+
+The practical rule follows directly: **anything that is not the program's actual output goes to `stderr`.** Error messages, obviously — but also usage text, progress bars, verbose logging, and "processed 500 files" summaries. A tool that prints a progress bar to `stdout` cannot be piped.
+
+Because these are ordinary `FILE *` values, they can be passed like any other stream — which is how you write functions that work equally on a file, on `stdout`, or on a test buffer. `printf(...)` is exactly `fprintf(stdout, ...)`, and `getchar()` is `getc(stdin)`.
+
+The environment can redirect them before your program starts, and your program cannot tell the difference by looking at the `FILE *`. What it *can* do is ask whether the stream is a terminal, using the POSIX `isatty(fileno(stream))`. This is how well-behaved tools decide to enable color only when a human is watching, and to switch from a progress bar to plain log lines when redirected.
+
+`freopen` re-points an existing stream at a different file, which is the standard way to redirect from inside the program — for instance sending a daemon's `stderr` to a log file. Closing `stdout` is legal but rarely useful; note that a `printf` to a closed or broken stream fails silently unless you check.
+
+One more consequence of the buffering difference: because `stderr` is unbuffered and `stdout` usually is not, **their relative order in a combined log is not the order in which your program produced them**. If you need faithful interleaving, either flush `stdout` before each `stderr` write, or send both to the same stream.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+/* A well-behaved filter: data on stdout, everything else on stderr. */
+int main(int argc, char **argv)
+{
+    if (argc > 2) {
+        /* Usage messages are diagnostics -- stderr, and a nonzero exit. */
+        fprintf(stderr, "usage: %s [file]\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    FILE *in = stdin;                       /* default: read from the pipe */
+    if (argc == 2) {
+        in = fopen(argv[1], "r");
+        if (!in) { perror(argv[1]); return EXIT_FAILURE; }
+    }
+
+    char line[1024];
+    unsigned long n = 0;
+
+    while (fgets(line, sizeof line, in)) {
+        fputs(line, stdout);                /* the DATA: pipeable */
+        if (++n % 1000 == 0)
+            fprintf(stderr, "\r%lu lines...", n);   /* PROGRESS: not data */
+    }
+
+    fprintf(stderr, "\rdone: %lu lines\n", n);
+    if (in != stdin) fclose(in);
+    return EXIT_SUCCESS;
+}
+```
+
+Writing functions that do not care where the output goes, and detecting a terminal:
+
+```c
+#include <stdio.h>
+#include <unistd.h>     /* isatty, fileno -- POSIX */
+
+/* Takes the stream as a parameter: works with stdout, a file, or a
+   temporary stream in a unit test. This is the testable shape. */
+static void print_table(FILE *out, const int *values, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        fprintf(out, "%3zu | %d\n", i, values[i]);
+}
+
+int main(void)
+{
+    int data[] = {10, 20, 30};
+
+    /* Color only when a human is actually looking at the output. */
+    int color = isatty(fileno(stdout));
+    const char *bold  = color ? "\033[1m" : "";
+    const char *reset = color ? "\033[0m" : "";
+
+    printf("%sIndex | Value%s\n", bold, reset);
+    print_table(stdout, data, 3);
+
+    FILE *f = fopen("table.txt", "w");
+    if (f) { print_table(f, data, 3); fclose(f); }   /* same function, a file */
+
+    /* Redirect a stream from inside the program (daemon logging pattern). */
+    if (freopen("daemon.log", "a", stderr) == NULL)
+        perror("freopen");
+    fprintf(stderr, "diagnostics now land in daemon.log\n");
+
+    return 0;
+}
+```
+
+```text
+   THE THREE STANDARD STREAMS
+
+                    +-------------------------+
+   keyboard  ---->  | 0  stdin                |
+   or a pipe        +-------------------------+
+                    | 1  stdout   -- DATA     | ----> terminal, file, or the
+                    +-------------------------+       next program in a pipe
+                    | 2  stderr   -- MESSAGES | ----> terminal (or its own log)
+                    +-------------------------+
+
+   ./a | ./b        connects a's stdout to b's stdin.
+                    Both programs' stderr still go to the screen.
+
+   Rule: if piping your output into another program would break
+   because of a line, that line belongs on stderr.
+```
+
+**Key Takeaways**
+
+- `stdin`, `stdout`, and `stderr` are pre-opened `FILE *` values on descriptors 0, 1, and 2; no `fopen` is needed and they may be redirected before your program runs.
+- `stdout` is for data the next program might consume; `stderr` is for humans — errors, usage, progress, and logging all belong there.
+- `printf` is `fprintf(stdout, ...)`; taking a `FILE *` parameter makes output functions reusable and testable.
+- `stderr` is unbuffered while `stdout` often is not, so combined output can appear out of order unless you flush.
+- Use `isatty(fileno(stdout))` to decide on color and progress display, and `freopen` to redirect a standard stream from inside the program.
+
+> 🧪 Practice
+>
+> 1. Write a line-numbering filter that reads `stdin` and writes `stdout`, printing a summary to `stderr`. Verify that `./prog < in.txt | head` works and the summary still shows.
+> 2. Take an existing program that prints errors with `printf` and convert it; then demonstrate a pipeline that was broken before and works after.
+> 3. Use `isatty` to enable ANSI color only for a terminal, and confirm with `./prog | cat` that no escape codes reach the file.
+> 4. Interview-style: *"Why do Unix programs have two output streams instead of one?"* Hint: think about what happens to a diagnostic message when the output is a pipe.
 
 <a id="92-core-utility-headers"></a>
 ### 9.2 Core Utility Headers
 
+Beyond I/O, the standard library is a handful of small headers that solve problems every program has: copying bytes, converting text to numbers, sorting, arithmetic, classifying characters, telling the time, and asking what the current machine's types can hold. This section covers each in the depth needed to use it correctly rather than approximately.
+
 #### string.h and Memory Functions
+
+**Theory**
+
+`<string.h>` contains two related families that are easy to confuse. The **`str*` functions** operate on NUL-terminated strings and stop at the terminator. The **`mem*` functions** operate on raw byte ranges and take an explicit length, ignoring content entirely. Choosing between them is choosing whether "the data" ends at a zero byte or at a count you supply.
+
+The `str*` family's dependence on the terminator is the source of nearly every bug in it. `strlen` walks memory until it finds a zero — if there is none, it walks off the end. `strcpy` copies until it finds a zero in the *source*, with no knowledge of how large the *destination* is. This is not a defect in the functions; it is the interface. C strings do not carry their length, so any function taking only a `char *` cannot know where the buffer ends.
+
+The bounded `strn*` variants help, but each has a wrinkle:
+
+- **`strncpy` does not do what its name suggests.** It copies at most `n` bytes, and **if the source is `n` bytes or longer, the result is not NUL-terminated.** It also zero-*pads* a short source out to the full `n` bytes, which is a performance cost nobody expects. It was designed for fixed-size fields in old Unix directory entries, not for safe string copying.
+- **`strncat`'s `n` is the number of bytes to append**, not the destination's size — so the correct call is `strncat(dst, src, dstsize - strlen(dst) - 1)`, which requires knowing `strlen(dst)` anyway.
+
+Because of this, most projects use one of: `snprintf(dst, size, "%s", src)` (portable, always terminates, reports truncation), or the BSD/POSIX `strlcpy`/`strlcat` (not in the C standard but widely available), or a hand-written wrapper.
+
+The `mem*` functions are simpler because they take a length and never look for a terminator:
+
+| Function | Does |
+|---|---|
+| `memcpy(d, s, n)` | copy `n` bytes; regions **must not overlap** |
+| `memmove(d, s, n)` | copy `n` bytes; overlap is handled correctly |
+| `memset(p, c, n)` | fill `n` bytes with the byte value `c` |
+| `memcmp(a, b, n)` | compare `n` bytes, byte by byte |
+| `memchr(p, c, n)` | find the first byte `c` within `n` bytes |
+
+**`memcpy` with overlapping regions is undefined behavior**, and it really does break in practice — optimized implementations copy in whatever order and block size is fastest, so shifting an array left may work while shifting it right corrupts the data. When regions might overlap, use `memmove`; the cost is negligible.
+
+Two traps deserve their own mention. **`memcmp` on structs is unreliable** because padding bytes are uninitialized and compare as garbage even when every field is equal. And `memset(p, 0, n)` to erase a password may be **removed by the optimizer** as a dead store if `p` is not used afterwards — C11 provides `memset_s`, and platforms offer `explicit_bzero`, for erasure that must survive.
+
+Comparison functions return a sign, not a boolean: negative, zero, or positive. `if (strcmp(a, b))` is true when the strings *differ*, which reads backwards and is a classic review comment.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    /* ---- length and comparison ------------------------------------- */
+    const char *s = "hello";
+    printf("%zu\n", strlen(s));            /* 5 -- excludes the NUL      */
+    printf("%d\n", strcmp("abc", "abd"));  /* negative: 'c' < 'd'        */
+    printf("%s\n", strcmp("a","a") == 0 ? "equal" : "different");  /* == 0 ! */
+
+    /* ---- copying: why strncpy is not a safe strcpy ------------------ */
+    char dst[6];
+    strncpy(dst, "abcdefgh", sizeof dst);  /* copies 6 bytes, NO terminator */
+    dst[sizeof dst - 1] = '\0';            /* you must terminate yourself   */
+    printf("[%s]\n", dst);                 /* [abcde]                       */
+
+    /* The portable safe copy: always terminates, and tells you if it fit. */
+    char safe[6];
+    int n = snprintf(safe, sizeof safe, "%s", "abcdefgh");
+    if ((size_t)n >= sizeof safe) printf("truncated (needed %d)\n", n);
+
+    /* ---- searching --------------------------------------------------- */
+    const char *path = "/usr/local/bin/gcc";
+    const char *base = strrchr(path, '/');            /* LAST '/'          */
+    printf("basename: %s\n", base ? base + 1 : path);
+    printf("found: %s\n", strstr(path, "local") ? "yes" : "no");
+
+    /* ---- tokenizing: strtok MODIFIES its input and keeps global state -- */
+    char csv[] = "a,b,,c";                 /* array, not a literal: writable */
+    for (char *tok = strtok(csv, ","); tok; tok = strtok(NULL, ","))
+        printf("tok=[%s]\n", tok);         /* note: the empty field is skipped */
+
+    return 0;
+}
+```
+
+`memcpy` versus `memmove`, made concrete:
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+int main(void)
+{
+    char buf[] = "ABCDEFGH";
+
+    /* Shift left by one: destination is BEFORE the source, overlapping. */
+    memmove(buf, buf + 1, 7);      /* correct: handles overlap */
+    buf[7] = '\0';
+    printf("%s\n", buf);           /* BCDEFGH */
+
+    char buf2[] = "ABCDEFGH";
+    /* memcpy(buf2 + 1, buf2, 7);  <-- UNDEFINED BEHAVIOR: regions overlap.
+       It may appear to work, then break at -O2 or on a different CPU. */
+    memmove(buf2 + 1, buf2, 7);    /* correct */
+    printf("%s\n", buf2);          /* AABCDEFG */
+
+    /* memset fills BYTES, so only 0 and -1 give the "obvious" result. */
+    int arr[4];
+    memset(arr, 0, sizeof arr);            /* all zeros: correct and idiomatic */
+    memset(arr, 1, sizeof arr);            /* NOT 1: each int becomes 0x01010101 */
+    printf("%d %d\n", arr[0], 0x01010101);
+
+    /* memcmp on structs reads padding too -- do not use it for equality. */
+    struct P { char c; int i; };           /* 3 padding bytes after 'c' */
+    struct P a, b;
+    memset(&a, 0, sizeof a); memset(&b, 0, sizeof b);  /* only safe because
+                                                          we zeroed padding */
+    a.c = b.c = 'x'; a.i = b.i = 7;
+    printf("memcmp says %s\n", memcmp(&a, &b, sizeof a) == 0 ? "equal" : "differ");
+    return 0;
+}
+```
+
+| Task | Avoid | Use |
+|---|---|---|
+| Copy a string safely | `strcpy`, `strncpy` | `snprintf(d, size, "%s", s)` or `strlcpy` |
+| Concatenate safely | `strcat`, `strncat` | `snprintf` with both parts, or track the length |
+| Copy possibly-overlapping bytes | `memcpy` | `memmove` |
+| Compare structs for equality | `memcmp` | field-by-field comparison |
+| Erase a secret | `memset` | `memset_s` / `explicit_bzero` |
+| Split a string, reentrantly | `strtok` | `strtok_r`, or `strcspn` by hand |
+
+**Key Takeaways**
+
+- `str*` functions stop at the NUL terminator and cannot know the destination's size; `mem*` functions take an explicit length and ignore content.
+- `strncpy` does not guarantee termination and pads with zeros — it is not a safe `strcpy`; prefer `snprintf` or `strlcpy`.
+- `memcpy` on overlapping regions is undefined behavior; `memmove` is the correct choice whenever overlap is possible.
+- `memcmp` on structures compares padding bytes as well as fields, so it is not a valid equality test.
+- `strcmp` and friends return a sign, not a boolean — equality is `== 0`; and `strtok` modifies its input and holds hidden global state.
+
+> 🧪 Practice
+>
+> 1. Implement `my_strlen`, `my_strcpy`, and `my_strcmp` from scratch and test them against the library versions on empty strings and single characters.
+> 2. Write `str_copy(char *dst, size_t cap, const char *src)` that always terminates and returns the length it would have needed. Compare it with `strncpy` on a source longer than the destination.
+> 3. Demonstrate `memcpy` overlap corruption: shift an array right by one with `memcpy`, compile at `-O2`, and compare against `memmove`.
+> 4. Interview-style: *"Why is `strncpy` considered unsafe despite taking a size?"* Hint: describe exactly what the buffer contains when the source is longer than `n`.
 
 #### stdlib.h Conversions and Random Numbers
 
+**Theory**
+
+`<stdlib.h>` is the miscellaneous drawer: memory allocation (covered in Chapter 7), process control, conversions between text and numbers, searching and sorting, and pseudo-random numbers. Two of those groups are worth studying carefully because their obvious functions are the wrong ones.
+
+**Text-to-number conversion.** The old family is `atoi`, `atol`, `atof`. They are compact and they are unusable in any program that must handle bad input, because **they cannot report an error**. `atoi("hello")` returns `0` — indistinguishable from `atoi("0")`. `atoi("99999999999999")` is undefined behavior on overflow. There is no way to ask "did that work?".
+
+The correct family is `strtol`, `strtoul`, `strtoll`, `strtod`, and it reports errors through two channels at once:
+
+```c
+long strtol(const char *nptr, char **endptr, int base);
+```
+
+- **`endptr`** is set to the first character not consumed. Comparing it to the input tells you whether *anything* was converted; checking that it points at the terminator tells you whether the *whole* string was consumed. This is how you reject `"12abc"`.
+- **`errno`** is set to `ERANGE` on overflow or underflow, with the return value clamped to `LONG_MAX`/`LONG_MIN`. Because these functions do not clear `errno` on success, you must set `errno = 0` before the call.
+
+The `base` argument accepts 2 through 36, or **`0` for automatic detection**: a leading `0x` means hexadecimal, a leading `0` means octal, otherwise decimal. That is exactly the syntax C literals use, which makes base 0 the right choice for parsing configuration values.
+
+**Pseudo-random numbers.** `rand()` returns a value in `[0, RAND_MAX]`, and `srand(seed)` sets the starting point. Three things about it are non-negotiable knowledge:
+
+1. **It is deterministic.** The same seed produces the same sequence, always. Without calling `srand`, the sequence behaves as though seeded with `1` — which is why an unseeded program prints identical "random" numbers on every run.
+2. **`rand() % n` is biased.** If `RAND_MAX + 1` is not a multiple of `n`, the low residues occur more often. With `RAND_MAX = 32767` and `n = 10000`, values 0–2767 are about 50% more likely than the rest. The fix is rejection sampling: discard the values in the uneven tail.
+3. **It is not cryptographically secure.** `rand` is typically a linear congruential generator whose entire future is predictable from a couple of outputs. For anything security-relevant use the platform's CSPRNG (`getrandom`, `/dev/urandom`, `arc4random`, `BCryptGenRandom`).
+
+`srand(time(NULL))` is the traditional seeding line. It is fine for a game or a simulation, but note that two processes started in the same second get the same sequence.
+
+Also in `<stdlib.h>`: `abs`/`labs`, `div`/`ldiv` (quotient and remainder in one operation, with defined truncation), `getenv`, `system`, `exit`, `abort`, and the `qsort`/`bsearch` pair covered next.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <limits.h>
+#include <string.h>
+
+/* Full-strength string-to-int: rejects garbage, empty input, overflow,
+   and trailing characters. This is the shape every argument parser needs. */
+static int parse_int(const char *s, int *out)
+{
+    char *end;
+
+    errno = 0;                              /* strtol does not clear it */
+    long v = strtol(s, &end, 10);
+
+    if (end == s)                    return -1;  /* no digits at all      */
+    if (*end != '\0')                return -1;  /* trailing garbage      */
+    if (errno == ERANGE)             return -1;  /* long overflow         */
+    if (v < INT_MIN || v > INT_MAX)  return -1;  /* fits long, not int    */
+
+    *out = (int)v;
+    return 0;
+}
+
+int main(void)
+{
+    const char *tests[] = { "42", "  -7", "12abc", "", "99999999999999999999", "0x1F" };
+    int v;
+
+    for (size_t i = 0; i < sizeof tests / sizeof *tests; i++)
+        printf("%-24s -> %s\n", tests[i],
+               parse_int(tests[i], &v) == 0 ? "ok" : "rejected");
+
+    /* Base 0 auto-detects the prefix, exactly like a C literal. */
+    printf("0x1F = %ld\n", strtol("0x1F", NULL, 0));   /* 31 */
+    printf("017  = %ld\n", strtol("017",  NULL, 0));   /* 15, octal */
+    printf("101  = %ld\n", strtol("101",  NULL, 2));   /* 5, binary */
+
+    /* atoi for comparison: every failure looks like the number zero. */
+    printf("atoi(\"hello\") = %d\n", atoi("hello"));   /* 0 -- indistinguishable */
+    return 0;
+}
+```
+
+Unbiased random integers in a range:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+/* Biased: the leftover values at the top of RAND_MAX favour small results. */
+static int biased(int n) { return rand() % n; }
+
+/* Unbiased: reject the uneven tail so every residue is equally likely. */
+static int unbiased(int n)
+{
+    /* Largest multiple of n that fits in [0, RAND_MAX]. */
+    int limit = RAND_MAX - (RAND_MAX % n);
+    int r;
+    do { r = rand(); } while (r >= limit);   /* discard the tail */
+    return r % n;
+}
+
+int main(void)
+{
+    srand((unsigned)time(NULL));    /* omit this and every run is identical */
+
+    long counts[6] = {0};
+    for (long i = 0; i < 6000000L; i++)
+        counts[unbiased(6)]++;
+
+    for (int i = 0; i < 6; i++)
+        printf("%d: %ld\n", i, counts[i]);   /* each near 1000000 */
+
+    /* Reproducibility: a FIXED seed is a feature for tests and simulations. */
+    srand(12345);
+    printf("%d %d %d\n", rand(), rand(), rand());   /* same three, every run */
+    return 0;
+}
+```
+
+| Conversion need | Function | Error reporting |
+|---|---|---|
+| Quick, input is trusted | `atoi`, `atof` | none — do not use on real input |
+| Signed integer, any base | `strtol` / `strtoll` | `endptr` + `errno == ERANGE` |
+| Unsigned integer | `strtoul` / `strtoull` | same (note: it wraps negatives) |
+| Floating point | `strtod` / `strtof` | same |
+| Number to string | `snprintf` | return value indicates truncation |
+
+**Key Takeaways**
+
+- `atoi` and friends cannot distinguish a failed conversion from a legitimate zero and are undefined on overflow — use `strtol`'s family instead.
+- Check `strtol` two ways: `endptr` for how much was consumed, and `errno == ERANGE` for overflow, after setting `errno = 0` first.
+- Base `0` makes `strtol` accept `0x` hex and leading-zero octal exactly as C source does.
+- `rand` is deterministic and seeded to `1` by default; `srand(time(NULL))` is adequate for games and useless for security.
+- `rand() % n` is biased whenever `n` does not divide `RAND_MAX + 1`; use rejection sampling for a uniform range.
+
+> 🧪 Practice
+>
+> 1. Write `parse_double(const char *s, double *out)` with the same rigor as `parse_int`, and test it on `"1e400"`, `"3.14xyz"`, and `"  .5"`.
+> 2. Measure the bias in `rand() % 3` by tallying 30 million samples; then repeat with rejection sampling and compare the distributions.
+> 3. Write a command-line tool that accepts a numeric argument in decimal, hex, or octal using base 0, and prints a clear error for anything else.
+> 4. Interview-style: *"Why can `atoi` never be used to validate user input?"* Hint: enumerate the distinct inputs that all produce the return value `0`.
+
 #### qsort and bsearch
+
+**Theory**
+
+C has no templates and no generics, so the standard library's sort and search work the only way they can: on **untyped memory plus a description of it**. You tell `qsort` where the array starts, how many elements it has, how big each one is, and how to compare two of them.
+
+```c
+void  qsort (void *base, size_t nmemb, size_t size,
+             int (*compar)(const void *, const void *));
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+             int (*compar)(const void *, const void *));
+```
+
+The **comparison function** is the whole interface, and it has strict rules:
+
+- It receives `const void *` pointers to two *elements*, which you must cast to the real element type and dereference. For an array of `int`, the parameter points at an `int`, so you cast to `const int *`.
+- It returns **negative if the first sorts before the second, zero if they are equivalent, positive if after**. The magnitude is irrelevant.
+- It must define a **consistent total order**. If it is inconsistent — returning different answers for the same pair, or saying `a < b`, `b < c`, and `c < a` — the behavior is undefined, and real implementations can read out of bounds and crash, not merely produce a wrong order.
+
+The classic bug in an integer comparator is `return *pa - *pb;`. It is correct for small values and **overflows for large ones**: comparing `INT_MIN` with `1` overflows and may return a positive value, breaking the order. Write it as an explicit three-way comparison, or use the `(a > b) - (a < b)` idiom.
+
+Two properties of `qsort` surprise people. It is **not required to be quicksort** despite the name — implementations use introsort, merge sort, or whatever they like. And it is **not stable**: elements that compare equal may be reordered. If stability matters, add a tiebreaker field (such as the original index) to the comparison.
+
+`bsearch` requires the array to already be **sorted by the same comparison function**. If it is not, the result is meaningless — not an error, just a wrong answer. It returns a pointer to a matching element or `NULL`, and when duplicates exist it does not promise which one.
+
+The cost of genericity is real: every comparison is an indirect function call the compiler usually cannot inline, so `qsort` on an `int` array is several times slower than a type-specialized sort. That is a fine trade for most code and a bad one in a hot loop — which is why performance-critical C often generates type-specific sorts with macros.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>     /* ptrdiff_t */
+
+/* ---- comparing integers, without the subtraction overflow bug -------- */
+static int cmp_int(const void *a, const void *b)
+{
+    int x = *(const int *)a;                  /* cast, then dereference */
+    int y = *(const int *)b;
+    return (x > y) - (x < y);                 /* -1, 0, or 1; never overflows */
+    /* NOT: return x - y;  -- overflows for large-magnitude values */
+}
+
+/* ---- comparing structs on multiple keys ----------------------------- */
+typedef struct { char name[32]; int score; unsigned seq; } Player;
+
+static int cmp_player(const void *a, const void *b)
+{
+    const Player *p = a, *q = b;              /* void* converts implicitly */
+
+    if (p->score != q->score)
+        return (q->score > p->score) - (q->score < p->score);  /* score DESC */
+
+    int by_name = strcmp(p->name, q->name);   /* then name ASC */
+    if (by_name != 0) return by_name;
+
+    /* Tiebreaker on insertion order gives a stable result from an
+       unstable sort -- qsort makes no stability guarantee. */
+    return (p->seq > q->seq) - (p->seq < q->seq);
+}
+
+/* ---- comparing strings stored as char* (note the double indirection) -- */
+static int cmp_str(const void *a, const void *b)
+{
+    /* The ELEMENT is a char*, so the parameter is a pointer to char*. */
+    const char *const *pa = a, *const *pb = b;
+    return strcmp(*pa, *pb);
+}
+
+int main(void)
+{
+    int nums[] = {42, -7, 0, 999, -1000, 3};
+    size_t n = sizeof nums / sizeof *nums;
+
+    qsort(nums, n, sizeof *nums, cmp_int);
+    for (size_t i = 0; i < n; i++) printf("%d ", nums[i]);
+    putchar('\n');                            /* -1000 -7 0 3 42 999 */
+
+    /* bsearch REQUIRES the array to be sorted by the same comparator. */
+    int key = 42;
+    int *hit = bsearch(&key, nums, n, sizeof *nums, cmp_int);
+    printf("42 %s (index %td)\n", hit ? "found" : "missing",
+           hit ? hit - nums : (ptrdiff_t)-1);
+
+    const char *words[] = {"pear", "apple", "fig"};
+    qsort(words, 3, sizeof *words, cmp_str);
+    printf("%s %s %s\n", words[0], words[1], words[2]);   /* apple fig pear */
+
+    Player ps[] = {{"ann", 10, 0}, {"bob", 30, 1}, {"cid", 10, 2}};
+    qsort(ps, 3, sizeof *ps, cmp_player);
+    for (int i = 0; i < 3; i++) printf("%s:%d ", ps[i].name, ps[i].score);
+    putchar('\n');                            /* bob:30 ann:10 cid:10 */
+    return 0;
+}
+```
+
+```text
+   HOW qsort SEES YOUR ARRAY
+
+   base ---> [ elem 0 ][ elem 1 ][ elem 2 ] ...      nmemb elements
+             |<-size->|
+
+   qsort knows only: the address, the count, the stride, and your comparator.
+   It computes element i as  (char *)base + i * size  and hands two such
+   addresses to compar() as const void *.
+
+   YOUR COMPARATOR MUST:
+     - cast both parameters to (const T *)
+     - return <0, 0, >0 consistently for every pair
+     - never overflow (avoid  a - b  for ints)
+     - never depend on the addresses, only on the values
+```
+
+The overflow bug, demonstrated:
+
+```c
+#include <stdio.h>
+#include <limits.h>
+
+static int bad(const void *a, const void *b)
+{
+    return *(const int *)a - *(const int *)b;   /* overflows */
+}
+
+int main(void)
+{
+    int x = INT_MIN, y = 1;
+    /* INT_MIN - 1 overflows: undefined, and typically wraps POSITIVE,
+       claiming INT_MIN sorts AFTER 1. */
+    printf("bad says %d (expected negative)\n", bad(&x, &y));
+    return 0;
+}
+```
+
+**Key Takeaways**
+
+- `qsort` and `bsearch` are generic through `void *` plus an element size and a comparator; the comparator must cast its parameters back to the real type.
+- Return negative, zero, or positive — magnitude is ignored — and never write `a - b` for integers, because it overflows.
+- The comparator must be a consistent total order; an inconsistent one is undefined behavior and can crash, not just misorder.
+- `qsort` is not guaranteed to be quicksort and is not stable; add an original-index tiebreaker when stability matters.
+- `bsearch` assumes the array is already sorted by the same comparator and does not say which of several equal elements it returns.
+
+> 🧪 Practice
+>
+> 1. Sort an array of `struct { char *name; int age; }` by age ascending, then by name for ties, and print the result.
+> 2. Write a comparator using `a - b` and feed it an array containing `INT_MIN` and `INT_MAX`. Show that the order is wrong, then fix it.
+> 3. Sort a 1,000,000-element `int` array with `qsort` and with a hand-written quicksort specialized for `int`. Compare the timings and explain the gap.
+> 4. Interview-style: *"What happens if your comparison function is not a consistent ordering?"* Hint: think about what the sort algorithm assumes when it decides a partition is finished.
 
 #### math.h Essentials
 
+**Theory**
+
+`<math.h>` provides the functions that hardware and the C language do not: roots, powers, logarithms, trigonometry, rounding, and the classification of special floating-point values. Using it well is mostly about understanding that floating-point arithmetic is *approximate* and that the header gives you tools for dealing with that.
+
+Three practical points first.
+
+**Linking.** On Unix-like systems the math functions live in a separate library, so you must link it: `gcc prog.c -lm`. And `-lm` must come *after* the source or object files that use it, because the linker resolves left to right. `undefined reference to 'sqrt'` almost always means a missing or misplaced `-lm`.
+
+**Types.** The default functions take and return `double`. C99 added `float` variants with an `f` suffix (`sqrtf`, `sinf`) and `long double` variants with an `l` suffix (`sqrtl`). Using `sqrt` on a `float` silently promotes to `double` and back — correct, but slower, and in tight numeric loops the `f` variants matter. C99's `<tgmath.h>` provides type-generic macros that pick the right one.
+
+**Comparison.** `==` on floating-point results is almost always wrong, because arithmetic introduces representation error: `0.1 + 0.2 != 0.3`. Compare with a tolerance — and a fixed epsilon is only correct near 1.0, so a robust comparison scales the tolerance with the magnitude of the operands.
+
+The header also defines the vocabulary of **special values**, which arithmetic produces rather than trapping:
+
+| Value | Produced by | Tested with |
+|---|---|---|
+| `INFINITY` | `1.0/0.0`, overflow | `isinf(x)` |
+| `NAN` | `0.0/0.0`, `sqrt(-1)`, `log(-1)` | `isnan(x)` |
+| finite | ordinary arithmetic | `isfinite(x)` |
+| subnormal | underflow toward zero | `isnormal(x)` |
+
+**`NAN` compares false against everything, including itself.** `x != x` is true exactly when `x` is NaN — an idiom you will see, though `isnan(x)` says it more clearly. This property is why a single NaN can silently propagate through a computation and turn every downstream comparison false.
+
+The rounding functions are worth separating because their differences are exactly the ones people get wrong:
+
+| Function | 2.5 | -2.5 | 2.7 | Rule |
+|---|---|---|---|---|
+| `floor` | 2 | -3 | 2 | toward negative infinity |
+| `ceil` | 3 | -2 | 3 | toward positive infinity |
+| `trunc` | 2 | -2 | 2 | toward zero |
+| `round` | 3 | -3 | 3 | half away from zero |
+| `nearbyint` | 2 | -2 | 3 | current mode (default: half to even) |
+
+Note that `(int)x` performs truncation, not rounding — a frequent off-by-one source.
+
+Finally, some functions exist specifically for accuracy: `fma(a,b,c)` computes `a*b+c` with a single rounding, `hypot(x,y)` computes the hypotenuse without overflowing on the intermediate squares, `log1p(x)` and `expm1(x)` stay accurate for tiny `x` where `log(1+x)` and `exp(x)-1` lose all their significant digits.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <math.h>
+#include <float.h>      /* DBL_EPSILON */
+#include <stdbool.h>
+
+/* Naive equality fails; a scaled tolerance is the general answer. */
+static bool nearly_equal(double a, double b, double rel)
+{
+    double diff = fabs(a - b);
+    if (diff <= DBL_EPSILON) return true;              /* handles a == b == 0 */
+    double scale = fabs(a) > fabs(b) ? fabs(a) : fabs(b);
+    return diff <= scale * rel;                        /* tolerance scales */
+}
+
+int main(void)
+{
+    printf("0.1+0.2 == 0.3 ? %s\n", (0.1 + 0.2 == 0.3) ? "yes" : "no");   /* no */
+    printf("nearly_equal      ? %s\n", nearly_equal(0.1+0.2, 0.3, 1e-9) ? "yes":"no");
+    printf("difference: %.20f\n", (0.1 + 0.2) - 0.3);
+
+    /* ---- special values ------------------------------------------- */
+    double inf = 1.0 / 0.0;
+    double nan = 0.0 / 0.0;
+
+    printf("isinf(inf)=%d isnan(nan)=%d\n", isinf(inf), isnan(nan));
+    printf("nan == nan is %s\n", (nan == nan) ? "true" : "FALSE");  /* false! */
+    printf("nan  < 1.0 is %s\n", (nan <  1.0) ? "true" : "false");  /* false  */
+    printf("nan >= 1.0 is %s\n", (nan >= 1.0) ? "true" : "false");  /* false too */
+
+    /* ---- rounding: five different answers -------------------------- */
+    double v = -2.5;
+    printf("floor=%.0f ceil=%.0f trunc=%.0f round=%.0f cast=%d\n",
+           floor(v), ceil(v), trunc(v), round(v), (int)v);   /* -3 -2 -2 -3 -2 */
+
+    /* ---- accuracy-preserving forms --------------------------------- */
+    double tiny = 1e-17;
+    printf("log(1+x)  = %.20g\n", log(1.0 + tiny));   /* 0 -- all digits lost */
+    printf("log1p(x)  = %.20g\n", log1p(tiny));       /* accurate */
+    printf("hypot     = %g\n", hypot(3e300, 4e300));  /* 5e300, no overflow */
+    /* sqrt(3e300*3e300 + 4e300*4e300) would overflow to infinity. */
+    return 0;
+}
+```
+
+```bash
+# The math library is separate, and the order matters.
+$ gcc prog.c -lm -o prog          # correct
+$ gcc -lm prog.c -o prog          # may fail: -lm resolved before prog.c needs it
+/tmp/cc123.o: undefined reference to `sqrt'
+```
+
+```text
+   FLOATING POINT IS NOT REAL ARITHMETIC
+
+   0.1 in binary is a repeating fraction, exactly as 1/3 is in decimal.
+   The stored double is 0.1000000000000000055511151231257827...
+
+   0.1 + 0.2  = 0.3000000000000000444089209850062616...
+   0.3        = 0.2999999999999999888977697537403456...
+                                  ^ they differ here
+
+   Therefore:  ==  is a bug.
+               |a-b| <= scale * relative_tolerance  is the fix.
+
+   NaN's contagion:   any comparison with NaN is FALSE
+                      so  if (x < 1) ... else ...   takes the ELSE branch
+                      and sorting an array containing NaN is undefined.
+```
+
+**Key Takeaways**
+
+- Link with `-lm` on Unix-like systems, placed after the files that need it, or the linker reports undefined references.
+- Never compare floating-point results with `==`; use a tolerance scaled to the magnitude of the operands.
+- NaN compares false against everything, including itself, so `x != x` detects it — but a NaN silently flips the branch every comparison takes.
+- `floor`, `ceil`, `trunc`, and `round` differ on negatives and on halves; a cast to `int` truncates rather than rounds.
+- Use `hypot`, `fma`, `log1p`, and `expm1` when intermediate overflow or cancellation would destroy accuracy, and the `f`/`l` suffixed variants to match your operand type.
+
+> 🧪 Practice
+>
+> 1. Print `0.1 + 0.2` with `%.20f` and explain the digits. Then write a comparison function that treats it as equal to `0.3`.
+> 2. Write a function that classifies a `double` as normal, subnormal, zero, infinite, or NaN, and test it on the values that produce each.
+> 3. Compute the hypotenuse of `(3e300, 4e300)` both directly and with `hypot`, and explain the difference in the results.
+> 4. Interview-style: *"What does `x != x` evaluate to, and when is it useful?"* Hint: only one class of value makes it true.
+
 #### ctype.h Character Classification
+
+**Theory**
+
+`<ctype.h>` answers simple questions about single characters: is this a digit, a letter, whitespace, printable? It also converts case. The functions look almost too trivial to discuss, and they hide one genuine trap that produces real crashes.
+
+The classification functions are:
+
+| Function | True for |
+|---|---|
+| `isalpha` | letters |
+| `isdigit` | `0`–`9` |
+| `isalnum` | letters or digits |
+| `isspace` | space, tab, newline, vertical tab, form feed, carriage return |
+| `isupper` / `islower` | case |
+| `ispunct` | printable, not alphanumeric, not space |
+| `isprint` / `isgraph` | printable (with / without space) |
+| `iscntrl` | control characters |
+| `isxdigit` | hexadecimal digits |
+| `toupper` / `tolower` | conversion (returns the input unchanged if not applicable) |
+
+**The trap is the argument type.** Every one of these takes an **`int`**, and the standard says the value must be **representable as `unsigned char`, or equal to `EOF`**. Anything else is undefined behavior.
+
+Why does that matter? Because `char` is signed on most common platforms. A byte such as `0xE9` (`é` in Latin-1, or part of a UTF-8 sequence) becomes the negative value `-23` when stored in a `char`. Passing that to `isalpha` indexes the implementation's lookup table at a negative offset — reading memory before the table. On glibc this often happens to work because of padding in front of the table; on other implementations it crashes or returns nonsense.
+
+The fix is mechanical and must be applied every time: **cast to `unsigned char`**.
+
+```c
+if (isalpha((unsigned char)str[i])) { ... }
+```
+
+This is one of the most common defects found by static analyzers in C codebases, precisely because the buggy form works on ASCII input and fails only on the non-ASCII byte that arrives in production.
+
+A second, subtler point: these functions are **locale-dependent**. In the default `"C"` locale, `isalpha` is true only for the 52 ASCII letters. Call `setlocale(LC_CTYPE, "")` and the answer can change. That is desirable for text processing and undesirable for parsing a fixed format — if you are parsing a protocol, compare against explicit character ranges rather than asking the locale.
+
+Finally, `toupper`/`tolower` return an `int` and leave characters that have no case conversion unchanged, so they are safe to apply unconditionally to every character in a string.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <ctype.h>
+#include <string.h>
+
+/* The cast is not optional. str[i] may be negative on signed-char platforms. */
+static void classify(const char *s)
+{
+    for (size_t i = 0; s[i]; i++) {
+        unsigned char c = (unsigned char)s[i];   /* cast ONCE, reuse */
+
+        printf("'%c' (%3u): %s%s%s%s\n", isprint(c) ? c : '?', c,
+               isalpha(c) ? "alpha "  : "",
+               isdigit(c) ? "digit "  : "",
+               isspace(c) ? "space "  : "",
+               ispunct(c) ? "punct "  : "");
+    }
+}
+
+/* In-place case conversion, applied to every character unconditionally --
+   toupper leaves non-letters alone. */
+static void upcase(char *s)
+{
+    for (; *s; s++)
+        *s = (char)toupper((unsigned char)*s);
+}
+
+/* Trim leading and trailing whitespace, returning a pointer into the
+   original buffer. Classic use of isspace. */
+static char *trim(char *s)
+{
+    while (isspace((unsigned char)*s)) s++;         /* skip leading */
+    if (*s == '\0') return s;                       /* all whitespace */
+
+    char *end = s + strlen(s) - 1;
+    while (end > s && isspace((unsigned char)*end)) end--;
+    end[1] = '\0';                                  /* cut trailing */
+    return s;
+}
+
+int main(void)
+{
+    classify("a1 !");
+
+    char word[] = "Hello, World! 42";
+    upcase(word);
+    printf("%s\n", word);                           /* HELLO, WORLD! 42 */
+
+    char padded[] = "   spaced out   ";
+    printf("[%s]\n", trim(padded));                 /* [spaced out] */
+    return 0;
+}
+```
+
+The bug, made visible:
+
+```c
+#include <stdio.h>
+#include <ctype.h>
+#include <limits.h>
+
+int main(void)
+{
+    char c = (char)0xE9;                 /* 'é' in Latin-1, or a UTF-8 byte */
+
+    printf("CHAR_MIN = %d, so char is %s\n",
+           CHAR_MIN, CHAR_MIN < 0 ? "SIGNED" : "unsigned");
+    printf("as char:          %d\n", c);              /* -23 on x86 */
+    printf("as unsigned char: %d\n", (unsigned char)c);  /* 233 */
+
+    /* isalpha(c) with c == -23 is UNDEFINED BEHAVIOR: the implementation
+       indexes a table at [-23]. It may work, crash, or return garbage. */
+    printf("isalpha correct:  %d\n", isalpha((unsigned char)c));
+
+    /* EOF (-1) is the ONE negative value these functions must accept --
+       so that  isspace(fgetc(f))  works without a special case. */
+    printf("isspace(EOF) is legal: %d\n", isspace(EOF));
+    return 0;
+}
+```
+
+```text
+   WHY THE CAST MATTERS
+
+   The implementation is typically a table lookup:
+
+       extern const unsigned short *__ctype_b;
+       #define isalpha(c)  (__ctype_b[(c)] & _ISalpha)
+
+                     index -23        index 0        index 233
+                          |              |               |
+       ... other data ... [ ? ] ... [ table starts ] ... [ correct entry ]
+                            ^
+                    reading HERE is out of bounds
+
+   char  0xE9  ->  signed:   -23   ->  out-of-bounds read (UB)
+                   unsigned:  233  ->  correct entry
+```
+
+**Key Takeaways**
+
+- Every `<ctype.h>` function takes an `int` whose value must fit in `unsigned char` or equal `EOF`; passing a plain negative `char` is undefined behavior.
+- Always write `isalpha((unsigned char)c)` — the unfixed form works on ASCII and fails on the first non-ASCII byte.
+- `EOF` is deliberately accepted so that classifying the result of `fgetc` needs no special case.
+- `toupper` and `tolower` return the input unchanged when no conversion applies, so they can be applied to every character unconditionally.
+- These functions are locale-sensitive; for parsing fixed formats and protocols, compare against explicit ranges instead.
+
+> 🧪 Practice
+>
+> 1. Write `count_words(const char *s)` using `isspace`, correctly handling leading, trailing, and repeated whitespace.
+> 2. Write a validator that accepts an identifier only if it starts with a letter or underscore and contains only alphanumerics and underscores.
+> 3. Pass a `char` holding `0xFF` to `isalpha` without a cast, then with one, and inspect both under `-fsanitize=undefined` or a static analyzer.
+> 4. Interview-style: *"Why do the `<ctype.h>` functions take `int` instead of `char`?"* Hint: there is one value they must accept that is not a character at all.
 
 #### time.h Dates and Timing
 
+**Theory**
+
+`<time.h>` covers two different jobs that people constantly conflate: **telling the time** (what wall-clock date is it?) and **measuring durations** (how long did that take?). They need different clocks, and using the wrong one is the classic mistake.
+
+The header defines three types:
+
+- **`time_t`** — a calendar time, in practice the number of seconds since the Unix epoch, 1970-01-01 00:00:00 UTC. The standard does not require that encoding, but every mainstream implementation uses it.
+- **`struct tm`** — a *broken-down* time: separate fields for year, month, day, hour, minute, second, plus weekday and day-of-year. Three fields have traps: `tm_year` counts **years since 1900**, `tm_mon` is **0-based** (January is 0), while `tm_mday` is 1-based.
+- **`clock_t`** — processor time, measured in units of `CLOCKS_PER_SEC`.
+
+The conversion functions form a small graph:
+
+```text
+   time(NULL) ------> time_t  <----- mktime(struct tm *)   [local time -> time_t]
+                        |
+        +---------------+---------------+
+        |                               |
+   localtime(&t)                   gmtime(&t)          [time_t -> struct tm]
+        |                               |
+        +---------------+---------------+
+                        |
+                  strftime(...)                        [struct tm -> text]
+```
+
+`difftime(end, start)` returns the difference in seconds as a `double`. Use it rather than subtracting `time_t` values directly, since `time_t`'s arithmetic properties are not guaranteed.
+
+**For measuring durations, `time()` has one-second resolution — far too coarse for anything but long operations.** The alternatives:
+
+| Clock | Measures | Resolution | Affected by |
+|---|---|---|---|
+| `time()` | wall clock | 1 second | clock changes, NTP |
+| `clock()` | **CPU time used by the process** | `CLOCKS_PER_SEC` | not sleeping or blocking |
+| `timespec_get` (C11) | wall clock | nanoseconds (typically) | clock changes |
+| `clock_gettime(CLOCK_MONOTONIC)` (POSIX) | elapsed time | nanoseconds | nothing — never jumps |
+
+The distinction between `clock()` and wall time is important: `clock()` measures CPU consumption, so a program that sleeps for ten seconds registers almost no `clock()` time, and a program using four threads can register more `clock()` time than wall time elapsed. For "how long did the user wait?", use a monotonic wall clock; for "how much CPU did this burn?", use `clock()`.
+
+Two portability warnings. **`localtime` and `gmtime` return a pointer to a static buffer**, so a second call overwrites the first result, and they are not thread-safe; POSIX provides `localtime_r`/`gmtime_r` that write into a caller-supplied `struct tm`, and C11 offers `localtime_s`. Similarly, `ctime` and `asctime` are static-buffer functions with fixed formats — **use `strftime` instead**, which gives you full control and cannot overflow because you pass the buffer size.
+
+`mktime` has a useful side effect: it **normalizes** an out-of-range `struct tm`. Setting `tm_mday = 32` and calling `mktime` yields the first of the next month, which makes date arithmetic easy. It also interprets the fields as *local* time and fills in `tm_wday` and `tm_yday` for you. Set `tm_isdst = -1` to let it determine daylight saving itself.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <time.h>
+#include <string.h>
+
+int main(void)
+{
+    /* ---- what time is it? ------------------------------------------- */
+    time_t now = time(NULL);
+    if (now == (time_t)-1) { perror("time"); return 1; }
+
+    struct tm local;
+    /* localtime_r (POSIX) writes into our struct: reentrant and safe.
+       Plain localtime() returns a pointer to a shared static buffer. */
+    localtime_r(&now, &local);
+
+    char buf[64];
+    /* strftime: you control the format and pass the buffer size. */
+    strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S %Z", &local);
+    printf("local: %s\n", buf);
+
+    struct tm utc;
+    gmtime_r(&now, &utc);
+    strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &utc);   /* ISO 8601 */
+    printf("utc:   %s\n", buf);
+
+    /* ---- building a specific date: mind the two offsets -------------- */
+    struct tm when;
+    memset(&when, 0, sizeof when);       /* zero every field first */
+    when.tm_year = 2026 - 1900;          /* years SINCE 1900 */
+    when.tm_mon  = 9 - 1;                /* 0-based: 8 == September */
+    when.tm_mday = 9;                    /* 1-based, unlike the month */
+    when.tm_hour = 12;
+    when.tm_isdst = -1;                  /* let mktime work out DST */
+
+    time_t t = mktime(&when);            /* also fills tm_wday / tm_yday */
+    strftime(buf, sizeof buf, "%A, %d %B %Y", &when);
+    printf("built: %s\n", buf);
+
+    /* mktime normalizes out-of-range values -- easy date arithmetic. */
+    when.tm_mday += 45;                  /* 45 days later, crossing months */
+    mktime(&when);
+    strftime(buf, sizeof buf, "%Y-%m-%d", &when);
+    printf("+45d:  %s\n", buf);
+
+    printf("elapsed since epoch: %.0f s\n", difftime(t, (time_t)0));
+    return 0;
+}
+```
+
+Measuring durations with the right clock:
+
+```c
+#include <stdio.h>
+#include <time.h>
+
+static void workload(void)
+{
+    volatile double x = 0;                       /* volatile: not optimized away */
+    for (long i = 0; i < 200000000L; i++) x += i;
+}
+
+int main(void)
+{
+    /* CPU time consumed by this process -- excludes sleeping and blocking. */
+    clock_t c0 = clock();
+
+    /* Monotonic wall-clock elapsed time: never jumps backwards, immune to
+       NTP adjustments and daylight saving. This is what a stopwatch needs. */
+    struct timespec w0, w1;
+    clock_gettime(CLOCK_MONOTONIC, &w0);         /* POSIX */
+
+    workload();
+
+    clock_gettime(CLOCK_MONOTONIC, &w1);
+    clock_t c1 = clock();
+
+    double cpu  = (double)(c1 - c0) / CLOCKS_PER_SEC;
+    double wall = (w1.tv_sec - w0.tv_sec) + (w1.tv_nsec - w0.tv_nsec) / 1e9;
+
+    printf("cpu  %.3f s\n", cpu);
+    printf("wall %.3f s\n", wall);
+    /* Sleeping would make wall >> cpu; four busy threads would make cpu > wall. */
+
+    /* Portable C11 alternative when POSIX is unavailable: */
+    struct timespec ts;
+    if (timespec_get(&ts, TIME_UTC) == TIME_UTC)
+        printf("c11 utc: %lld.%09ld\n", (long long)ts.tv_sec, ts.tv_nsec);
+    return 0;
+}
+```
+
+| Common `strftime` specifier | Produces |
+|---|---|
+| `%Y` / `%m` / `%d` | 4-digit year / 2-digit month / 2-digit day |
+| `%H` / `%M` / `%S` | hour (00-23) / minute / second |
+| `%A` / `%B` | full weekday name / full month name |
+| `%Z` / `%z` | timezone name / `+hhmm` offset |
+| `%j` | day of year (001-366) |
+| `%F` / `%T` | `%Y-%m-%d` / `%H:%M:%S` |
+
+**Key Takeaways**
+
+- `time_t` is a scalar calendar time; `struct tm` is broken-down, with `tm_year` counted from 1900 and `tm_mon` 0-based while `tm_mday` is 1-based.
+- Use `clock()` for CPU time consumed and a monotonic wall clock (`clock_gettime(CLOCK_MONOTONIC)` or `timespec_get`) for elapsed time — `time()`'s one-second resolution is useless for benchmarking.
+- `localtime` and `gmtime` share a static buffer and are not thread-safe; prefer the `_r` (POSIX) or `_s` (C11) variants.
+- Format with `strftime`, which is bounded and configurable, rather than `ctime`/`asctime`.
+- `mktime` normalizes out-of-range fields, which makes it the simplest tool for date arithmetic, and fills in the weekday and day-of-year.
+
+> 🧪 Practice
+>
+> 1. Print the current time in both local time and UTC in ISO 8601 form, and explain the offset you see.
+> 2. Write `days_between(int y1,int m1,int d1, int y2,int m2,int d2)` using `mktime` and `difftime`, and verify it across a daylight-saving boundary.
+> 3. Time a function that calls `sleep(2)` with both `clock()` and a monotonic clock, and explain why the two results differ so much.
+> 4. Interview-style: *"Why should a stopwatch use a monotonic clock rather than the wall clock?"* Hint: consider what happens when NTP corrects the system time mid-measurement.
+
 #### limits.h and float.h
+
+**Theory**
+
+C's fundamental types have no fixed sizes. `int` is at least 16 bits, `long` at least 32; the exact width is chosen by the implementation. This is what lets C compile efficiently on an 8-bit microcontroller and a 64-bit server alike, and it means **hardcoding a range or a width is a portability bug waiting for a new target**.
+
+`<limits.h>` and `<float.h>` are the escape hatch: they tell you, at compile time, what the current implementation's types can actually hold. Every value is a constant expression, so it works in `#if`, in array sizes, and in `static_assert`.
+
+The integer limits from `<limits.h>`:
+
+| Macro | Meaning | Minimum guaranteed magnitude |
+|---|---|---|
+| `CHAR_BIT` | bits in a `char` | 8 |
+| `SCHAR_MIN` / `SCHAR_MAX` | `signed char` range | -127 / 127 |
+| `UCHAR_MAX` | `unsigned char` max | 255 |
+| `CHAR_MIN` / `CHAR_MAX` | plain `char` range | implementation-defined signedness |
+| `SHRT_MIN` / `SHRT_MAX` | `short` | ±32767 |
+| `INT_MIN` / `INT_MAX` | `int` | ±32767 |
+| `LONG_MIN` / `LONG_MAX` | `long` | ±2147483647 |
+| `LLONG_MIN` / `LLONG_MAX` | `long long` (C99) | ±9223372036854775807 |
+| `UINT_MAX`, `ULONG_MAX`, ... | unsigned maxima | — |
+
+Two of these carry information beyond the obvious. **`CHAR_BIT` is not guaranteed to be 8** — historic DSPs used 9, 16, or 32 — so the portable expression for the width of a type is `sizeof(T) * CHAR_BIT`, never `sizeof(T) * 8`. And **`CHAR_MIN` tells you whether plain `char` is signed on this platform**, which decides whether the `<ctype.h>` cast discussed earlier is merely good hygiene or actively load-bearing.
+
+Note also the asymmetry: on two's-complement machines `INT_MIN` is `-INT_MAX - 1`, so **`-INT_MIN` overflows** and `abs(INT_MIN)` is undefined. Any code that negates a signed value must consider the minimum.
+
+`<float.h>` describes the floating-point types, and the important macros are less obvious:
+
+| Macro | Meaning |
+|---|---|
+| `FLT_MAX` / `DBL_MAX` | largest finite value |
+| `FLT_MIN` / `DBL_MIN` | smallest *normalized* positive value (not the smallest positive) |
+| `FLT_EPSILON` / `DBL_EPSILON` | difference between 1.0 and the next representable value |
+| `FLT_DIG` / `DBL_DIG` | decimal digits guaranteed to round-trip (typically 6 / 15) |
+| `FLT_MANT_DIG` / `DBL_MANT_DIG` | bits of mantissa (typically 24 / 53) |
+| `FLT_RADIX` | the base of the exponent (2 in practice) |
+
+**`DBL_EPSILON` is not a general-purpose comparison tolerance.** It is the gap between 1.0 and its successor. Near 1e10 the gap between representable doubles is far larger; near 1e-10 it is far smaller. This is why the scaled comparison from the math section multiplies epsilon by the operands' magnitude.
+
+The practical use of all this is in two places: **detecting overflow before it happens** (comparing against `INT_MAX` rather than checking the result afterwards, since signed overflow is undefined and the check may be optimized away), and **compile-time assertions** about the platform, using C11's `static_assert` or an `#if` on these macros.
+
+For code that needs an *exact* width rather than a guaranteed minimum, the answer is `<stdint.h>`: `int32_t`, `uint64_t`, and the `INT32_MAX`-style limits that come with them.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <limits.h>
+#include <float.h>
+#include <assert.h>       /* static_assert in C11 */
+
+int main(void)
+{
+    /* ---- what is this machine actually like? ------------------------ */
+    printf("CHAR_BIT  = %d\n", CHAR_BIT);
+    printf("char is %s\n", CHAR_MIN < 0 ? "SIGNED" : "unsigned");
+    printf("int  : %d bits, [%d, %d]\n",
+           (int)(sizeof(int) * CHAR_BIT), INT_MIN, INT_MAX);
+    printf("long : %d bits, [%ld, %ld]\n",
+           (int)(sizeof(long) * CHAR_BIT), LONG_MIN, LONG_MAX);
+    printf("size_t max = %zu\n", (size_t)-1);   /* unsigned wraps: legal */
+
+    /* ---- the asymmetry that bites ----------------------------------- */
+    printf("INT_MIN == -INT_MAX - 1 ? %s\n",
+           INT_MIN == -INT_MAX - 1 ? "yes" : "no");
+    /* -INT_MIN and abs(INT_MIN) are UNDEFINED -- there is no positive
+       counterpart to represent. Guard before negating. */
+
+    /* ---- floating point ---------------------------------------------- */
+    printf("DBL_DIG=%d DBL_EPSILON=%g DBL_MAX=%g DBL_MIN=%g\n",
+           DBL_DIG, DBL_EPSILON, DBL_MAX, DBL_MIN);
+    printf("1.0 + DBL_EPSILON != 1.0 ? %s\n",
+           (1.0 + DBL_EPSILON != 1.0) ? "yes" : "no");
+    printf("1e10 + DBL_EPSILON != 1e10 ? %s\n",
+           (1e10 + DBL_EPSILON != 1e10) ? "yes" : "NO -- epsilon is relative");
+
+    /* ---- compile-time platform assumptions --------------------------- */
+    static_assert(CHAR_BIT == 8,        "this code assumes 8-bit bytes");
+    static_assert(sizeof(int) >= 4,     "this code assumes a 32-bit int");
+    return 0;
+}
+```
+
+Overflow checks that are actually correct:
+
+```c
+#include <stdio.h>
+#include <limits.h>
+#include <stdbool.h>
+
+/* WRONG: signed overflow is undefined, so the compiler may assume it
+   never happened and delete the check entirely.
+       int sum = a + b;
+       if (sum < a) return false;                */
+
+/* RIGHT: test the operands BEFORE performing the operation. */
+static bool safe_add(int a, int b, int *out)
+{
+    if (b > 0 && a > INT_MAX - b) return false;   /* would exceed the max */
+    if (b < 0 && a < INT_MIN - b) return false;   /* would exceed the min */
+    *out = a + b;
+    return true;
+}
+
+static bool safe_mul(int a, int b, int *out)
+{
+    if (a > 0 && b > 0 && a > INT_MAX / b) return false;
+    if (a < 0 && b < 0 && a < INT_MAX / b) return false;
+    if (a > 0 && b < 0 && b < INT_MIN / a) return false;
+    if (a < 0 && b > 0 && a < INT_MIN / b) return false;
+    *out = a * b;
+    return true;
+}
+
+int main(void)
+{
+    int r;
+    printf("%d %d\n", safe_add(INT_MAX, 1, &r), safe_add(2, 3, &r));   /* 0 1 */
+    printf("%d\n", safe_mul(INT_MAX / 2, 3, &r));                      /* 0 */
+
+    /* GCC and Clang also offer checked builtins that compile to a
+       single instruction plus a flag test: */
+    if (__builtin_add_overflow(INT_MAX, 1, &r))
+        printf("builtin caught the overflow\n");
+    return 0;
+}
+```
+
+```text
+   WHY EPSILON IS RELATIVE
+
+   doubles are not evenly spaced -- the gap grows with the magnitude:
+
+   near 1.0     |--|--|--|--|      gap = DBL_EPSILON ~ 2.2e-16
+   near 1e6     |----|----|----|   gap ~ 1.2e-10
+   near 1e16    |--------|-------| gap ~ 2.0     (integers stop being exact)
+
+   So:  fabs(a-b) < DBL_EPSILON        only works near 1.0
+        fabs(a-b) < max(|a|,|b|) * rel works at every scale
+```
+
+**Key Takeaways**
+
+- Type sizes are implementation-defined; `<limits.h>` and `<float.h>` report the actual ranges as compile-time constants usable in `#if` and `static_assert`.
+- `CHAR_BIT` is not guaranteed to be 8 — write `sizeof(T) * CHAR_BIT` for a type's width — and `CHAR_MIN < 0` tells you whether plain `char` is signed.
+- `INT_MIN` has no positive counterpart, so negating it or calling `abs` on it is undefined behavior.
+- Check for signed overflow by testing the operands against `INT_MAX`/`INT_MIN` *before* the operation; testing the result afterwards is undefined and may be optimized away.
+- `DBL_EPSILON` is the gap next to 1.0, not a universal tolerance — scale it by the operands' magnitude, and use `<stdint.h>` when you need exact widths.
+
+> 🧪 Practice
+>
+> 1. Write a program that prints the size, bit width, and range of every fundamental integer type on your machine, then compare the output with a 32-bit build (`gcc -m32`).
+> 2. Implement `safe_sub` and `safe_div` in the style of `safe_add`, handling the `INT_MIN / -1` case explicitly.
+> 3. Add `static_assert` checks to a small program requiring 8-bit bytes, a 64-bit `long long`, and IEEE-754 doubles (`__STDC_IEC_559__`), then deliberately break one.
+> 4. Interview-style: *"Why is `if (a + b < a)` not a valid overflow check for signed integers?"* Hint: the check's premise is something the standard says cannot happen.
 
 <a id="93-error-handling"></a>
 ### 9.3 Error Handling
 
+C has no exceptions. Every failure must be represented as a value, checked by the caller, and propagated by hand — which makes error handling a design problem rather than a language feature. This section covers the conventions the standard library uses, the tools for reporting and aborting, the rarely-justified non-local jump, and how to design a propagation scheme that a whole codebase can follow.
+
 #### Return Codes as Convention
+
+**Theory**
+
+Without exceptions, a C function that can fail has exactly one channel to say so: its return value, or a pointer parameter it writes through. There is no enforcement — nothing stops a caller from ignoring the result — so error handling in C is a matter of discipline supported by convention.
+
+Unfortunately, the standard library itself uses at least four different conventions, and knowing which is which is a prerequisite for using it correctly:
+
+| Convention | Success | Failure | Examples |
+|---|---|---|---|
+| Zero is success | `0` | non-zero | `fclose`, `raise`, `atexit` |
+| Negative is failure | `>= 0` | `-1` or negative | POSIX `open`, `read`; `printf` |
+| `NULL` is failure | valid pointer | `NULL` | `malloc`, `fopen`, `strchr` |
+| Sentinel value | any other value | `EOF`, `(time_t)-1` | `fgetc`, `time` |
+| Count of successes | expected count | fewer | `fread`, `scanf` |
+
+The lesson is not that C is inconsistent (though it is) but that **you must read the documentation for the return value of every library function you call**, and that within your own code you should pick one convention and hold to it everywhere.
+
+For new code, the most common choice is: **`0` for success, negative for failure**, with distinct negative codes for distinct causes. It composes well (`if (do_thing() < 0) goto fail;`), it leaves the positive range free for meaningful counts, and it matches POSIX. The alternative — an `enum` of named error codes — is more readable and more type-checkable, and is what most modern C libraries do.
+
+The pattern for a function that must return both a value and a status is the **out-parameter**: the status is returned, the value is written through a pointer. This avoids the trap of trying to encode failure inside the value's own range, which fails as soon as every value is legitimate (a parsed integer can be `-1`).
+
+Three practices make return-code discipline survivable:
+
+- **Check every call that can fail, at the call site.** The cost of a missed check is usually an error that surfaces far from its cause.
+- **Never bury the assignment inside the condition when it hides the check** — but do use `if ((f = fopen(...)) == NULL)` where it keeps the check adjacent to the call.
+- **Make ignoring a result loud.** GCC and Clang support `__attribute__((warn_unused_result))`, which turns a silently discarded status into a compiler warning.
+
+The single-exit **cleanup ladder** using `goto` is the idiomatic C solution to the "many resources, many failure points" problem. It is one of the few places `goto` is not just acceptable but preferred, because the alternative — nested conditionals or duplicated cleanup on every return — is measurably more error-prone.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* A project-wide error enum: readable, greppable, and type-checked. */
+typedef enum {
+    OK              =  0,
+    ERR_INVALID     = -1,   /* caller passed something nonsensical */
+    ERR_NOT_FOUND   = -2,
+    ERR_NO_MEMORY   = -3,
+    ERR_IO          = -4
+} Status;
+
+/* Map a code to text once, so every layer reports it identically. */
+static const char *status_str(Status s)
+{
+    switch (s) {
+    case OK:            return "success";
+    case ERR_INVALID:   return "invalid argument";
+    case ERR_NOT_FOUND: return "not found";
+    case ERR_NO_MEMORY: return "out of memory";
+    case ERR_IO:        return "I/O error";
+    }
+    return "unknown error";
+}
+
+/* Value AND status: the status is returned, the value goes to an
+   out-parameter. Necessary whenever every value is a legal result. */
+static Status read_file(const char *path, char **out, size_t *out_len)
+{
+    if (!path || !out) return ERR_INVALID;
+    *out = NULL;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return ERR_NOT_FOUND;
+
+    Status st = ERR_IO;                 /* pessimistic default */
+    char  *buf = NULL;
+
+    if (fseek(f, 0, SEEK_END) != 0) goto done;
+    long size = ftell(f);
+    if (size < 0)                   goto done;
+    rewind(f);
+
+    buf = malloc((size_t)size + 1);
+    if (!buf) { st = ERR_NO_MEMORY; goto done; }
+
+    if (fread(buf, 1, (size_t)size, f) != (size_t)size) goto done;
+
+    buf[size] = '\0';
+    *out = buf;
+    if (out_len) *out_len = (size_t)size;
+    buf = NULL;                         /* ownership transferred to caller */
+    st  = OK;
+
+done:                                   /* ONE exit point, ONE cleanup path */
+    free(buf);                          /* free(NULL) is a no-op, so this is safe */
+    fclose(f);
+    return st;
+}
+
+int main(void)
+{
+    char  *text;
+    size_t len;
+    Status st = read_file("data.txt", &text, &len);
+
+    if (st != OK) {                     /* check at the call site, always */
+        fprintf(stderr, "read_file: %s\n", status_str(st));
+        return EXIT_FAILURE;
+    }
+    printf("%zu bytes\n", len);
+    free(text);
+    return EXIT_SUCCESS;
+}
+```
+
+Making ignored results impossible to miss:
+
+```c
+/* GCC/Clang: warn when a caller drops the status on the floor. */
+#if defined(__GNUC__)
+#  define MUST_CHECK __attribute__((warn_unused_result))
+#else
+#  define MUST_CHECK
+#endif
+
+MUST_CHECK int save_config(const char *path);
+
+void caller(void)
+{
+    save_config("app.conf");    /* warning: ignoring return value ... */
+
+    /* If ignoring really is intentional, say so explicitly: */
+    (void)save_config("app.conf");
+}
+```
+
+```text
+   THE CLEANUP LADDER
+
+   acquire A ---- fail ----> return err
+       |
+   acquire B ---- fail ----> goto free_A
+       |
+   acquire C ---- fail ----> goto free_B
+       |
+     work      ---- fail ----> goto free_C
+       |
+   status = OK
+       |
+       v
+   free_C:  release C          <-- labels in REVERSE acquisition order,
+   free_B:  release B              so each failure enters at the right rung
+   free_A:  release A              and unwinds everything already acquired
+            return status
+
+   Each resource is released exactly once, on every path, with no
+   duplicated cleanup code and no nesting past two levels.
+```
+
+**Key Takeaways**
+
+- C has no exceptions, so failure is a return value the caller must explicitly check; nothing in the language enforces it.
+- The standard library mixes conventions — zero-is-success, negative-is-failure, `NULL`, sentinels, and short counts — so read the documented return value of every function you call.
+- In your own code pick one convention (commonly an `enum` of codes with `0` as success) and apply it everywhere.
+- When a function must return both a value and a status, return the status and write the value through an out-parameter.
+- The `goto` cleanup ladder with labels in reverse acquisition order gives single-exit resource release without nesting or duplication.
+
+> 🧪 Practice
+>
+> 1. Take a function that opens two files and allocates a buffer, written with nested `if`s, and rewrite it as a `goto` cleanup ladder. Compare the number of cleanup statements.
+> 2. Define a `Status` enum with five codes and a `status_str` function, then convert a small program to use it consistently.
+> 3. Add `warn_unused_result` to three functions in an existing program, compile with `-Wall`, and fix every warning it produces.
+> 4. Interview-style: *"How would you return both a parsed integer and a parse-failure indication from one function?"* Hint: consider what happens if the valid range includes every possible sentinel.
 
 #### errno and perror
 
+**Theory**
+
+Return codes tell you *that* something failed. `errno` tells you *why*. It is a modifiable lvalue of type `int`, declared in `<errno.h>`, that library functions set to a positive code identifying the specific cause — `ENOENT` for a missing file, `EACCES` for a permissions problem, `ENOMEM` for exhausted memory.
+
+Four rules govern its use, and every one of them is a source of bugs when ignored.
+
+**1. Only check `errno` after a function has indicated failure.** Successful calls are permitted to set `errno` to anything — and they do; a successful `printf` may leave `ENOTTY` behind from an internal `isatty` check. Checking `errno` to decide *whether* something failed is a false-positive machine. The correct order is: check the return value first; only then consult `errno`.
+
+**2. `errno` is sticky.** Nothing clears it. It holds whatever the last failing call left there, possibly from minutes ago. When a function's own success does not set it — as with `strtol`, which only sets `ERANGE` on overflow — you must **set `errno = 0` before the call** so that a nonzero value afterwards means something.
+
+**3. It is fragile.** Any intervening library call can overwrite it. If you need the code, **save it immediately**:
+
+```c
+if (fopen(path, "r") == NULL) {
+    int saved = errno;          /* capture BEFORE anything else runs */
+    log_message("open failed");  /* this may clobber errno */
+    fprintf(stderr, "%s\n", strerror(saved));
+}
+```
+
+**4. It is per-thread.** Despite looking like a global variable, `errno` is required to be thread-local — in practice it is a macro expanding to a function call such as `(*__errno_location())`. That is why you must never declare it yourself as `extern int errno`; include `<errno.h>`.
+
+Two functions turn a code into text:
+
+- **`perror(const char *s)`** writes `s`, a colon, a space, the message for the current `errno`, and a newline, to `stderr`. It is the fastest correct way to report a failure, and passing the filename or operation as `s` makes the message useful.
+- **`strerror(int errnum)`** returns the message as a string, so you can put it in your own format. It returns a pointer to a possibly-static buffer that a later call may overwrite, and it is not required to be thread-safe; POSIX's `strerror_r` and C11's `strerror_s` write into a caller-supplied buffer.
+
+The C standard itself defines only three codes — `EDOM`, `ERANGE`, `EILSEQ` — and everything else comes from POSIX or the platform. The commonly encountered ones are worth recognizing: `ENOENT` (no such file), `EACCES` (permission denied), `EEXIST` (already exists), `ENOMEM`, `EINVAL`, `EAGAIN`/`EWOULDBLOCK`, `EINTR` (interrupted by a signal), `EPIPE` (write to a closed pipe).
+
+`EINTR` deserves a note: a blocking call interrupted by a signal returns `-1` with `errno == EINTR`, and the correct response is usually to retry, not to report failure.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+
+int main(void)
+{
+    /* ---- the basic pattern: return value first, then errno ---------- */
+    FILE *f = fopen("/nonexistent/path", "r");
+    if (f == NULL) {
+        /* perror: fast and correct. The prefix should identify the target. */
+        perror("/nonexistent/path");           /* -> ...: No such file or directory */
+
+        /* strerror: same information, your own formatting. */
+        fprintf(stderr, "open failed (errno %d): %s\n", errno, strerror(errno));
+
+        /* Distinguishing causes is the whole point of having errno. */
+        switch (errno) {
+        case ENOENT: fprintf(stderr, "hint: check the path\n");        break;
+        case EACCES: fprintf(stderr, "hint: check permissions\n");     break;
+        case EMFILE: fprintf(stderr, "hint: too many open files\n");   break;
+        default:     break;
+        }
+    }
+
+    /* ---- functions that only set errno on failure need a reset ------ */
+    errno = 0;                                  /* REQUIRED before strtol */
+    long v = strtol("99999999999999999999", NULL, 10);
+    if (errno == ERANGE)
+        printf("overflowed, clamped to %ld\n", v);
+
+    /* ---- saving errno before it can be clobbered -------------------- */
+    if (fopen("also-missing", "r") == NULL) {
+        int saved = errno;                      /* capture immediately */
+        fprintf(stderr, "cleaning up...\n");    /* may overwrite errno */
+        fclose(stdout);                         /* so may this */
+        fprintf(stderr, "reason: %s\n", strerror(saved));   /* still correct */
+    }
+    return 0;
+}
+```
+
+The anti-patterns, side by side:
+
+```c
+#include <stdio.h>
+#include <errno.h>
+#include <string.h>
+
+static void wrong(const char *path)
+{
+    FILE *f = fopen(path, "r");
+
+    /* WRONG 1: testing errno instead of the return value. A previous
+       unrelated failure makes this report an error that never happened. */
+    if (errno != 0) { perror("open"); return; }
+
+    /* WRONG 2: reporting errno after other calls have run. */
+    if (f == NULL) {
+        fprintf(stderr, "could not open the file\n");   /* clobbers errno */
+        perror("open");                                 /* now meaningless */
+    }
+    if (f) fclose(f);
+}
+
+static void right(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {                 /* the RETURN VALUE decides */
+        perror(path);                /* errno consulted immediately */
+        return;
+    }
+    fclose(f);
+}
+```
+
+```text
+   THE errno PROTOCOL
+
+   1.  errno = 0            (only for functions that set it solely on failure)
+            |
+   2.  ret = library_call()
+            |
+   3.  did the RETURN VALUE indicate failure?
+            |                              |
+           no                             yes
+            |                              |
+       errno is MEANINGLESS       4. saved = errno   (immediately)
+       -- do not read it             5. report / branch on 'saved'
+
+   Never:  if (errno) ...           after a call whose result you did not check
+   Never:  extern int errno;        it is thread-local, include <errno.h>
+```
+
+**Key Takeaways**
+
+- Check the return value to learn *whether* a call failed; consult `errno` only afterwards, to learn *why*.
+- Successful calls may set `errno` arbitrarily, and nothing clears it — set `errno = 0` before functions like `strtol` that signal only on failure.
+- Save `errno` into a local variable immediately, because any intervening library call can overwrite it.
+- `errno` is thread-local and usually a macro; include `<errno.h>` and never declare it yourself.
+- `perror` is the quickest correct report; `strerror` gives the text for custom formatting, with `strerror_r`/`strerror_s` for thread-safe use.
+
+> 🧪 Practice
+>
+> 1. Write a program that attempts to open the same path for reading, for writing in a read-only directory, and as a directory, printing `errno` and `strerror` for each. Identify all three codes.
+> 2. Demonstrate the sticky-`errno` bug: make a call fail, then make a successful call, then print `errno`. Explain the value.
+> 3. Write a wrapper `FILE *open_or_report(const char *path, const char *mode)` that saves `errno`, logs a formatted message, and returns `NULL`, leaving `errno` unchanged for the caller.
+> 4. Interview-style: *"Why is `if (errno != 0)` an unreliable way to detect that a call failed?"* Hint: think about what a successful call is permitted to do.
+
 #### assert and NDEBUG
+
+**Theory**
+
+An **assertion** is an executable statement of something you believe is always true. `assert(expr)` from `<assert.h>` evaluates `expr`; if it is false, it prints the failing expression, the file, and the line to `stderr` and calls `abort`, terminating the program immediately.
+
+The point is not error handling. It is the opposite: an assertion documents a condition that, if violated, means **the program has a bug** and continuing would only cause more damage further from the cause. That distinction determines when to use one:
+
+| Situation | Tool | Why |
+|---|---|---|
+| A file might not exist | return code + `errno` | expected in normal operation |
+| The user typed a letter where a number goes | validation + message | the environment, not your code |
+| `malloc` returned `NULL` | return code | possible on any run |
+| A function's caller passed `NULL` where the contract forbids it | `assert` | a bug in the caller |
+| An internal invariant broke (`head != NULL` inside a non-empty list) | `assert` | a bug in this module |
+| A `switch` reached a case the enum cannot produce | `assert` | a bug somewhere |
+
+The rule of thumb: **assert what must be true if the code is correct; handle what might be false even when the code is correct.**
+
+`assert` is a macro, and its behavior is controlled by `NDEBUG`. If `NDEBUG` is defined **before including `<assert.h>`**, `assert(expr)` expands to nothing at all — the expression is not evaluated. Release builds conventionally define it (`-DNDEBUG`, which is what CMake's Release configuration adds automatically).
+
+That erasure creates the single most important rule about assertions: **never put anything with a side effect inside one.** `assert(remove_item(list) == 0)` works in debug and silently does nothing in release, deleting the operation itself. If you need the operation, do it outside and assert on the result.
+
+Because the message includes the stringized expression, you can attach an explanation using the `&&` idiom — a string literal is always true, so it does not change the condition but does appear in the output:
+
+```c
+assert(ptr != NULL && "caller must supply a destination buffer");
+```
+
+C11 adds **`static_assert(expr, message)`**, which is checked at compile time and costs nothing at run time. It is strictly better whenever the condition is a constant expression: platform assumptions, struct sizes, enum-to-array-length agreement.
+
+Assertions are not a security mechanism. They are disabled in the builds that face real users, and `abort` on a triggered assertion is itself a denial of service. Validate untrusted input with real checks; assert only about your own code's internal consistency.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
+/* Compile-time checks: no run-time cost, and they fail the BUILD. */
+static_assert(sizeof(int) >= 4, "this code assumes at least a 32-bit int");
+
+typedef enum { RED, GREEN, BLUE, COLOR_COUNT } Color;
+static const char *color_names[] = { "red", "green", "blue" };
+static_assert(sizeof color_names / sizeof *color_names == COLOR_COUNT,
+              "color_names is out of sync with the Color enum");
+
+/* Preconditions: violations mean the CALLER has a bug. */
+static void buffer_write(char *dst, size_t cap, size_t offset, const char *src)
+{
+    assert(dst != NULL && "destination must not be NULL");
+    assert(src != NULL);
+    assert(offset < cap && "offset must be inside the buffer");
+    assert(strlen(src) + offset < cap && "write would overflow");
+
+    memcpy(dst + offset, src, strlen(src) + 1);
+}
+
+/* Invariants: violations mean THIS module has a bug. */
+typedef struct { int *data; size_t len, cap; } Vec;
+
+static void vec_check(const Vec *v)
+{
+    assert(v != NULL);
+    assert(v->len <= v->cap);                        /* the core invariant */
+    assert(v->cap == 0 || v->data != NULL);          /* capacity implies storage */
+}
+
+static int vec_pop(Vec *v)
+{
+    vec_check(v);
+    assert(v->len > 0 && "pop from an empty vector");
+    return v->data[--v->len];
+}
+
+int main(void)
+{
+    char buf[16];
+    buffer_write(buf, sizeof buf, 0, "hello");
+    printf("%s\n", buf);
+
+    /* Exhaustive switch: the default asserts that the enum cannot widen
+       without this code being updated. */
+    Color c = GREEN;
+    switch (c) {
+    case RED: case GREEN: case BLUE:
+        printf("%s\n", color_names[c]); break;
+    case COLOR_COUNT:
+    default:
+        assert(0 && "unhandled Color value");
+    }
+    return 0;
+}
+```
+
+The side-effect trap and how `NDEBUG` changes everything:
+
+```c
+#include <stdio.h>
+#include <assert.h>
+
+static int counter = 0;
+static int next(void) { return ++counter; }
+
+int main(void)
+{
+    /* CATASTROPHIC: in a release build this line vanishes entirely,
+       so next() is never called and 'counter' never advances. */
+    assert(next() == 1);
+
+    /* CORRECT: perform the operation, then assert about its result. */
+    int v = next();
+    assert(v == 2);
+
+    printf("counter = %d\n", counter);
+    return 0;
+}
+```
+
+```bash
+# Debug build: assertions live.
+$ gcc -g prog.c -o prog && ./prog
+prog: prog.c:12: main: Assertion `v == 2' failed.
+Aborted (core dumped)
+
+# Release build: NDEBUG erases them, expression and all.
+$ gcc -O2 -DNDEBUG prog.c -o prog && ./prog
+counter = 1          # next() inside the assert was never called
+```
+
+| | `assert` | `static_assert` | error handling |
+|---|---|---|---|
+| Checked | run time | compile time | run time |
+| Cost in release | none (erased) | none | the check itself |
+| On failure | `abort` | build error | your recovery path |
+| Use for | internal invariants, contracts | platform and layout assumptions | anything the environment can cause |
+| Safe with side effects | **no** | n/a | yes |
+
+**Key Takeaways**
+
+- `assert` documents conditions that must hold if the code is correct; it is for bugs, not for expected failures such as missing files or bad user input.
+- Defining `NDEBUG` erases assertions entirely, expression included — so an assertion must never contain a side effect the program depends on.
+- Append `&& "explanation"` to make the abort message self-documenting without changing the condition.
+- Prefer C11's `static_assert` whenever the condition is a constant expression: it fails the build instead of the run, at zero cost.
+- Assertions are absent from the builds users run, so they are not input validation and not a security control.
+
+> 🧪 Practice
+>
+> 1. Add preconditions and an invariant check to a small stack implementation, then trigger each one and read the abort messages.
+> 2. Write an `assert` containing a side effect, build with and without `-DNDEBUG`, and show that the program's behavior differs.
+> 3. Use `static_assert` to keep an enum and its name table in sync, then add an enum member without updating the table and observe the build failure.
+> 4. Interview-style: *"Should `assert` be used to check that `malloc` succeeded?"* Hint: ask whether a `NULL` return means your code is wrong, and whether release builds should skip the check.
 
 #### setjmp and longjmp
 
+**Theory**
+
+`<setjmp.h>` provides C's only non-local jump: a way to abandon the current call stack and resume execution at a point saved earlier in an *outer* function. It is the closest C comes to exceptions, and it is a sharp enough tool that most codebases correctly decide not to use it.
+
+```c
+int  setjmp(jmp_buf env);              /* save the current execution context */
+void longjmp(jmp_buf env, int val);    /* jump back to it */
+```
+
+`setjmp` stores the machine's registers — the stack pointer, the program counter, the callee-saved registers — into `env`, and returns **0**. Later, from anywhere deeper in the call stack, `longjmp(env, val)` restores that context: execution resumes as though `setjmp` had just returned again, this time with the value `val`. So one `setjmp` call site appears to return twice, and the return value distinguishes the two cases. (If `val` is 0, `setjmp` returns 1 instead, so the "jumped here" case is never mistaken for the initial one.)
+
+```text
+   NORMAL RETURN                    longjmp
+
+   main                             main
+     |  setjmp -> 0                   |  setjmp -> 0 ......... <-+
+     v                                v                          |
+   parse                            parse                        |
+     |                                |                          |
+     v                                v                          |
+   token                            token                        |
+     |                                |  longjmp(env, 1) --------+
+     v                                                     (unwinds three
+   returns up one frame at a time      frames at once, running NO cleanup)
+```
+
+The dangers are specific, and each one has produced real bugs:
+
+**Local variables can be indeterminate after a jump.** Only objects declared `volatile`, or of static storage duration, are guaranteed to hold their values across a `longjmp`. Everything else may have been in a register the jump restored to an older value. Variables in the `setjmp` frame that are modified between the `setjmp` and the `longjmp` must be `volatile`.
+
+**No cleanup runs.** Frames are discarded, not unwound. Every `malloc` not yet freed, every `FILE *` not yet closed, every lock still held in the abandoned frames leaks. C++ destructors and Go's `defer` do this work; C does nothing.
+
+**The `setjmp` frame must still be alive.** If the function that called `setjmp` has already returned, its stack frame is gone and `longjmp` into it is undefined behavior — typically an immediate, unexplainable crash.
+
+**Where `setjmp` may appear is restricted.** The standard permits it only as the whole controlling expression of an `if`, `while`, `switch`, or as a full expression statement, optionally compared against a constant. `int x = setjmp(env);` is not portable.
+
+Legitimate uses do exist: aborting a deeply recursive parser or interpreter from its innermost frame, recovering from a fatal condition in a long-running server, and implementing coroutine-like control in embedded systems. Even then, the discipline required — `volatile` on everything relevant, and centralized cleanup at the jump target — means a plain error-code return is usually clearer and always safer.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <setjmp.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* A recursive-descent parser that abandons the whole parse on a syntax
+   error, rather than threading an error code through every level. */
+static jmp_buf parse_error;
+static char    error_msg[128];
+
+static void fail(const char *msg)
+{
+    /* Save the reason somewhere that survives the jump: a static object. */
+    snprintf(error_msg, sizeof error_msg, "%s", msg);
+    longjmp(parse_error, 1);            /* unwind every frame at once */
+}
+
+static const char *cursor;
+
+static int parse_number(void)
+{
+    if (*cursor < '0' || *cursor > '9') fail("expected a digit");
+    int v = 0;
+    while (*cursor >= '0' && *cursor <= '9') v = v * 10 + (*cursor++ - '0');
+    return v;
+}
+
+static int parse_expr(void)                 /* number ('+' number)* */
+{
+    int v = parse_number();
+    while (*cursor == '+') { cursor++; v += parse_number(); }
+    if (*cursor != '\0') fail("trailing characters");
+    return v;
+}
+
+int main(void)
+{
+    const char *inputs[] = { "1+2+3", "4+", "7x" };
+
+    for (int i = 0; i < 3; i++) {
+        /* setjmp must be the whole controlling expression. */
+        if (setjmp(parse_error) == 0) {     /* 0 == the initial call */
+            cursor = inputs[i];
+            printf("%-6s = %d\n", inputs[i], parse_expr());
+        } else {                            /* nonzero == arrived via longjmp */
+            printf("%-6s ! %s\n", inputs[i], error_msg);
+        }
+    }
+    return 0;
+}
+```
+
+The `volatile` requirement, and the leak that comes free with every jump:
+
+```c
+#include <stdio.h>
+#include <setjmp.h>
+#include <stdlib.h>
+
+static jmp_buf env;
+
+static void deep(void) { longjmp(env, 1); }
+
+int main(void)
+{
+    int          plain    = 0;   /* value after a longjmp is INDETERMINATE */
+    volatile int reliable = 0;   /* guaranteed to survive the jump         */
+
+    /* This allocation is leaked by the jump: no frame is unwound and
+       nothing calls free(). The pointer itself may also be lost. */
+    char *volatile buf = malloc(64);
+
+    if (setjmp(env) == 0) {
+        plain    = 42;           /* may live only in a register */
+        reliable = 42;           /* volatile: forced to memory  */
+        deep();                  /* never returns */
+    } else {
+        printf("plain    = %d   (indeterminate -- may print 0 or 42)\n", plain);
+        printf("reliable = %d   (guaranteed 42)\n", reliable);
+        free(buf);               /* cleanup must happen HERE, by hand */
+    }
+    return 0;
+}
+```
+
+| | Return codes | `setjmp`/`longjmp` |
+|---|---|---|
+| Control flow | visible at each level | invisible jump |
+| Cleanup | at each level, explicit | none — you must centralize it |
+| Local variables | always valid | only `volatile` and static survive |
+| Debuggability | straightforward | stack disappears |
+| Cost | one comparison per level | a register save and restore |
+| Suitable for | almost everything | deep recursion, interpreters, fatal recovery |
+
+**Key Takeaways**
+
+- `setjmp` saves an execution context and returns 0; `longjmp` resumes there, making `setjmp` appear to return a second time with a nonzero value.
+- Only `volatile` and static-storage objects are guaranteed to retain their values across a `longjmp`; everything else is indeterminate.
+- No cleanup runs during the jump — allocations, open files, and held locks in the abandoned frames leak unless the jump target releases them.
+- Jumping into a function that has already returned is undefined behavior, and `setjmp` may only appear as a whole controlling expression.
+- Prefer error codes; reserve non-local jumps for deep recursion, interpreters, and fatal-error recovery where threading a code through every frame is genuinely impractical.
+
+> 🧪 Practice
+>
+> 1. Write a recursive function 20 levels deep that `longjmp`s out of the innermost call, and print how many frames' cleanup code was skipped.
+> 2. Modify a variable between `setjmp` and `longjmp` without `volatile`, compile at `-O0` and `-O2`, and compare the value printed after the jump.
+> 3. Convert the parser example to use return codes instead, and compare the two versions on lines of code and on where cleanup lives.
+> 4. Interview-style: *"Why must variables modified between `setjmp` and `longjmp` be declared `volatile`?"* Hint: think about what the optimizer is allowed to keep in a register, and what `longjmp` restores.
+
 #### exit, atexit, and abort
 
+**Theory**
+
+A C program can end in several ways, and they differ in exactly which cleanup happens. Knowing the differences matters because the wrong choice loses data or, worse, produces no diagnostic.
+
+**Normal termination.** Returning from `main` and calling `exit(status)` are equivalent — returning from `main` behaves as if `exit` were called with that value. `exit` performs, in order:
+
+1. Calls every function registered with `atexit`, in **reverse order of registration**.
+2. Flushes and closes all open streams.
+3. Removes files created by `tmpfile`.
+4. Returns control to the host environment with the status.
+
+The status has exactly two portable values: **`EXIT_SUCCESS`** and **`EXIT_FAILURE`** from `<stdlib.h>`. `0` is also guaranteed to mean success. Anything else is implementation-defined — and on POSIX, only the low 8 bits reach the shell, so `exit(256)` is seen as `0`.
+
+**`atexit(void (*fn)(void))`** registers a callback for normal termination. At least 32 registrations must be supported. The LIFO order matters: it lets a later-initialized subsystem tear down before the earlier one it depends on. The callbacks take no arguments and return nothing, so any state they need must be global or static. A callback that itself calls `exit` produces undefined behavior.
+
+**`_Exit(status)`** (C99) terminates immediately: no `atexit` handlers, and whether streams are flushed is implementation-defined. Its real use is after `fork`, in the child, when running the parent's exit handlers and flushing the parent's buffers a second time would be wrong.
+
+**Abnormal termination.** `abort()` raises `SIGABRT`, which by default terminates the process with an abnormal status and typically writes a core dump. It runs **no** `atexit` handlers and does **not** flush streams — which is precisely why buffered output disappears when a program aborts, and why `stderr` is unbuffered. `abort` is what a failed `assert` calls, and it is the right response to a corrupted invariant: stop now, preserve the state for a debugger, do not run cleanup code that might make things worse.
+
+There is one more path: `quick_exit` (C11) with handlers registered by `at_quick_exit`, which runs a separate handler list and skips stream flushing. It exists for the case where the normal handlers might deadlock.
+
+| | `return` from `main` / `exit` | `_Exit` | `abort` |
+|---|---|---|---|
+| `atexit` handlers | yes, LIFO | no | no |
+| Streams flushed | yes | implementation-defined | no |
+| `tmpfile` files removed | yes | no | no |
+| Core dump | no | no | typically yes |
+| Status seen by the shell | your value | your value | signal (`SIGABRT`) |
+| Use when | normal end, fatal but orderly | after `fork` in the child | invariant broken, want a core |
+
+One design caution: `exit` from deep inside a library function is antisocial. It denies the application any chance to recover, log, or clean up its own state. Libraries should return errors; only the program's top level should decide to terminate.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+static FILE *logfile;
+
+/* atexit handlers take no arguments and return nothing, so whatever
+   they need must be global or static. */
+static void close_log(void)
+{
+    if (logfile) { fputs("shutting down\n", logfile); fclose(logfile); }
+    puts("2. close_log ran");
+}
+
+static void release_cache(void) { puts("1. release_cache ran"); }
+
+int main(void)
+{
+    logfile = fopen("app.log", "a");
+
+    /* Registered first, so it runs LAST -- handlers are LIFO, which lets
+       later subsystems tear down before the earlier ones they depend on. */
+    if (atexit(close_log)     != 0) { perror("atexit"); return EXIT_FAILURE; }
+    if (atexit(release_cache) != 0) { perror("atexit"); return EXIT_FAILURE; }
+
+    puts("0. main is finishing");
+
+    return EXIT_SUCCESS;    /* identical to exit(EXIT_SUCCESS) */
+    /* Output order: 0. main, 1. release_cache, 2. close_log */
+}
+```
+
+The three exits, and what each one loses:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+static void handler(void) { fprintf(stderr, "handler ran\n"); }
+
+int main(int argc, char **argv)
+{
+    atexit(handler);
+    printf("buffered output (no newline flush guarantee when redirected)");
+
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s exit|_exit|abort\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    switch (argv[1][0]) {
+    case 'e':                       /* exit  */
+        exit(EXIT_SUCCESS);         /* handler runs, buffer flushed */
+    case '_':                       /* _exit */
+        _Exit(EXIT_SUCCESS);        /* no handler; flushing unspecified */
+    default:                        /* abort */
+        abort();                    /* no handler, NO flush, core dump */
+    }
+}
+```
+
+```bash
+$ ./prog exit  > out.txt 2>&1 ; cat out.txt
+handler ran
+buffered output (no newline flush guarantee when redirected)
+
+$ ./prog abort > out.txt 2>&1 ; echo "status=$?" ; cat out.txt
+status=134                       # 128 + SIGABRT(6)
+                                 # the buffered printf output is GONE
+```
+
+```text
+   TERMINATION PATHS
+
+   return from main ---+
+                       |
+   exit(status) -------+---> atexit handlers (LIFO)
+                             flush + close all streams
+                             remove tmpfile() files
+                             -> host environment, status
+
+   _Exit(status) ----------> (nothing guaranteed)
+                             -> host environment, status
+                             use in the child after fork()
+
+   abort() ----------------> raise(SIGABRT)
+                             NO handlers, NO flush
+                             -> core dump, abnormal status
+                             use when an invariant is already broken
+```
+
+**Key Takeaways**
+
+- Returning from `main` and calling `exit` are equivalent: both run `atexit` handlers in reverse registration order, then flush and close every stream.
+- Use `EXIT_SUCCESS` and `EXIT_FAILURE`; other values are implementation-defined, and POSIX only passes the low 8 bits to the shell.
+- `atexit` handlers take no arguments, so their state must be global, and calling `exit` from inside one is undefined.
+- `_Exit` skips handlers and flushing — its purpose is the child process after `fork`; `abort` skips both and produces a core dump for post-mortem debugging.
+- Libraries should return errors rather than call `exit`; only the top level of a program should decide to terminate it.
+
+> 🧪 Practice
+>
+> 1. Register three `atexit` handlers that print their names, and confirm the order. Then explain why LIFO is the useful order for teardown.
+> 2. Write a program that buffers output and then aborts, and show that the output is lost. Fix it two ways: flush first, or write to `stderr`.
+> 3. Compare `exit(1)`, `exit(256)`, and `abort()` by checking `$?` in the shell after each, and account for all three values.
+> 4. Interview-style: *"Why should a library function never call `exit`?"* Hint: consider who owns the decision to terminate, and what the caller loses.
+
 #### Designing Error Propagation
+
+**Theory**
+
+The previous topics gave you mechanisms. This one is about the design decision that ties them together: **when an error occurs deep in a call stack, how does it reach the code that can actually do something about it, carrying enough information to be useful?**
+
+Start by classifying failures, because different classes deserve different mechanisms:
+
+| Class | Example | Mechanism |
+|---|---|---|
+| **Expected** | file missing, connection refused, bad user input | return code, propagated |
+| **Exceptional but recoverable** | out of memory, disk full | return code, usually propagated to the top |
+| **Programming error** | null pointer where the contract forbids it, broken invariant | `assert` / `abort` |
+| **Unrecoverable environment failure** | cannot map the address space at startup | log and `exit` at the top level |
+
+Mixing these is the most common design mistake: aborting on a missing file (denying the caller any recovery), or returning a code for a violated internal invariant (letting corrupted state spread).
+
+For the propagated classes, a few principles produce codebases that stay debuggable:
+
+**One convention per project.** Whatever you choose — `enum Status`, negative `errno`-style codes, `bool` plus an out-parameter — apply it uniformly. Mixed conventions mean every call site requires looking up which one applies, and the lookups get skipped.
+
+**Errors must carry context.** `ERR_IO` tells you nothing about *which* file. Two workable approaches: a richer error object (code plus a message buffer plus perhaps a source location), or logging the context at the point of failure while returning only a code. The second keeps signatures simple and is enough for most programs.
+
+**Handle at the level that has the information to decide.** A parser cannot know whether a malformed line should abort the program, be skipped, or be reported to the user — so it should not decide. It reports; the caller with the policy decides. Errors get *handled* where policy lives, usually near the top.
+
+**Do not lose the original cause.** When a low-level error is translated into a higher-level one, the specific reason must survive somewhere, or you get "operation failed" with nothing to act on.
+
+**Every function must leave a consistent state on failure.** This is the guarantee that makes recovery possible. The strongest useful form is: **on failure, the function has changed nothing** — allocations released, partial writes rolled back, out-parameters untouched. The `goto` cleanup ladder is how you achieve it in practice.
+
+**Fail fast on the paths where continuing is worse.** Detecting a broken invariant and continuing turns one bug into a corrupted data structure that fails somewhere unrelated, hours later.
+
+The result of applying these is a codebase where every function either succeeds and produces its output, or fails cleanly and says why — and where the messages a user sees name the actual file, the actual line, and the actual reason.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>     /* err_make takes printf-style arguments */
+#include <errno.h>
+
+/* ---------------------------------------------------------------------
+   A richer error type: a code the caller can branch on, plus context a
+   human can act on. Small enough to return by value.
+   --------------------------------------------------------------------- */
+typedef enum { E_OK = 0, E_IO, E_PARSE, E_NOMEM, E_RANGE } ErrCode;
+
+typedef struct {
+    ErrCode code;
+    char    detail[192];        /* what failed, and where */
+} Error;
+
+static const Error NO_ERROR = { E_OK, "" };
+
+/* Build an error with printf-style context, at the point of failure. */
+static Error err_make(ErrCode code, const char *fmt, ...)
+{
+    Error e; e.code = code;
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(e.detail, sizeof e.detail, fmt, ap);
+    va_end(ap);
+    return e;
+}
+
+/* Wrap a lower-level error without losing its message. */
+static Error err_wrap(Error inner, const char *context)
+{
+    Error e; e.code = inner.code;
+    snprintf(e.detail, sizeof e.detail, "%s: %s", context, inner.detail);
+    return e;
+}
+
+/* ---------------------------------------------------------------------
+   Layer 1: parsing. Reports; does not decide policy.
+   --------------------------------------------------------------------- */
+typedef struct { char key[32]; long value; } Setting;
+
+static Error parse_line(const char *line, unsigned lineno, Setting *out)
+{
+    const char *eq = strchr(line, '=');
+    if (!eq)
+        return err_make(E_PARSE, "line %u: missing '='", lineno);
+
+    size_t klen = (size_t)(eq - line);
+    if (klen == 0 || klen >= sizeof out->key)
+        return err_make(E_PARSE, "line %u: key length %zu out of range",
+                        lineno, klen);
+
+    memcpy(out->key, line, klen);
+    out->key[klen] = '\0';
+
+    errno = 0;
+    char *end;
+    out->value = strtol(eq + 1, &end, 0);
+    if (end == eq + 1)
+        return err_make(E_PARSE, "line %u: '%s' has no numeric value",
+                        lineno, out->key);
+    if (errno == ERANGE)
+        return err_make(E_RANGE, "line %u: value for '%s' out of range",
+                        lineno, out->key);
+
+    return NO_ERROR;
+}
+
+/* ---------------------------------------------------------------------
+   Layer 2: loading. Adds context, owns cleanup, still no policy.
+   Note the failure guarantee: on error, *out is untouched and nothing leaks.
+   --------------------------------------------------------------------- */
+static Error load_config(const char *path, Setting **out, size_t *out_n)
+{
+    FILE     *f    = fopen(path, "r");
+    Setting  *arr  = NULL;
+    Error     err  = NO_ERROR;
+
+    if (!f)
+        return err_make(E_IO, "%s: %s", path, strerror(errno));
+
+    size_t cap = 16, n = 0;
+    arr = malloc(cap * sizeof *arr);
+    if (!arr) { err = err_make(E_NOMEM, "%s: allocating settings", path); goto done; }
+
+    char line[256];
+    for (unsigned lineno = 1; fgets(line, sizeof line, f); lineno++) {
+        line[strcspn(line, "\r\n")] = '\0';          /* strip the newline */
+        if (line[0] == '\0' || line[0] == '#') continue;
+
+        if (n == cap) {
+            Setting *bigger = realloc(arr, cap * 2 * sizeof *arr);
+            if (!bigger) { err = err_make(E_NOMEM, "%s: growing to %zu",
+                                          path, cap * 2); goto done; }
+            arr = bigger; cap *= 2;
+        }
+
+        err = parse_line(line, lineno, &arr[n]);
+        if (err.code != E_OK) {                       /* propagate with context */
+            err = err_wrap(err, path);
+            goto done;
+        }
+        n++;
+    }
+
+    if (ferror(f)) { err = err_make(E_IO, "%s: read error", path); goto done; }
+
+    *out = arr; *out_n = n;                           /* commit only on success */
+    arr = NULL;                                       /* ownership transferred */
+
+done:
+    free(arr);                                        /* NULL on success: no-op */
+    fclose(f);
+    return err;
+}
+
+/* ---------------------------------------------------------------------
+   Layer 3: the top. This is where POLICY lives -- and the only place
+   that decides to terminate.
+   --------------------------------------------------------------------- */
+int main(int argc, char **argv)
+{
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s <config>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    Setting *settings;
+    size_t   count;
+    Error    err = load_config(argv[1], &settings, &count);
+
+    switch (err.code) {
+    case E_OK:
+        break;
+    case E_IO:                          /* recoverable: fall back to defaults */
+        fprintf(stderr, "warning: %s -- using defaults\n", err.detail);
+        return EXIT_SUCCESS;
+    case E_PARSE:
+    case E_RANGE:                       /* the user can fix this: be specific */
+        fprintf(stderr, "config error: %s\n", err.detail);
+        return EXIT_FAILURE;
+    case E_NOMEM:                       /* nothing to do but stop */
+        fprintf(stderr, "fatal: %s\n", err.detail);
+        return EXIT_FAILURE;
+    }
+
+    for (size_t i = 0; i < count; i++)
+        printf("%s = %ld\n", settings[i].key, settings[i].value);
+
+    free(settings);
+    return EXIT_SUCCESS;
+}
+```
+
+```text
+   WHERE ERRORS ARE DETECTED, PROPAGATED, AND HANDLED
+
+   main()                     <-- HANDLED here: policy lives at the top
+     |   decides: warn and continue / report and exit / retry
+     |
+     +-- load_config()        <-- PROPAGATED, with context added
+     |     |   adds the filename; owns cleanup; guarantees no partial state
+     |     |
+     |     +-- parse_line()   <-- DETECTED here: knows exactly what is wrong
+     |           reports "line 7: 'timeout' has no numeric value"
+     |           decides NOTHING about what should happen next
+
+   Each layer adds what only it knows:
+       parse_line   knows the line number and the offending token
+       load_config  knows the filename
+       main         knows whether a bad config should be fatal
+```
+
+A checklist for auditing a function's error behavior:
+
+| Question | If the answer is no |
+|---|---|
+| Does every failure path return an error? | silent corruption |
+| Does every failure path release everything it acquired? | leaks under error conditions |
+| Are out-parameters left untouched on failure? | the caller uses garbage |
+| Does the error say *which* object failed? | undebuggable in production |
+| Is the original cause still recoverable from the message? | "operation failed" support tickets |
+| Are internal invariants asserted rather than returned? | corrupted state spreads |
+
+**Key Takeaways**
+
+- Classify each failure as expected, exceptional, a programming error, or an environment failure — each class gets a different mechanism, and mixing them is the core design mistake.
+- Pick one error convention per project and apply it everywhere; mixed conventions cause skipped checks.
+- Errors are detected where the detail is known, propagated with added context, and handled where the policy lives — usually the top level.
+- Guarantee that a failing function leaves nothing behind: no leaks, no partial writes, and out-parameters untouched, which the `goto` cleanup ladder makes routine.
+- Assert internal invariants and abort on them, but return errors for anything the environment can cause, so callers keep the ability to recover.
+
+> 🧪 Practice
+>
+> 1. Take a function with three failure points that currently returns `-1` for all of them, and give it distinct codes plus a context message for each.
+> 2. Audit an existing function against the checklist above and fix every row where the answer is no.
+> 3. Write a two-layer program where the inner layer detects an error and the outer layer adds context, then produce an error message naming both the file and the line.
+> 4. Interview-style: *"Where in a call stack should an error be handled?"* Hint: think about which layer holds the information needed to choose between retrying, falling back, and giving up.
 
 ---
 
 ## 10. Data Structures and Algorithms in C
 
+C ships with arrays and nothing else — no vector, no map, no list — so every non-trivial C program either builds its containers or borrows someone's. That constraint is a gift for learning: you cannot use a hash table in C without understanding load factors and collision resolution, and you cannot write a linked list without confronting exactly who owns each allocation. This chapter builds the standard structures from raw memory, then covers the three techniques C offers for making them reusable across types.
+
 <a id="101-linear-structures"></a>
 ### 10.1 Linear Structures
 
+Linear structures store elements in a sequence and differ mainly in what is cheap: indexing, inserting at the ends, or inserting in the middle. This section builds each one from `malloc` and pointers, with attention to the growth strategies and ownership rules that decide whether the result is fast and leak-free or neither.
+
 #### Dynamic Arrays
+
+**Theory**
+
+A C array has a size fixed when you write it. That is fine when you know the count in advance and useless when you do not — reading an unknown number of lines, collecting search results, accumulating events. The **dynamic array** (the same idea as C++'s `vector`, Python's `list`, or Java's `ArrayList`) solves this by separating two quantities that a fixed array conflates:
+
+- **length** — how many elements are actually stored
+- **capacity** — how many the current allocation could hold
+
+Appending is then trivial while `length < capacity`: write at `data[length]` and increment. When they meet, allocate a bigger block, copy everything across, free the old one, and continue. `realloc` does all three steps for you and may skip the copy entirely if the heap can extend the block in place.
+
+The critical design decision is **how much bigger**. It is tempting to grow by one element each time, or by a fixed 10. Both are quadratic disasters. Growing by a constant `k` means appending `n` elements performs roughly `n²/(2k)` element copies — for a million appends that is billions of copies, and the profile shows all the time inside `memcpy`.
+
+The fix is **geometric growth**: multiply the capacity by a constant factor, typically 2 or 1.5. Now the copies form a geometric series that sums to less than `2n` total, so the *amortized* cost of an append is O(1) — most appends are a single write, and the occasional expensive resize is paid for by all the cheap appends before it.
+
+```text
+   GROWTH BY +1 (quadratic)          GROWTH BY x2 (amortized O(1))
+
+   append 1 -> copy 0                append 1 -> copy 0    cap 1
+   append 2 -> copy 1                append 2 -> copy 1    cap 2
+   append 3 -> copy 2                append 3 -> copy 2    cap 4
+   append 4 -> copy 3                append 4 -> copy 0
+   ...                               append 5 -> copy 4    cap 8
+   append n -> copy n-1              append 6,7,8 -> copy 0
+   ------------------------          ---------------------------
+   total ~ n^2/2 copies              total < 2n copies
+```
+
+Factor 2 is the common default. A factor of 1.5 wastes less memory and, on some allocators, lets a freed block be reused by a later growth; the difference rarely matters outside allocation-heavy code.
+
+Three implementation details separate a correct dynamic array from a broken one:
+
+**Never assign `realloc`'s result directly to the pointer you passed in.** If `realloc` fails it returns `NULL` while leaving the original block allocated — so `v->data = realloc(v->data, n)` on failure both loses your data and leaks it. Always use a temporary.
+
+**Pointers into the array are invalidated by growth.** After a resize the elements may live at a completely different address. Any pointer or saved `&v->data[i]` from before the append is dangling. This is why dynamic-array APIs return indices rather than pointers, and why "get a pointer, then append, then use the pointer" is a classic use-after-free.
+
+**Removal from the middle is O(n)** because everything after the hole must shift down. When order does not matter, `swap_remove` — move the last element into the hole and shrink — makes it O(1).
+
+The trade-off against a linked list is the whole point: dynamic arrays give you O(1) indexing and contiguous memory that the CPU cache loves, at the cost of O(n) middle insertion and periodic reallocation.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>   /* SIZE_MAX */
+
+typedef struct {
+    int    *data;
+    size_t  len;      /* elements in use          */
+    size_t  cap;      /* elements the block holds */
+} IntVec;
+
+static void vec_init(IntVec *v) { v->data = NULL; v->len = v->cap = 0; }
+
+static void vec_free(IntVec *v)
+{
+    free(v->data);
+    v->data = NULL;                  /* leave the struct in a safe state */
+    v->len = v->cap = 0;
+}
+
+/* Ensure room for at least 'want' elements. Returns 0 on success. */
+static int vec_reserve(IntVec *v, size_t want)
+{
+    if (want <= v->cap) return 0;
+
+    size_t cap = v->cap ? v->cap : 4;        /* small non-zero start */
+    while (cap < want) {
+        if (cap > SIZE_MAX / 2) return -1;   /* guard the doubling itself */
+        cap *= 2;                            /* GEOMETRIC growth */
+    }
+
+    /* Overflow check before computing the byte size. */
+    if (cap > SIZE_MAX / sizeof *v->data) return -1;
+
+    /* Assign to a TEMPORARY: realloc returns NULL on failure and leaves
+       the old block valid. Writing straight to v->data would leak it. */
+    int *tmp = realloc(v->data, cap * sizeof *v->data);
+    if (!tmp) return -1;
+
+    v->data = tmp;
+    v->cap  = cap;
+    return 0;
+}
+
+static int vec_push(IntVec *v, int value)
+{
+    if (v->len == v->cap && vec_reserve(v, v->len + 1) != 0)
+        return -1;
+    v->data[v->len++] = value;
+    return 0;
+}
+
+static int vec_pop(IntVec *v, int *out)
+{
+    if (v->len == 0) return -1;
+    *out = v->data[--v->len];
+    return 0;
+}
+
+/* O(n): everything after the hole shifts down. Order is preserved. */
+static int vec_remove(IntVec *v, size_t i)
+{
+    if (i >= v->len) return -1;
+    memmove(&v->data[i], &v->data[i + 1],
+            (v->len - i - 1) * sizeof *v->data);   /* memmove: regions overlap */
+    v->len--;
+    return 0;
+}
+
+/* O(1): the last element fills the hole. Order is NOT preserved. */
+static int vec_swap_remove(IntVec *v, size_t i)
+{
+    if (i >= v->len) return -1;
+    v->data[i] = v->data[--v->len];
+    return 0;
+}
+
+int main(void)
+{
+    IntVec v;
+    vec_init(&v);
+
+    for (int i = 0; i < 10; i++)
+        if (vec_push(&v, i * i) != 0) { vec_free(&v); return 1; }
+
+    printf("len=%zu cap=%zu\n", v.len, v.cap);       /* len=10 cap=16 */
+
+    vec_remove(&v, 0);                                /* drop the first */
+    vec_swap_remove(&v, 0);                           /* last fills the hole */
+
+    for (size_t i = 0; i < v.len; i++) printf("%d ", v.data[i]);
+    putchar('\n');
+
+    int top;
+    if (vec_pop(&v, &top) == 0) printf("popped %d\n", top);
+
+    vec_free(&v);
+    return 0;
+}
+```
+
+The invalidation trap, which every dynamic-array user meets once:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void)
+{
+    int   *data = malloc(2 * sizeof *data);
+    if (!data) return 1;
+    size_t cap = 2, len = 0;
+
+    data[len++] = 10;
+    int *p = &data[0];          /* a pointer INTO the array */
+    printf("before: *p = %d\n", *p);   /* valid -- for now */
+
+    /* Growing may move the whole block to a new address. */
+    int *tmp = realloc(data, (cap = 8) * sizeof *data);
+    if (!tmp) { free(data); return 1; }
+    data = tmp;
+
+    /* *p is now a USE-AFTER-FREE if the block moved. Store the INDEX
+       (0) instead of the pointer, and re-derive &data[0] after growing. */
+    printf("safe: %d\n", data[0]);
+
+    free(data);
+    return 0;
+}
+```
+
+| Operation | Dynamic array | Linked list |
+|---|---|---|
+| Index `i` | O(1) | O(n) |
+| Append at end | O(1) amortized | O(1) with a tail pointer |
+| Insert/remove at front | O(n) | O(1) |
+| Insert/remove in middle (position known) | O(n) | O(1) given the node |
+| Memory per element | the element | element + pointer(s) |
+| Cache behavior | contiguous, excellent | scattered, poor |
+| Pointer stability across insertion | none | full |
+
+**Key Takeaways**
+
+- A dynamic array separates length from capacity; appending is a write until they meet, then a reallocation.
+- Grow geometrically (typically doubling) — growing by a constant makes `n` appends cost O(n²) in copies instead of amortized O(1).
+- Always assign `realloc`'s result to a temporary: on failure it returns `NULL` and the original block is still allocated and still yours to free.
+- Any pointer into the array is invalidated by a growth; store indices instead, and re-derive pointers after every append.
+- Removal is O(n) if order matters and O(1) with `swap_remove` if it does not.
+
+> 🧪 Practice
+>
+> 1. Instrument `vec_reserve` to count reallocations and total elements copied, then push 100,000 items with doubling and with `+1` growth. Compare the counts.
+> 2. Add `vec_insert(IntVec *v, size_t i, int value)` that shifts elements up, and `vec_shrink_to_fit` that releases unused capacity.
+> 3. Write a version that stores `char *` strings and takes ownership of them, ensuring `vec_free` releases every string as well as the array.
+> 4. Interview-style: *"Why do dynamic arrays double their capacity instead of growing by a fixed amount?"* Hint: sum the total number of element copies over `n` appends under each strategy.
 
 #### Singly and Doubly Linked Lists
 
+**Theory**
+
+A linked list stores each element in its own allocation — a **node** — that carries the value plus a pointer to the next node. The list itself is just a pointer to the first node; the last node's `next` is `NULL`, which marks the end.
+
+The trade against an array is exact and worth stating plainly. An array gives you a position instantly (`data[i]` is one multiply and one add) but has to move elements to make room. A list can insert or remove anywhere in O(1) *provided you already hold a pointer to the right node*, but reaching node `i` means following `i` pointers. There is no way to jump.
+
+That last caveat is where most people over-estimate linked lists. "O(1) insertion" is true, but finding *where* to insert is usually O(n), so the total is O(n) anyway. Lists genuinely win when you already hold the node: an LRU cache moving an entry to the front, a scheduler removing the task it is currently examining, a memory allocator splicing a block out of a free list.
+
+They also have a cost that Big-O hides: **every node is a separate allocation in a separate place in memory**. Traversing a list is a chain of dependent loads, each a potential cache miss, and the CPU cannot prefetch because it does not know the next address until the current load completes. Iterating a million-element array is often 10–50x faster than iterating a million-element list holding the same data. Modern practice is to reach for a dynamic array first and a list only when its specific properties are needed.
+
+**Singly linked** lists have one pointer per node and can only be walked forwards. Removing a node requires a pointer to its *predecessor*, because that is what must be updated — which is why the naive `list_remove(node)` cannot be written for a singly linked list.
+
+**Doubly linked** lists add a `prev` pointer. That buys backward traversal and true O(1) removal given only the node, at the cost of an extra pointer per node and two updates instead of one on every operation.
+
+Two techniques eliminate most linked-list bugs:
+
+**The pointer-to-pointer idiom.** Insertion and deletion have a special case at the head, because there the thing to update is the list's own head pointer rather than some node's `next`. Instead of writing that special case, walk a `Node **` — a pointer to the pointer that points at the current node. It starts as `&head` and becomes `&current->next`, so the head is no longer special and the code has one branch instead of three.
+
+**The sentinel (dummy head) node.** Allocate one permanent node that is never a real element. Now the list is never empty from the code's perspective, and every insertion and removal has a predecessor. A circular doubly linked list with a sentinel — the form used by the Linux kernel — makes every operation completely branch-free.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+/* ---------------- singly linked list ---------------- */
+typedef struct Node {
+    int          value;
+    struct Node *next;      /* NULL marks the end */
+} Node;
+
+static Node *node_new(int value, Node *next)
+{
+    Node *n = malloc(sizeof *n);
+    if (!n) return NULL;
+    n->value = value;
+    n->next  = next;
+    return n;
+}
+
+/* Push at the front: O(1), the natural operation for a singly linked list. */
+static int list_push_front(Node **head, int value)
+{
+    Node *n = node_new(value, *head);
+    if (!n) return -1;
+    *head = n;
+    return 0;
+}
+
+/* Remove the first node holding 'value'.
+   The pointer-to-pointer walk removes the head special case entirely:
+   'link' always points AT the pointer that must be updated. */
+static int list_remove(Node **head, int value)
+{
+    for (Node **link = head; *link; link = &(*link)->next) {
+        if ((*link)->value == value) {
+            Node *dead = *link;
+            *link = dead->next;      /* works whether *link is head or a ->next */
+            free(dead);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Reverse in place: the classic three-pointer walk. */
+static Node *list_reverse(Node *head)
+{
+    Node *prev = NULL;
+    while (head) {
+        Node *next = head->next;    /* save it before we overwrite the link */
+        head->next = prev;          /* flip the arrow backwards */
+        prev = head;                /* advance both cursors */
+        head = next;
+    }
+    return prev;                    /* the old tail is the new head */
+}
+
+static void list_free(Node *head)
+{
+    while (head) {
+        Node *next = head->next;    /* read BEFORE freeing -- not after */
+        free(head);
+        head = next;
+    }
+}
+
+static void list_print(const Node *head)
+{
+    for (const Node *n = head; n; n = n->next) printf("%d -> ", n->value);
+    puts("NULL");
+}
+
+int main(void)
+{
+    Node *head = NULL;
+    for (int i = 1; i <= 5; i++) list_push_front(&head, i);
+
+    list_print(head);                /* 5 -> 4 -> 3 -> 2 -> 1 -> NULL */
+    list_remove(&head, 5);           /* removing the HEAD, no special case */
+    list_remove(&head, 1);           /* removing the TAIL */
+    list_print(head);                /* 4 -> 3 -> 2 -> NULL */
+
+    head = list_reverse(head);
+    list_print(head);                /* 2 -> 3 -> 4 -> NULL */
+
+    list_free(head);
+    return 0;
+}
+```
+
+A circular doubly linked list with a sentinel — every operation is branch-free:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct DNode {
+    int           value;
+    struct DNode *prev, *next;
+} DNode;
+
+/* The sentinel is a real node that holds no value. An empty list is the
+   sentinel pointing at itself, so 'next' and 'prev' are NEVER NULL. */
+static void dlist_init(DNode *sentinel)
+{
+    sentinel->next = sentinel->prev = sentinel;
+}
+
+/* Splice 'n' in before 'at'. With a sentinel, at == sentinel means
+   "append at the end" -- and it needs no special case. */
+static void dlist_insert_before(DNode *at, DNode *n)
+{
+    n->prev        = at->prev;
+    n->next        = at;
+    at->prev->next = n;          /* four pointer writes, no branches */
+    at->prev       = n;
+}
+
+/* Unlink 'n'. O(1) given only the node -- impossible in a singly linked list. */
+static void dlist_remove(DNode *n)
+{
+    n->prev->next = n->next;
+    n->next->prev = n->prev;
+    n->prev = n->next = n;       /* self-link: safe to remove twice */
+}
+
+int main(void)
+{
+    DNode sentinel;
+    dlist_init(&sentinel);
+
+    DNode *saved = NULL;
+    for (int i = 1; i <= 5; i++) {
+        DNode *n = malloc(sizeof *n);
+        if (!n) break;
+        n->value = i;
+        dlist_insert_before(&sentinel, n);       /* append */
+        if (i == 3) saved = n;
+    }
+
+    /* Forward, then backward -- the sentinel bounds both directions. */
+    for (DNode *p = sentinel.next; p != &sentinel; p = p->next) printf("%d ", p->value);
+    putchar('\n');
+    for (DNode *p = sentinel.prev; p != &sentinel; p = p->prev) printf("%d ", p->value);
+    putchar('\n');
+
+    dlist_remove(saved);                          /* O(1), node only */
+    free(saved);
+
+    /* Free the rest: capture 'next' before freeing the current node. */
+    for (DNode *p = sentinel.next, *next; p != &sentinel; p = next) {
+        next = p->next;
+        free(p);
+    }
+    return 0;
+}
+```
+
+```text
+   THE POINTER-TO-POINTER WALK
+
+   head
+    |
+    v
+   +-----+    +-----+    +-----+
+   |  5  |--->|  4  |--->|  3  |---> NULL
+   +-----+    +-----+    +-----+
+
+   link = &head          *link is the head pointer
+   link = &node5->next   *link is node5's next field
+   link = &node4->next   ...
+
+   Deleting is ALWAYS  *link = (*link)->next  -- one line, no special
+   case for the head, because 'link' names the pointer that must change.
+
+   Without it you need:  if (target == head) head = head->next;
+                         else pred->next = target->next;
+   ...plus tracking 'pred' through the whole loop.
+```
+
+| | Singly linked | Doubly linked |
+|---|---|---|
+| Pointers per node | 1 | 2 |
+| Traverse backwards | no | yes |
+| Remove given only the node | no (need the predecessor) | yes, O(1) |
+| Memory overhead | lower | one extra pointer per node |
+| Writes per insertion | 2 | 4 |
+| Typical use | stacks, free lists, hash buckets | LRU caches, schedulers, kernel lists |
+
+**Key Takeaways**
+
+- A linked list trades O(1) indexing for O(1) splicing, but only when you already hold the node — finding it is still O(n).
+- Every node is a separate allocation, so traversal is a chain of dependent, unpredictable loads; arrays are far more cache-friendly for the same data.
+- The `Node **` pointer-to-pointer walk removes the head special case from insertion and deletion, collapsing three branches into one line.
+- A sentinel node in a circular doubly linked list makes `next` and `prev` never `NULL`, so every operation is branch-free.
+- When freeing or removing, read the `next` pointer *before* freeing the node — reading it afterwards is a use-after-free.
+
+> 🧪 Practice
+>
+> 1. Implement `list_append`, `list_length`, and `list_find` for the singly linked list, then rewrite `list_append` using the `Node **` idiom and compare the two.
+> 2. Detect a cycle in a singly linked list with Floyd's tortoise-and-hare algorithm, using O(1) extra space.
+> 3. Write `list_middle` that returns the middle node in a single pass, without first computing the length.
+> 4. Interview-style: *"You are given a pointer to a node in a singly linked list, but not the head. Can you delete it?"* Hint: you cannot change the predecessor, but you can change what the given node contains.
+
 #### Stacks
+
+**Theory**
+
+A **stack** is a container with exactly one rule: the last thing you put in is the first thing you get out. Push adds to the top, pop removes from the top, and there is no way to reach anything underneath. This is **LIFO** — last in, first out.
+
+The restriction sounds limiting and is exactly the point. A stack is the right structure whenever you need to *remember where you came from* so you can return to it in reverse order:
+
+- **Function calls.** The call stack is literally this structure; each call pushes a frame, each return pops one. Recursion is a stack you get for free.
+- **Undo.** Each action pushes its inverse; undo pops and applies it.
+- **Matching delimiters.** Push each opening bracket; on a closing bracket, pop and check it matches.
+- **Backtracking.** Depth-first search pushes the frontier and pops to retreat.
+- **Expression evaluation.** Postfix evaluation pushes operands and pops pairs for each operator.
+
+Any structure with cheap insert-and-remove at one end implements a stack. In C there are two natural choices:
+
+**Array-based** uses a dynamic array and pushes/pops at the *end* (never the front — that would be O(n) shifting). It is the default choice: no per-element allocation, contiguous memory, and the top element is almost always in cache.
+
+**List-based** pushes at the front of a singly linked list. Every operation is genuinely O(1) with no amortization, and it never needs to copy, but it costs a `malloc` per element and scatters the data.
+
+The classic bug is **failing to check for underflow**: popping an empty stack reads `data[-1]`, which is out of bounds. Because C does not check, this usually returns garbage rather than crashing, and the wrong value propagates. Give `pop` a status return and a separate out-parameter, exactly as with the dynamic array.
+
+A note on the hardware stack: it is finite (typically 1–8 MB) and it is where recursion lives. Deep recursion overflows it, and stack overflow in C is not an exception — it is a segmentation fault or, worse, silent corruption. Converting a recursive algorithm to an explicit heap-allocated stack is the standard fix, and it is why the iterative forms of tree and graph traversals matter.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+/* ---------------- array-backed stack: the default choice ------------- */
+typedef struct {
+    char   *data;
+    size_t  len, cap;
+} CharStack;
+
+static void  cs_init(CharStack *s) { s->data = NULL; s->len = s->cap = 0; }
+static void  cs_free(CharStack *s) { free(s->data); cs_init(s); }
+static bool  cs_empty(const CharStack *s) { return s->len == 0; }
+
+static int cs_push(CharStack *s, char c)
+{
+    if (s->len == s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 8;
+        char  *tmp = realloc(s->data, cap);      /* temporary, never s->data */
+        if (!tmp) return -1;
+        s->data = tmp;
+        s->cap  = cap;
+    }
+    s->data[s->len++] = c;
+    return 0;
+}
+
+/* Status return plus out-parameter: underflow is reported, not guessed. */
+static int cs_pop(CharStack *s, char *out)
+{
+    if (s->len == 0) return -1;                  /* the check that matters */
+    *out = s->data[--s->len];
+    return 0;
+}
+
+static int cs_peek(const CharStack *s, char *out)
+{
+    if (s->len == 0) return -1;
+    *out = s->data[s->len - 1];                  /* look without removing */
+    return 0;
+}
+
+/* The canonical stack problem: are all brackets balanced and correctly nested? */
+static bool balanced(const char *s)
+{
+    CharStack st;
+    cs_init(&st);
+    bool ok = true;
+
+    for (; *s && ok; s++) {
+        switch (*s) {
+        case '(': case '[': case '{':
+            if (cs_push(&st, *s) != 0) { ok = false; }
+            break;
+        case ')': case ']': case '}': {
+            char open;
+            if (cs_pop(&st, &open) != 0) { ok = false; break; }  /* too many closers */
+            /* The matching opener must be the MOST RECENT one -- that is
+               exactly what LIFO guarantees. */
+            if ((*s == ')' && open != '(') ||
+                (*s == ']' && open != '[') ||
+                (*s == '}' && open != '{')) ok = false;
+            break;
+        }
+        default: break;
+        }
+    }
+
+    if (!cs_empty(&st)) ok = false;              /* unclosed openers remain */
+    cs_free(&st);
+    return ok;
+}
+
+int main(void)
+{
+    const char *tests[] = { "({[]})", "(]", "((", "a(b)[c]{d}", ")(" };
+    for (size_t i = 0; i < sizeof tests / sizeof *tests; i++)
+        printf("%-12s %s\n", tests[i], balanced(tests[i]) ? "balanced" : "NOT balanced");
+    return 0;
+}
+```
+
+Postfix evaluation, and a list-backed stack for comparison:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+/* ---------------- list-backed stack: O(1) worst case, malloc per push -- */
+typedef struct SNode { int value; struct SNode *next; } SNode;
+
+static int  s_push(SNode **top, int v)
+{
+    SNode *n = malloc(sizeof *n);
+    if (!n) return -1;
+    n->value = v; n->next = *top; *top = n;      /* push at the FRONT */
+    return 0;
+}
+
+static int s_pop(SNode **top, int *out)
+{
+    if (!*top) return -1;
+    SNode *n = *top;
+    *out = n->value; *top = n->next;
+    free(n);
+    return 0;
+}
+
+/* Evaluate a postfix expression: operands push, operators pop two. */
+static int eval_postfix(const char *expr, int *result)
+{
+    SNode *st = NULL;
+    int status = -1;
+
+    for (const char *p = expr; *p; p++) {
+        if (*p == ' ') continue;
+
+        if (*p >= '0' && *p <= '9') {
+            if (s_push(&st, *p - '0') != 0) goto done;
+            continue;
+        }
+
+        int b, a;
+        /* Pop order matters: the SECOND operand comes off first. */
+        if (s_pop(&st, &b) != 0 || s_pop(&st, &a) != 0) goto done;
+
+        int r;
+        switch (*p) {
+        case '+': r = a + b; break;
+        case '-': r = a - b; break;
+        case '*': r = a * b; break;
+        case '/': if (b == 0) goto done; r = a / b; break;
+        default:  goto done;
+        }
+        if (s_push(&st, r) != 0) goto done;
+    }
+
+    /* A well-formed expression leaves exactly one value. */
+    if (s_pop(&st, result) == 0 && st == NULL) status = 0;
+
+done:
+    { int junk; while (s_pop(&st, &junk) == 0) ; }   /* drain and free */
+    return status;
+}
+
+int main(void)
+{
+    const char *e = "3 4 + 2 *";      /* (3+4)*2 */
+    int r;
+    printf("%s = %s", e, eval_postfix(e, &r) == 0 ? "" : "error\n");
+    if (r) printf("%d\n", r);         /* 14 */
+    return 0;
+}
+```
+
+```text
+   EVALUATING  "3 4 + 2 *"
+
+   token   action              stack (top on the right)
+   -----   ------------------  ------------------------
+     3     push 3              3
+     4     push 4              3 4
+     +     pop 4, pop 3        (empty)
+           push 3+4            7
+     2     push 2              7 2
+     *     pop 2, pop 7        (empty)
+           push 7*2            14
+   -----   ------------------  ------------------------
+   end     exactly one value left -> the result is 14
+
+   Note the pop order: the FIRST pop is the RIGHT operand.
+   Getting it backwards makes '-' and '/' silently wrong.
+```
+
+| | Array-backed | List-backed |
+|---|---|---|
+| Push / pop | O(1) amortized | O(1) worst case |
+| Allocation | one block, grown occasionally | one `malloc` per element |
+| Memory per element | the element | element + pointer + heap overhead |
+| Cache behavior | excellent | poor |
+| Pointer stability | none (resize moves data) | full |
+| Default choice | yes | when worst-case O(1) is required |
+
+**Key Takeaways**
+
+- A stack is LIFO with exactly three operations — push, pop, peek — and the restriction is what makes it useful for remembering where you came from.
+- Implement it over a dynamic array pushing at the *end*; pushing at the front of an array is O(n) and defeats the purpose.
+- Always report underflow through a status return with an out-parameter; popping an empty stack silently reads out of bounds.
+- Delimiter matching, undo, postfix evaluation, and DFS are all the same structure — each needs the most recent unfinished item first.
+- Recursion uses the fixed-size hardware stack; converting to an explicit heap stack is the standard cure for stack overflow on deep inputs.
+
+> 🧪 Practice
+>
+> 1. Extend `balanced` to report the index of the first mismatched bracket rather than just a boolean.
+> 2. Implement a stack with a `min()` operation that returns the smallest element currently held, in O(1) time. Hint: one stack may not be enough.
+> 3. Convert a recursive factorial or Fibonacci function into an iterative one using an explicit stack, and compare the maximum input each version survives.
+> 4. Interview-style: *"How would you implement a queue using only two stacks?"* Hint: reversing a stack into another stack reverses the order, and reversing twice restores it.
 
 #### Queues and Circular Buffers
 
+**Theory**
+
+A **queue** is a stack's mirror image: first in, first out. Items are added at the **tail** and removed from the **head**, so they come out in the order they arrived. That is the right model whenever fairness or arrival order matters — print jobs, network packets, work items handed between threads, and the frontier in breadth-first search.
+
+The naive array implementation is a trap. Storing the head at index 0 and shifting everything down on each dequeue makes dequeue O(n), so draining `n` items costs O(n²). Keeping a moving `head` index avoids the shifting but leaks space: after `n` enqueues and `n` dequeues the head has crawled to the end of the array and the reclaimed space at the front is unusable.
+
+The **circular buffer** (or ring buffer) fixes both. Keep `head` and `tail` indices and let them **wrap around** to 0 when they pass the end. The array becomes a ring with no beginning; the used region is the span from `head` to `tail`, which may wrap through the end of the array. Enqueue and dequeue are both O(1), and no space is ever stranded.
+
+```text
+   capacity 8, head=6, tail=2  -- the data WRAPS through the end
+
+   index:   0    1    2    3    4    5    6    7
+          +----+----+----+----+----+----+----+----+
+          | 30 | 40 |    |    |    |    | 10 | 20 |
+          +----+----+----+----+----+----+----+----+
+            ^         ^                   ^
+            |         tail (next write)    head (next read)
+            |
+            the ring continues here:  6 -> 7 -> 0 -> 1 -> 2
+
+   logical order: 10, 20, 30, 40
+```
+
+Wrapping is one operation: `index = (index + 1) % capacity`. When the capacity is a power of two you can use `index = (index + 1) & (capacity - 1)`, which is a single AND instead of a division — the reason nearly every production ring buffer has a power-of-two capacity.
+
+There is one genuine design puzzle. With only `head` and `tail`, the empty condition (`head == tail`) and the full condition (`head == tail`) are **indistinguishable** — the ring has `capacity` distinct states to express but `capacity + 1` possible fill levels. Three standard resolutions:
+
+| Approach | How | Cost |
+|---|---|---|
+| Keep a `count` field | store the number of items explicitly | one extra field, updated on every operation |
+| Waste one slot | full means `(tail + 1) % cap == head` | one slot of capacity |
+| Use free-running counters | never wrap the indices; mask only when indexing | needs unsigned wrap-around reasoning |
+
+Keeping a `count` is the clearest and is what most code should do. The free-running-counter form matters in lock-free single-producer/single-consumer queues, where having only one writer per variable is what makes the structure safe without locks.
+
+A **deque** (double-ended queue) generalizes this by also allowing insertion at the head and removal from the tail — the same ring, with `head` decrementing as well as `tail` incrementing.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+/* A fixed-capacity ring buffer. Capacity is a power of two so the
+   wrap is a bitwise AND rather than a modulo. */
+typedef struct {
+    int    *data;
+    size_t  cap;        /* power of two          */
+    size_t  mask;       /* cap - 1               */
+    size_t  head;       /* index of the next read  */
+    size_t  tail;       /* index of the next write */
+    size_t  count;      /* items held -- resolves the full/empty ambiguity */
+} Ring;
+
+static int ring_init(Ring *r, size_t cap_pow2)
+{
+    if (cap_pow2 == 0 || (cap_pow2 & (cap_pow2 - 1)) != 0)
+        return -1;                              /* must be a power of two */
+    r->data = malloc(cap_pow2 * sizeof *r->data);
+    if (!r->data) return -1;
+    r->cap = cap_pow2;
+    r->mask = cap_pow2 - 1;
+    r->head = r->tail = r->count = 0;
+    return 0;
+}
+
+static void ring_free(Ring *r) { free(r->data); r->data = NULL; }
+
+static bool ring_empty(const Ring *r) { return r->count == 0; }
+static bool ring_full (const Ring *r) { return r->count == r->cap; }
+
+static int ring_push(Ring *r, int value)
+{
+    if (ring_full(r)) return -1;
+    r->data[r->tail] = value;
+    r->tail = (r->tail + 1) & r->mask;          /* wrap: cheaper than % */
+    r->count++;
+    return 0;
+}
+
+static int ring_pop(Ring *r, int *out)
+{
+    if (ring_empty(r)) return -1;
+    *out = r->data[r->head];
+    r->head = (r->head + 1) & r->mask;
+    r->count--;
+    return 0;
+}
+
+/* Overwrite mode: used for fixed-size history and telemetry buffers,
+   where the newest data matters more than the oldest. */
+static void ring_push_overwrite(Ring *r, int value)
+{
+    if (ring_full(r)) {
+        r->head = (r->head + 1) & r->mask;      /* drop the oldest */
+        r->count--;
+    }
+    ring_push(r, value);
+}
+
+static void ring_print(const Ring *r)
+{
+    printf("[");
+    /* Iterate LOGICALLY from head, applying the mask -- never 0..count. */
+    for (size_t i = 0; i < r->count; i++)
+        printf("%d%s", r->data[(r->head + i) & r->mask], i + 1 < r->count ? " " : "");
+    printf("] head=%zu tail=%zu count=%zu\n", r->head, r->tail, r->count);
+}
+
+int main(void)
+{
+    Ring r;
+    if (ring_init(&r, 8) != 0) return 1;
+
+    for (int i = 1; i <= 6; i++) ring_push(&r, i * 10);
+    ring_print(&r);                       /* [10 20 30 40 50 60] */
+
+    int v;
+    ring_pop(&r, &v); ring_pop(&r, &v);   /* drain two from the head */
+    ring_print(&r);                       /* [30 40 50 60] head=2 */
+
+    /* Push past the end of the array so the data wraps around. */
+    for (int i = 7; i <= 10; i++) ring_push(&r, i * 10);
+    ring_print(&r);                       /* wrapped, but the order is right */
+
+    printf("full: %s\n", ring_full(&r) ? "yes" : "no");
+    ring_push_overwrite(&r, 999);         /* evicts the oldest */
+    ring_print(&r);
+
+    ring_free(&r);
+    return 0;
+}
+```
+
+A growable queue built on a linked list, for when the bound is unknown:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+/* Head and tail pointers make both ends O(1). A singly linked list is
+   enough: we only ever remove from the head. */
+typedef struct QNode { int value; struct QNode *next; } QNode;
+typedef struct { QNode *head, *tail; size_t count; } Queue;
+
+static void q_init(Queue *q) { q->head = q->tail = NULL; q->count = 0; }
+
+static int q_push(Queue *q, int value)
+{
+    QNode *n = malloc(sizeof *n);
+    if (!n) return -1;
+    n->value = value; n->next = NULL;
+
+    if (q->tail) q->tail->next = n;      /* link the old tail forwards */
+    else         q->head = n;            /* the list was empty */
+    q->tail = n;                         /* the new node is always the tail */
+    q->count++;
+    return 0;
+}
+
+static int q_pop(Queue *q, int *out)
+{
+    if (!q->head) return -1;
+    QNode *n = q->head;
+    *out = n->value;
+    q->head = n->next;
+    if (!q->head) q->tail = NULL;        /* CRITICAL: clear a stale tail */
+    free(n);
+    q->count--;
+    return 0;
+}
+
+int main(void)
+{
+    Queue q; q_init(&q);
+    for (int i = 1; i <= 3; i++) q_push(&q, i);
+
+    int v;
+    while (q_pop(&q, &v) == 0) printf("%d ", v);   /* 1 2 3 -- FIFO */
+    putchar('\n');
+    return 0;
+}
+```
+
+| | Circular buffer | Linked-list queue |
+|---|---|---|
+| Capacity | fixed (or grown by reallocation) | unbounded |
+| Allocation | one block up front | one per element |
+| Enqueue / dequeue | O(1) | O(1) |
+| Cache behavior | excellent | poor |
+| Back-pressure | natural — "full" is a real state | none until memory runs out |
+| Typical use | audio, telemetry, producer/consumer | task queues of unknown size |
+
+**Key Takeaways**
+
+- A queue is FIFO: enqueue at the tail, dequeue from the head, preserving arrival order.
+- Never implement a queue by shifting an array down on dequeue — that makes draining `n` items O(n²); use a circular buffer instead.
+- Wrapping with `(i + 1) & (cap - 1)` requires a power-of-two capacity and replaces a division with a single AND.
+- `head == tail` cannot distinguish full from empty on its own — keep a `count`, waste one slot, or use free-running counters.
+- In a linked-list queue, always clear `tail` when the last element is removed, or the stale pointer corrupts the next enqueue.
+
+> 🧪 Practice
+>
+> 1. Add `ring_peek` and `ring_clear`, then write a test that pushes and pops 10,000 times through an 8-slot ring and verifies FIFO order throughout.
+> 2. Implement a growable ring buffer that doubles its capacity when full — note that you cannot simply `realloc`, because the wrapped data must be unwound.
+> 3. Build a deque on a ring buffer with `push_front`, `push_back`, `pop_front`, and `pop_back`, being careful with the head decrement at index 0.
+> 4. Interview-style: *"Why can't a ring buffer distinguish full from empty using only head and tail?"* Hint: count the distinct index pairs versus the number of fill levels you must represent.
+
 #### String Builders
+
+**Theory**
+
+Building a string by repeated concatenation is the most common accidental O(n²) in C. Consider appending `n` pieces with `strcat`:
+
+```c
+for (int i = 0; i < n; i++)
+    strcat(buffer, pieces[i]);      /* looks linear, is quadratic */
+```
+
+`strcat` must first find the end of `buffer` by walking it from the start. On iteration `i` the buffer already holds roughly `i` pieces, so that walk is O(i), and the total is O(n²). This is sometimes called Shlemiel the painter's algorithm — each day he walks further back to the paint can. For 10,000 appends the difference against a linear approach is thousands of times.
+
+A **string builder** fixes it with the same insight as the dynamic array: track the current length so you never rescan, and grow geometrically so reallocation is amortized away. Appending becomes "copy the new bytes at the remembered offset, advance the offset" — O(k) in the length of the piece, not the length of the result.
+
+The structure is a dynamic array of `char` with two refinements:
+
+- **Always keep a NUL terminator** so the buffer is a valid C string at every moment. Store `len` as the count of real characters, excluding the terminator, and reserve `len + 1` bytes.
+- **Support formatted appends.** `snprintf` returns the length it *would* have written, which gives a clean two-step: ask for the size, reserve it, then write for real. That handles arbitrary formats without guessing.
+
+Two API decisions matter for the caller:
+
+**Who owns the result?** Either the builder hands ownership to the caller on "finish" (the caller `free`s it, the builder is reset), or the builder keeps ownership and returns a `const char *` valid until the next append. Both are fine; silence about which is not, and mixed conventions cause double frees.
+
+**Pointers into the buffer are invalidated by every append**, for the same reason as the dynamic array. A `const char *` obtained before an append may dangle after it.
+
+A related technique worth knowing is **`snprintf` size probing**: calling `snprintf(NULL, 0, fmt, ...)` returns the exact length the formatted output needs, so you can allocate precisely once. This is how to format a single unknown-length string without a builder at all.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <stdint.h>    /* SIZE_MAX */
+
+typedef struct {
+    char   *data;      /* always NUL-terminated when data != NULL */
+    size_t  len;       /* characters, EXCLUDING the terminator    */
+    size_t  cap;       /* bytes allocated, INCLUDING room for it  */
+} StrBuf;
+
+static void sb_init(StrBuf *b) { b->data = NULL; b->len = 0; b->cap = 0; }
+static void sb_free(StrBuf *b) { free(b->data); sb_init(b); }
+
+/* Ensure room for 'extra' more characters plus the terminator. */
+static int sb_reserve(StrBuf *b, size_t extra)
+{
+    if (extra > SIZE_MAX - b->len - 1) return -1;      /* size overflow */
+    size_t need = b->len + extra + 1;
+    if (need <= b->cap) return 0;
+
+    size_t cap = b->cap ? b->cap : 16;
+    while (cap < need) {
+        if (cap > SIZE_MAX / 2) return -1;
+        cap *= 2;                                       /* geometric growth */
+    }
+
+    char *tmp = realloc(b->data, cap);                  /* temporary! */
+    if (!tmp) return -1;
+    b->data = tmp;
+    b->cap  = cap;
+    if (b->len == 0) b->data[0] = '\0';                 /* valid from the start */
+    return 0;
+}
+
+/* Append n bytes. O(n) in the PIECE, not in the result: no rescanning. */
+static int sb_append_len(StrBuf *b, const char *s, size_t n)
+{
+    if (sb_reserve(b, n) != 0) return -1;
+    memcpy(b->data + b->len, s, n);      /* write at the REMEMBERED offset */
+    b->len += n;
+    b->data[b->len] = '\0';              /* keep it a valid C string */
+    return 0;
+}
+
+static int sb_append(StrBuf *b, const char *s) { return sb_append_len(b, s, strlen(s)); }
+static int sb_append_char(StrBuf *b, char c)   { return sb_append_len(b, &c, 1); }
+
+/* Formatted append: measure with snprintf, reserve, then write for real. */
+static int sb_appendf(StrBuf *b, const char *fmt, ...)
+{
+    va_list ap, ap2;
+    va_start(ap, fmt);
+    va_copy(ap2, ap);                    /* a va_list can only be walked ONCE */
+
+    int need = vsnprintf(NULL, 0, fmt, ap);   /* how many bytes would it write? */
+    va_end(ap);
+
+    int rc = -1;
+    if (need >= 0 && sb_reserve(b, (size_t)need) == 0) {
+        vsnprintf(b->data + b->len, (size_t)need + 1, fmt, ap2);
+        b->len += (size_t)need;
+        rc = 0;
+    }
+    va_end(ap2);
+    return rc;
+}
+
+/* Hand ownership to the caller and reset the builder. */
+static char *sb_release(StrBuf *b)
+{
+    char *out = b->data ? b->data : calloc(1, 1);   /* never return NULL for "" */
+    sb_init(b);                                      /* caller now owns it */
+    return out;
+}
+
+int main(void)
+{
+    StrBuf b;
+    sb_init(&b);
+
+    sb_append(&b, "SELECT * FROM users");
+    sb_append(&b, " WHERE ");
+
+    const char *cols[]  = { "age", "score", "rank" };
+    const int   values[] = { 18, 90, 3 };
+
+    for (size_t i = 0; i < 3; i++) {
+        if (i) sb_append(&b, " AND ");
+        sb_appendf(&b, "%s > %d", cols[i], values[i]);   /* formatted append */
+    }
+    sb_append_char(&b, ';');
+
+    printf("%s\n", b.data);
+    printf("len=%zu cap=%zu\n", b.len, b.cap);
+
+    char *owned = sb_release(&b);        /* the builder is now empty */
+    printf("released: %s\n", owned);
+    free(owned);                         /* the CALLER frees it */
+
+    sb_free(&b);                         /* safe: already reset */
+    return 0;
+}
+```
+
+Measuring the quadratic blow-up:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#define N 20000
+
+/* O(n^2): strcat rescans from the start of the buffer on EVERY call. */
+static double quadratic(void)
+{
+    char *buf = malloc(N * 8 + 1);
+    if (!buf) return -1;
+    buf[0] = '\0';
+
+    clock_t t0 = clock();
+    for (int i = 0; i < N; i++)
+        strcat(buf, "abcdefg");          /* walks i*7 bytes just to find the end */
+    double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
+
+    free(buf);
+    return secs;
+}
+
+/* O(n): the offset is remembered, so nothing is rescanned. */
+static double linear(void)
+{
+    char  *buf = malloc(N * 8 + 1);
+    if (!buf) return -1;
+    size_t len = 0;
+
+    clock_t t0 = clock();
+    for (int i = 0; i < N; i++) {
+        memcpy(buf + len, "abcdefg", 7);  /* write straight at the offset */
+        len += 7;
+    }
+    buf[len] = '\0';
+    double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
+
+    free(buf);
+    return secs;
+}
+
+int main(void)
+{
+    printf("strcat loop:   %.4f s\n", quadratic());
+    printf("tracked len:   %.4f s\n", linear());
+    return 0;
+}
+```
+
+```text
+   WHY REPEATED strcat IS QUADRATIC
+
+   append 1:  |x|                      scan 0 bytes to find the end
+   append 2:  |x|x|                    scan 1
+   append 3:  |x|x|x|                  scan 2
+   append 4:  |x|x|x|x|                scan 3
+      ...
+   append n:  |x|x| ... |x|            scan n-1
+                                       ------------------------
+                                       total ~ n^2/2 bytes scanned
+
+   A string builder stores 'len', so every append scans 0 bytes:
+                                       total = n bytes copied
+```
+
+**Key Takeaways**
+
+- Repeated `strcat` is O(n²) because each call rescans the whole buffer to find the terminator; tracking the length makes appending O(1) per byte.
+- A string builder is a dynamic array of `char` with geometric growth, a remembered length, and a NUL terminator maintained at all times.
+- Use `snprintf(NULL, 0, fmt, ...)` to measure a formatted append exactly, then reserve and write — and `va_copy` when you must walk a `va_list` twice.
+- Decide and document whether the builder or the caller owns the finished string; mixed conventions produce double frees.
+- Every append may reallocate, so any `char *` into the buffer taken before an append is invalid after it.
+
+> 🧪 Practice
+>
+> 1. Add `sb_append_repeat(StrBuf *b, char c, size_t n)` and `sb_truncate(StrBuf *b, size_t len)`, keeping the terminator correct in both.
+> 2. Write a CSV row builder that quotes any field containing a comma or a quote, doubling embedded quotes, and test it on awkward inputs.
+> 3. Benchmark building a 1 MB string with `strcat`, with the builder, and with a single `snprintf` size probe plus one allocation. Explain the ranking.
+> 4. Interview-style: *"A log-formatting function that concatenates 5,000 fragments takes 40 seconds. What is wrong?"* Hint: ask what `strcat` must do before it can copy a single byte.
 
 <a id="102-associative-and-hierarchical-structures"></a>
 ### 10.2 Associative and Hierarchical Structures
 
+Linear structures answer "what is at position `i`". These answer harder questions: "is this key present", "what is the smallest remaining item", "which words start with this prefix". Each buys its speed with a different organizing principle — hashing, ordering, or shape — and each has a failure mode that shows up only at scale.
+
 #### Hash Tables and Collision Handling
+
+**Theory**
+
+Suppose you want to look up a value by a string key. A linear scan through `n` pairs is O(n). A sorted array with binary search is O(log n) but needs shifting on insertion. A **hash table** gets you O(1) average by a different trick entirely: compute the storage location *from the key itself*.
+
+A **hash function** maps a key to an integer. Reduce that integer modulo the table size and you have a bucket index. Storing and looking up are then both "hash, index, check" — no searching at all. That is the whole idea, and everything else is dealing with its one unavoidable problem.
+
+**Collisions are guaranteed.** There are vastly more possible keys than buckets, so different keys will land in the same bucket. The birthday paradox makes this happen far earlier than intuition suggests: with 365 buckets and just 23 keys, a collision is more likely than not. A hash table is therefore not "a hash function" — it is a hash function *plus* a collision strategy.
+
+The two strategies:
+
+**Separate chaining.** Each bucket holds a linked list (or small array) of entries. On collision, append to the list. Lookup hashes to the bucket and walks its short chain. Simple, tolerant of high load, and deletion is trivial — but it costs a pointer per entry and an allocation per insertion, and the chains scatter across memory.
+
+**Open addressing.** Every entry lives in the table array itself. On collision, **probe** for another slot by a fixed rule: linear probing checks `i+1, i+2, ...`; quadratic probing checks `i+1, i+4, i+9, ...`; double hashing uses a second hash for the step. No per-entry allocation and excellent cache behavior, since probing walks contiguous memory. The catch is deletion: you cannot simply blank a slot, because that would break the probe chain for any entry that probed past it. You must write a **tombstone** marking "occupied once, now empty, keep probing".
+
+The **load factor** — entries divided by buckets — governs performance for both. As it rises, chains lengthen and probe sequences grow; open addressing degrades sharply as it approaches 1.0, because the table runs out of empty slots to stop a probe. The fix is **rehashing**: when the load factor crosses a threshold (0.75 is a common choice for chaining, 0.5–0.7 for open addressing), allocate a table roughly twice as large and reinsert every entry — bucket indices depend on the table size, so entries cannot simply be copied.
+
+The hash function itself matters more than beginners expect. A weak one — summing the bytes, say — maps anagrams together and clusters short strings badly, turning O(1) into O(n). Use a proven one: FNV-1a is four lines and good enough for most purposes; djb2 is similarly compact. Note that a table keyed by attacker-controlled strings can be attacked by deliberately colliding keys, which is why security-sensitive tables use a keyed hash such as SipHash with a per-process random seed.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+/* FNV-1a: short, well-distributed, and fast. Do not invent your own. */
+static uint64_t fnv1a(const char *s)
+{
+    uint64_t h = 1469598103934665603ULL;      /* offset basis */
+    for (; *s; s++) {
+        h ^= (unsigned char)*s;               /* XOR the byte in FIRST */
+        h *= 1099511628211ULL;                /* then multiply by the prime */
+    }
+    return h;
+}
+
+/* ---------------- separate chaining ---------------- */
+typedef struct Entry {
+    char         *key;        /* owned by the table */
+    int           value;
+    uint64_t      hash;       /* cached: avoids rehashing on every compare */
+    struct Entry *next;
+} Entry;
+
+typedef struct {
+    Entry **buckets;
+    size_t  nbuckets;         /* power of two */
+    size_t  count;
+} Map;
+
+#define MAX_LOAD_NUM 3        /* rehash when count > 3/4 * nbuckets */
+#define MAX_LOAD_DEN 4
+
+static int map_init(Map *m, size_t nbuckets)
+{
+    m->buckets = calloc(nbuckets, sizeof *m->buckets);   /* calloc: all NULL */
+    if (!m->buckets) return -1;
+    m->nbuckets = nbuckets;
+    m->count = 0;
+    return 0;
+}
+
+static void map_free(Map *m)
+{
+    for (size_t i = 0; i < m->nbuckets; i++)
+        for (Entry *e = m->buckets[i], *next; e; e = next) {
+            next = e->next;                   /* read BEFORE freeing */
+            free(e->key);                     /* the table owns the key copy */
+            free(e);
+        }
+    free(m->buckets);
+    m->buckets = NULL; m->nbuckets = m->count = 0;
+}
+
+/* Grow and reinsert. Entries cannot just be copied: the bucket index
+   depends on nbuckets, so every entry must be re-placed. */
+static int map_rehash(Map *m)
+{
+    size_t  new_n = m->nbuckets * 2;
+    Entry **new_b = calloc(new_n, sizeof *new_b);
+    if (!new_b) return -1;
+
+    for (size_t i = 0; i < m->nbuckets; i++)
+        for (Entry *e = m->buckets[i], *next; e; e = next) {
+            next = e->next;
+            size_t j = e->hash & (new_n - 1);   /* reuse the CACHED hash */
+            e->next = new_b[j];                 /* splice into the new bucket */
+            new_b[j] = e;
+        }
+
+    free(m->buckets);
+    m->buckets  = new_b;
+    m->nbuckets = new_n;
+    return 0;
+}
+
+static int map_put(Map *m, const char *key, int value)
+{
+    uint64_t h = fnv1a(key);
+    size_t   i = h & (m->nbuckets - 1);         /* power of two -> mask */
+
+    for (Entry *e = m->buckets[i]; e; e = e->next)
+        if (e->hash == h && strcmp(e->key, key) == 0) {
+            e->value = value;                   /* update, do not duplicate */
+            return 0;
+        }
+
+    if ((m->count + 1) * MAX_LOAD_DEN > m->nbuckets * MAX_LOAD_NUM) {
+        if (map_rehash(m) != 0) return -1;
+        i = h & (m->nbuckets - 1);              /* the index MOVED */
+    }
+
+    Entry *e = malloc(sizeof *e);
+    if (!e) return -1;
+    /* strdup is POSIX (and C23); with a strict -std=c11 compiler, define
+       _POSIX_C_SOURCE 200809L or write the two-line malloc+memcpy yourself. */
+    e->key = strdup(key);                       /* copy: the caller's may die */
+    if (!e->key) { free(e); return -1; }
+    e->value = value;
+    e->hash  = h;
+    e->next  = m->buckets[i];                   /* push at the front: O(1) */
+    m->buckets[i] = e;
+    m->count++;
+    return 0;
+}
+
+static bool map_get(const Map *m, const char *key, int *out)
+{
+    uint64_t h = fnv1a(key);
+    for (Entry *e = m->buckets[h & (m->nbuckets - 1)]; e; e = e->next)
+        /* Compare the cheap hash first; strcmp only on a hash match. */
+        if (e->hash == h && strcmp(e->key, key) == 0) { *out = e->value; return true; }
+    return false;
+}
+
+static bool map_remove(Map *m, const char *key)
+{
+    uint64_t h = fnv1a(key);
+    /* Pointer-to-pointer walk: no special case for the first entry. */
+    for (Entry **link = &m->buckets[h & (m->nbuckets - 1)]; *link; link = &(*link)->next)
+        if ((*link)->hash == h && strcmp((*link)->key, key) == 0) {
+            Entry *dead = *link;
+            *link = dead->next;
+            free(dead->key); free(dead);
+            m->count--;
+            return true;
+        }
+    return false;
+}
+
+int main(void)
+{
+    Map m;
+    if (map_init(&m, 8) != 0) return 1;
+
+    const char *words[] = { "alpha","beta","gamma","delta","epsilon","zeta","eta" };
+    for (int i = 0; i < 7; i++) map_put(&m, words[i], i * 10);
+
+    int v;
+    printf("gamma  -> %s%d\n", map_get(&m, "gamma",  &v) ? "" : "(missing) ", v);
+    printf("missing-> %s\n",   map_get(&m, "nosuch", &v) ? "found" : "not found");
+
+    map_put(&m, "beta", 999);                   /* update in place */
+    map_get(&m, "beta", &v); printf("beta   -> %d\n", v);
+
+    map_remove(&m, "alpha");
+    printf("count=%zu buckets=%zu load=%.2f\n",
+           m.count, m.nbuckets, (double)m.count / (double)m.nbuckets);
+
+    map_free(&m);
+    return 0;
+}
+```
+
+Open addressing with linear probing and tombstones:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+typedef enum { SLOT_EMPTY = 0, SLOT_FULL, SLOT_TOMB } SlotState;
+
+typedef struct { char *key; int value; SlotState state; } Slot;
+typedef struct { Slot *slots; size_t cap; size_t count, used; } OpenMap;
+/* count = live entries;  used = live + tombstones (what probing must consider) */
+
+static uint64_t hash_str(const char *s)
+{
+    uint64_t h = 1469598103934665603ULL;
+    for (; *s; s++) { h ^= (unsigned char)*s; h *= 1099511628211ULL; }
+    return h;
+}
+
+static int om_init(OpenMap *m, size_t cap)
+{
+    m->slots = calloc(cap, sizeof *m->slots);    /* SLOT_EMPTY == 0 */
+    if (!m->slots) return -1;
+    m->cap = cap; m->count = m->used = 0;
+    return 0;
+}
+
+static void om_free(OpenMap *m)
+{
+    for (size_t i = 0; i < m->cap; i++)
+        if (m->slots[i].state == SLOT_FULL) free(m->slots[i].key);
+    free(m->slots);
+    m->slots = NULL; m->cap = m->count = m->used = 0;
+}
+
+/* Find the slot for 'key': the existing entry, or the first place to put it.
+   Probing STOPS at EMPTY but CONTINUES past a TOMBSTONE -- that is exactly
+   why deletion cannot simply blank a slot. */
+static size_t om_probe(const OpenMap *m, const char *key, bool *found)
+{
+    size_t i     = hash_str(key) & (m->cap - 1);
+    size_t first_tomb = m->cap;                  /* cap == "none seen" */
+
+    for (;;) {
+        Slot *s = &m->slots[i];
+
+        if (s->state == SLOT_EMPTY) {            /* the key is not present */
+            *found = false;
+            return first_tomb != m->cap ? first_tomb : i;   /* reuse a tombstone */
+        }
+        if (s->state == SLOT_TOMB) {
+            if (first_tomb == m->cap) first_tomb = i;
+        } else if (strcmp(s->key, key) == 0) {
+            *found = true;
+            return i;
+        }
+        i = (i + 1) & (m->cap - 1);              /* LINEAR probe, wrapping */
+    }
+}
+
+static int om_grow(OpenMap *m)
+{
+    OpenMap bigger;
+    if (om_init(&bigger, m->cap * 2) != 0) return -1;
+
+    for (size_t i = 0; i < m->cap; i++)
+        if (m->slots[i].state == SLOT_FULL) {    /* tombstones are dropped */
+            bool found;
+            size_t j = om_probe(&bigger, m->slots[i].key, &found);
+            bigger.slots[j] = m->slots[i];
+            bigger.count++; bigger.used++;
+        }
+
+    free(m->slots);                              /* keys were MOVED, not copied */
+    *m = bigger;
+    return 0;
+}
+
+static int om_put(OpenMap *m, const char *key, int value)
+{
+    /* Grow on 'used', not 'count': tombstones also lengthen probe chains. */
+    if ((m->used + 1) * 2 > m->cap && om_grow(m) != 0) return -1;
+
+    bool found;
+    size_t i = om_probe(m, key, &found);
+
+    if (found) { m->slots[i].value = value; return 0; }
+
+    char *copy = strdup(key);
+    if (!copy) return -1;
+    if (m->slots[i].state == SLOT_EMPTY) m->used++;   /* a tombstone was reused */
+    m->slots[i] = (Slot){ copy, value, SLOT_FULL };
+    m->count++;
+    return 0;
+}
+
+static bool om_get(const OpenMap *m, const char *key, int *out)
+{
+    bool found;
+    size_t i = om_probe(m, key, &found);
+    if (found) *out = m->slots[i].value;
+    return found;
+}
+
+static bool om_remove(OpenMap *m, const char *key)
+{
+    bool found;
+    size_t i = om_probe(m, key, &found);
+    if (!found) return false;
+
+    free(m->slots[i].key);
+    m->slots[i].key   = NULL;
+    m->slots[i].state = SLOT_TOMB;      /* NOT EMPTY: probes must pass through */
+    m->count--;                         /* 'used' stays: the slot still blocks */
+    return true;
+}
+
+int main(void)
+{
+    OpenMap m;
+    if (om_init(&m, 16) != 0) return 1;
+
+    om_put(&m, "one", 1); om_put(&m, "two", 2); om_put(&m, "three", 3);
+
+    int v;
+    om_remove(&m, "two");                      /* leaves a tombstone */
+    printf("three -> %s\n", om_get(&m, "three", &v) ? "found" : "LOST");
+    printf("two   -> %s\n", om_get(&m, "two",   &v) ? "found" : "not found");
+    printf("count=%zu used=%zu cap=%zu\n", m.count, m.used, m.cap);
+
+    om_free(&m);
+    return 0;
+}
+```
+
+```text
+   WHY DELETION NEEDS A TOMBSTONE (linear probing)
+
+   "cat" and "dog" both hash to bucket 3.
+   insert cat -> slot 3.   insert dog -> 3 taken, probe to slot 4.
+
+        3        4        5
+      +------+------+------+
+      | cat  | dog  |empty |
+      +------+------+------+
+
+   Now delete "cat" by blanking slot 3:
+
+        3        4        5
+      +------+------+------+
+      |EMPTY | dog  |empty |
+      +------+------+------+
+
+   get("dog") hashes to 3, sees EMPTY, and concludes "not present".
+   dog is still there -- it is now UNREACHABLE.
+
+   With a tombstone:
+
+        3        4        5
+      +------+------+------+
+      |TOMB  | dog  |empty |
+      +------+------+------+
+
+   get("dog") sees TOMB, keeps probing, finds dog at slot 4. Correct.
+   Tombstones accumulate, so grow on (live + tombstones), not on live alone.
+```
+
+| | Separate chaining | Open addressing |
+|---|---|---|
+| Entry storage | linked nodes outside the table | inside the table array |
+| Allocation per insert | one | none |
+| Cache behavior | poor (pointer chasing) | excellent (contiguous probing) |
+| Tolerates load factor > 1 | yes, degrades gracefully | no, breaks at 1.0 |
+| Deletion | trivial unlink | needs tombstones |
+| Typical max load factor | 0.75 | 0.5 - 0.7 |
+| Sensitive to a weak hash | chains lengthen | clustering, severe degradation |
+
+**Key Takeaways**
+
+- A hash table computes the storage location from the key, giving O(1) average lookup; collisions are mathematically unavoidable, so the collision strategy is half the design.
+- Separate chaining stores colliding entries in per-bucket lists — simple and tolerant of high load; open addressing stores everything in the array — faster and cache-friendly, but it breaks down near a full table.
+- The load factor drives performance: rehash into a table roughly twice as large when it crosses about 0.75 (chaining) or 0.5–0.7 (open addressing), reinserting every entry because bucket indices depend on the size.
+- Open addressing must mark deleted slots with tombstones, or entries that probed past them become unreachable; grow based on live entries plus tombstones.
+- Use a proven hash such as FNV-1a, cache the hash in each entry to skip most `strcmp` calls, and use a seeded hash when keys come from untrusted input.
+
+> 🧪 Practice
+>
+> 1. Add `map_iterate(Map *m, void (*fn)(const char *key, int value, void *ctx), void *ctx)` to the chaining implementation and use it to print every pair.
+> 2. Instrument the chaining table to report the longest chain and the number of empty buckets after inserting 100,000 keys. Then swap FNV-1a for "sum of bytes" and compare.
+> 3. Implement quadratic probing in the open-addressing table and measure the average probe count at load factors 0.5, 0.7, and 0.9 against linear probing.
+> 4. Interview-style: *"Why must an open-addressed hash table use tombstones instead of clearing a slot on deletion?"* Hint: trace a lookup for a key that was displaced past the deleted slot.
 
 #### Binary Search Trees
 
+**Theory**
+
+A hash table gives O(1) lookup but destroys order — iterating one yields keys in an arbitrary sequence, and asking for "the smallest key greater than x" requires scanning everything. When you need **ordered** operations, you need a tree.
+
+A **binary search tree** stores each key in a node with up to two children and maintains one invariant everywhere:
+
+> every key in the left subtree is less than the node's key, and every key in the right subtree is greater
+
+That single property makes searching a sequence of decisions. Compare with the root: smaller means go left, larger means go right, equal means found. Each step discards an entire subtree — the same halving that makes binary search on a sorted array O(log n).
+
+The invariant also makes ordered traversal free. An **in-order** walk — left subtree, node, right subtree — visits keys in sorted order, which is what a hash table cannot do at any price.
+
+```text
+                    50
+                   /  \
+                 30    70
+                /  \  /  \
+              20   40 60  80
+
+   search(40):  50 -> go left -> 30 -> go right -> 40. Found in 3 steps.
+   in-order:    20 30 40 50 60 70 80   (sorted, for free)
+```
+
+The catch, and it is a serious one: **the shape depends on the insertion order, and the shape determines the performance.** Inserting 1, 2, 3, 4, 5 in ascending order produces a tree where every node has only a right child — a linked list wearing a tree costume, with O(n) search. Sorted input is not a rare edge case; it is what you get from a database export, a sorted file, or timestamps.
+
+```text
+   RANDOM ORDER (balanced)        SORTED ORDER (degenerate)
+
+           50                      1
+          /  \                      \
+        30    70                     2
+       /  \  /  \                     \
+     20   40 60  80                    3
+                                        \
+   height ~ log2(n)                      4     height = n
+   search O(log n)                        \    search O(n)
+                                           5
+```
+
+This is why production code uses **self-balancing** trees — AVL, red-black, or a B-tree for on-disk data — which perform rotations on insertion and deletion to keep the height at O(log n) regardless of input order. They are considerably more code, and understanding the plain BST first is the right order to learn them.
+
+Deletion is the one genuinely fiddly operation, with three cases:
+
+1. **No children** — unlink and free.
+2. **One child** — replace the node with that child.
+3. **Two children** — the node cannot simply be removed. Find its **in-order successor** (the smallest key in the right subtree, reached by going right once then left as far as possible), copy that key into the node, then delete the successor — which by construction has at most one child, reducing to case 1 or 2.
+
+Recursion suits trees naturally, but note the depth: a recursive traversal of a degenerate tree with a million nodes will overflow the hardware stack. Iterative traversal with an explicit stack is the robust form.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+typedef struct TNode {
+    int           key;
+    struct TNode *left, *right;
+} TNode;
+
+static TNode *node_new(int key)
+{
+    TNode *n = malloc(sizeof *n);
+    if (n) { n->key = key; n->left = n->right = NULL; }
+    return n;
+}
+
+/* Insert by walking the pointer that must change -- the same Node **
+   idiom as the linked list, which removes the empty-tree special case. */
+static int bst_insert(TNode **root, int key)
+{
+    TNode **link = root;
+    while (*link) {
+        if      (key < (*link)->key) link = &(*link)->left;
+        else if (key > (*link)->key) link = &(*link)->right;
+        else return 0;                       /* already present: no duplicates */
+    }
+    TNode *n = node_new(key);
+    if (!n) return -1;
+    *link = n;                               /* attach where the walk stopped */
+    return 0;
+}
+
+/* Search: each comparison discards half the remaining tree. */
+static bool bst_contains(const TNode *root, int key)
+{
+    while (root) {
+        if      (key < root->key) root = root->left;
+        else if (key > root->key) root = root->right;
+        else return true;
+    }
+    return false;
+}
+
+static TNode *bst_min(TNode *n)
+{
+    while (n && n->left) n = n->left;        /* leftmost node = smallest key */
+    return n;
+}
+
+/* Deletion, all three cases. Returns the new subtree root. */
+static TNode *bst_delete(TNode *root, int key)
+{
+    if (!root) return NULL;
+
+    if      (key < root->key) root->left  = bst_delete(root->left,  key);
+    else if (key > root->key) root->right = bst_delete(root->right, key);
+    else {
+        /* Cases 1 and 2: zero or one child -- promote the child (or NULL). */
+        if (!root->left)  { TNode *r = root->right; free(root); return r; }
+        if (!root->right) { TNode *l = root->left;  free(root); return l; }
+
+        /* Case 3: two children. Replace this key with its in-order
+           successor, then delete the successor from the right subtree.
+           The successor has NO left child, so that delete hits case 1 or 2. */
+        TNode *succ = bst_min(root->right);
+        root->key   = succ->key;
+        root->right = bst_delete(root->right, succ->key);
+    }
+    return root;
+}
+
+/* In-order traversal yields sorted keys -- the property a hash table lacks. */
+static void bst_inorder(const TNode *n, void (*visit)(int))
+{
+    if (!n) return;
+    bst_inorder(n->left, visit);
+    visit(n->key);
+    bst_inorder(n->right, visit);
+}
+
+/* Post-order is the ONLY safe order for freeing: children before the parent. */
+static void bst_free(TNode *n)
+{
+    if (!n) return;
+    bst_free(n->left);
+    bst_free(n->right);
+    free(n);
+}
+
+static int bst_height(const TNode *n)
+{
+    if (!n) return 0;
+    int l = bst_height(n->left), r = bst_height(n->right);
+    return 1 + (l > r ? l : r);
+}
+
+static void print_key(int k) { printf("%d ", k); }
+
+int main(void)
+{
+    TNode *balanced = NULL;
+    int mixed[] = { 50, 30, 70, 20, 40, 60, 80 };
+    for (size_t i = 0; i < 7; i++) bst_insert(&balanced, mixed[i]);
+
+    printf("in-order: ");  bst_inorder(balanced, print_key);
+    printf("\nheight: %d (7 nodes)\n", bst_height(balanced));   /* 3 */
+
+    printf("contains 40: %s\n", bst_contains(balanced, 40) ? "yes" : "no");
+    balanced = bst_delete(balanced, 30);      /* two children: uses case 3 */
+    printf("after deleting 30: "); bst_inorder(balanced, print_key); putchar('\n');
+
+    /* The same keys inserted in SORTED order degenerate into a list. */
+    TNode *degenerate = NULL;
+    for (int i = 1; i <= 7; i++) bst_insert(&degenerate, i * 10);
+    printf("sorted-insert height: %d (7 nodes)\n", bst_height(degenerate));  /* 7 */
+
+    bst_free(balanced);
+    bst_free(degenerate);
+    return 0;
+}
+```
+
+Iterative in-order traversal, which does not risk a stack overflow:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct TNode { int key; struct TNode *left, *right; } TNode;
+
+/* An explicit stack replaces the call stack: safe on a degenerate tree
+   with a million nodes, where recursion would segfault. */
+static void inorder_iterative(TNode *root)
+{
+    TNode **stack = NULL;
+    size_t  len = 0, cap = 0;
+    TNode  *cur = root;
+
+    while (cur || len) {
+        while (cur) {                          /* descend, remembering the path */
+            if (len == cap) {
+                size_t ncap = cap ? cap * 2 : 32;
+                TNode **tmp = realloc(stack, ncap * sizeof *tmp);
+                if (!tmp) { free(stack); return; }
+                stack = tmp; cap = ncap;
+            }
+            stack[len++] = cur;
+            cur = cur->left;
+        }
+        cur = stack[--len];                    /* the leftmost unvisited node */
+        printf("%d ", cur->key);               /* VISIT */
+        cur = cur->right;                      /* then its right subtree */
+    }
+    putchar('\n');
+    free(stack);
+}
+```
+
+| Operation | Balanced BST | Degenerate BST | Hash table | Sorted array |
+|---|---|---|---|---|
+| Search | O(log n) | O(n) | O(1) average | O(log n) |
+| Insert | O(log n) | O(n) | O(1) average | O(n) |
+| Delete | O(log n) | O(n) | O(1) average | O(n) |
+| Min / max | O(log n) | O(n) | O(n) | O(1) |
+| Sorted iteration | O(n) | O(n) | O(n log n) — must sort | O(n) |
+| Range query | O(log n + k) | O(n) | O(n) | O(log n + k) |
+
+**Key Takeaways**
+
+- A BST keeps every left-subtree key below the node and every right-subtree key above, turning search into a sequence of halving decisions.
+- In-order traversal yields sorted keys and range queries are cheap — the ordered operations a hash table cannot provide.
+- Performance depends entirely on the shape: sorted insertion produces a degenerate O(n) tree, and sorted input is common, not exotic.
+- Deleting a node with two children requires promoting its in-order successor, which by construction has at most one child.
+- Free with a post-order traversal, and use an explicit stack for traversal when the tree may be deep enough to overflow the call stack.
+
+> 🧪 Practice
+>
+> 1. Add `bst_count`, `bst_max`, and a `bst_is_valid` that verifies the ordering invariant using a min/max range rather than only comparing with immediate children.
+> 2. Write `bst_range(root, lo, hi, visit)` that visits only keys in `[lo, hi]`, pruning subtrees that cannot contain any.
+> 3. Insert 10,000 sequential integers, then 10,000 shuffled ones, and print the resulting heights. Explain the ratio you see.
+> 4. Interview-style: *"When would you choose a balanced BST over a hash table?"* Hint: list the questions a hash table cannot answer without examining every entry.
+
 #### Heaps and Priority Queues
+
+**Theory**
+
+A queue serves items in arrival order. Sometimes you need them served in **importance** order instead: the shortest job next, the nearest unvisited vertex in Dijkstra's algorithm, the highest-priority interrupt. That is a **priority queue**, and the standard implementation is a **binary heap**.
+
+You could implement a priority queue with a sorted array — O(1) to find the best item but O(n) to insert. Or an unsorted array — O(1) to insert but O(n) to find. A heap gives O(log n) for both, which is the right balance when you do many of each.
+
+The trick is that a priority queue does not need full sorting. It only needs the *most important* item to be findable. So the heap maintains a much weaker invariant than a BST:
+
+> every node's key is less than or equal to both of its children's keys (a **min-heap**)
+
+That is it. No relationship between siblings, and no left/right ordering. The minimum is therefore always at the root, but the structure is far cheaper to maintain than a sorted order.
+
+The second insight is that a heap is a **complete binary tree** — every level full except possibly the last, which fills left to right — and a complete tree can be stored in a **plain array with no pointers at all**. For the node at index `i`:
+
+```text
+   parent(i)      = (i - 1) / 2
+   left_child(i)  = 2*i + 1
+   right_child(i) = 2*i + 2
+
+   array:  [ 10, 20, 15, 40, 25, 30, 50 ]
+   index:     0   1   2   3   4   5   6
+
+                    10 (0)
+                   /      \
+              20 (1)      15 (2)
+              /    \      /    \
+         40 (3) 25 (4) 30 (5) 50 (6)
+
+   No pointers, no allocation per node, perfect cache locality.
+```
+
+Both operations restore the invariant by moving one element along a single root-to-leaf path, which is why both are O(log n):
+
+**Insert (sift up).** Append at the end of the array — the only position that keeps the tree complete — then repeatedly swap with the parent while it is larger. The new element bubbles up until its parent is smaller.
+
+**Extract-min (sift down).** The root is the answer. Move the *last* element into the root (keeping completeness), shrink the array, then repeatedly swap with the *smaller* child while either child is smaller. Swapping with the smaller child is essential — swapping with the larger one violates the invariant on the other side.
+
+**Heapify** builds a heap from an unordered array of `n` elements. The obvious approach — insert each one — is O(n log n). Sifting down from the last internal node backwards to the root is **O(n)**, which is surprising but correct: most nodes are near the leaves and sift down only a step or two.
+
+A heap does **not** give you sorted iteration, and it does not support finding an arbitrary element in better than O(n). Deleting or changing the priority of a known element requires an auxiliary index mapping elements to positions — which is what Dijkstra's decrease-key needs.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+/* A min-heap over an implicit complete binary tree stored in an array. */
+typedef struct { int *data; size_t len, cap; } Heap;
+
+static void heap_init(Heap *h) { h->data = NULL; h->len = h->cap = 0; }
+static void heap_free(Heap *h) { free(h->data); heap_init(h); }
+
+static void swap(int *a, int *b) { int t = *a; *a = *b; *b = t; }
+
+/* Move element i UP until its parent is no larger. O(log n). */
+static void sift_up(Heap *h, size_t i)
+{
+    while (i > 0) {
+        size_t parent = (i - 1) / 2;
+        if (h->data[parent] <= h->data[i]) break;      /* invariant restored */
+        swap(&h->data[parent], &h->data[i]);
+        i = parent;
+    }
+}
+
+/* Move element i DOWN until both children are no smaller. O(log n). */
+static void sift_down(Heap *h, size_t i)
+{
+    for (;;) {
+        size_t l = 2 * i + 1, r = 2 * i + 2, smallest = i;
+
+        if (l < h->len && h->data[l] < h->data[smallest]) smallest = l;
+        if (r < h->len && h->data[r] < h->data[smallest]) smallest = r;
+        if (smallest == i) break;
+
+        /* Swapping with the SMALLER child is essential: swapping with the
+           larger one would leave it above its own smaller sibling. */
+        swap(&h->data[i], &h->data[smallest]);
+        i = smallest;
+    }
+}
+
+static int heap_push(Heap *h, int value)
+{
+    if (h->len == h->cap) {
+        size_t cap = h->cap ? h->cap * 2 : 8;
+        int   *tmp = realloc(h->data, cap * sizeof *tmp);
+        if (!tmp) return -1;
+        h->data = tmp; h->cap = cap;
+    }
+    h->data[h->len] = value;          /* append keeps the tree COMPLETE */
+    sift_up(h, h->len);
+    h->len++;
+    return 0;
+}
+
+static bool heap_peek(const Heap *h, int *out)
+{
+    if (h->len == 0) return false;
+    *out = h->data[0];                /* the minimum is always the root */
+    return true;
+}
+
+static bool heap_pop(Heap *h, int *out)
+{
+    if (h->len == 0) return false;
+    *out = h->data[0];
+    h->data[0] = h->data[--h->len];   /* the LAST element fills the root */
+    sift_down(h, 0);                  /* then sinks to its proper place */
+    return true;
+}
+
+/* Build a heap from an unordered array in O(n), not O(n log n):
+   sift down from the last internal node backwards. */
+static int heap_from_array(Heap *h, const int *src, size_t n)
+{
+    h->data = malloc(n * sizeof *h->data);
+    if (!h->data) return -1;
+    memcpy(h->data, src, n * sizeof *src);
+    h->len = h->cap = n;
+
+    if (n < 2) return 0;
+    /* Leaves are already valid heaps, so start at the last node that has
+       a child and walk backwards to the root. */
+    for (size_t i = n / 2; i-- > 0; )
+        sift_down(h, i);
+    return 0;
+}
+
+int main(void)
+{
+    Heap h;
+    heap_init(&h);
+
+    int input[] = { 42, 7, 19, 3, 88, 15, 1, 56 };
+    for (size_t i = 0; i < 8; i++) heap_push(&h, input[i]);
+
+    int v;
+    heap_peek(&h, &v);
+    printf("min = %d\n", v);                      /* 1 */
+
+    printf("drained in order: ");
+    while (heap_pop(&h, &v)) printf("%d ", v);    /* 1 3 7 15 19 42 56 88 */
+    putchar('\n');
+    heap_free(&h);
+
+    /* O(n) construction from an existing array. */
+    Heap h2;
+    if (heap_from_array(&h2, input, 8) == 0) {
+        heap_peek(&h2, &v);
+        printf("heapified min = %d\n", v);        /* 1 */
+        heap_free(&h2);
+    }
+    return 0;
+}
+```
+
+A priority queue of tasks, which is what heaps are actually used for:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+typedef struct { int priority; unsigned seq; char name[24]; } Task;
+
+/* Lower priority value = more urgent. 'seq' breaks ties by arrival order,
+   making the queue STABLE -- a heap gives no such guarantee by itself. */
+static bool more_urgent(const Task *a, const Task *b)
+{
+    if (a->priority != b->priority) return a->priority < b->priority;
+    return a->seq < b->seq;
+}
+
+typedef struct { Task *data; size_t len, cap; unsigned next_seq; } PQ;
+
+static void pq_sift_up(PQ *q, size_t i)
+{
+    while (i > 0) {
+        size_t p = (i - 1) / 2;
+        if (!more_urgent(&q->data[i], &q->data[p])) break;
+        Task t = q->data[p]; q->data[p] = q->data[i]; q->data[i] = t;
+        i = p;
+    }
+}
+
+static void pq_sift_down(PQ *q, size_t i)
+{
+    for (;;) {
+        size_t l = 2*i + 1, r = 2*i + 2, best = i;
+        if (l < q->len && more_urgent(&q->data[l], &q->data[best])) best = l;
+        if (r < q->len && more_urgent(&q->data[r], &q->data[best])) best = r;
+        if (best == i) break;
+        Task t = q->data[best]; q->data[best] = q->data[i]; q->data[i] = t;
+        i = best;
+    }
+}
+
+static int pq_push(PQ *q, int priority, const char *name)
+{
+    if (q->len == q->cap) {
+        size_t cap = q->cap ? q->cap * 2 : 8;
+        Task  *tmp = realloc(q->data, cap * sizeof *tmp);
+        if (!tmp) return -1;
+        q->data = tmp; q->cap = cap;
+    }
+    Task *t = &q->data[q->len];
+    t->priority = priority;
+    t->seq = q->next_seq++;
+    snprintf(t->name, sizeof t->name, "%s", name);
+    pq_sift_up(q, q->len++);
+    return 0;
+}
+
+static bool pq_pop(PQ *q, Task *out)
+{
+    if (q->len == 0) return false;
+    *out = q->data[0];
+    q->data[0] = q->data[--q->len];
+    pq_sift_down(q, 0);
+    return true;
+}
+
+int main(void)
+{
+    PQ q = {0};
+    pq_push(&q, 3, "write report");
+    pq_push(&q, 1, "fix outage");
+    pq_push(&q, 2, "review PR");
+    pq_push(&q, 1, "page on-call");     /* same priority as "fix outage" */
+
+    Task t;
+    while (pq_pop(&q, &t))
+        printf("p%d  %s\n", t.priority, t.name);
+    /* p1 fix outage / p1 page on-call / p2 review PR / p3 write report */
+
+    free(q.data);
+    return 0;
+}
+```
+
+| Structure | Find min | Insert | Extract min | Sorted iteration |
+|---|---|---|---|---|
+| Unsorted array | O(n) | O(1) | O(n) | O(n log n) |
+| Sorted array | O(1) | O(n) | O(1) | O(n) |
+| Binary heap | O(1) | O(log n) | O(log n) | not supported directly |
+| Balanced BST | O(log n) | O(log n) | O(log n) | O(n) |
+
+**Key Takeaways**
+
+- A heap maintains only "every parent is no greater than its children", which is much weaker than sorting and therefore much cheaper to maintain.
+- A complete binary tree stores perfectly in an array: parent is `(i-1)/2`, children are `2i+1` and `2i+2` — no pointers, no per-node allocation.
+- Insert appends and sifts up; extract-min takes the root, moves the last element there, and sifts down — both O(log n), both touching one root-to-leaf path.
+- Sifting down must swap with the *smaller* child, and building a heap by sifting down from the last internal node is O(n), not O(n log n).
+- A heap gives no sorted iteration and no fast lookup of arbitrary elements; add a sequence field for stable tie-breaking and an index map if you need decrease-key.
+
+> 🧪 Practice
+>
+> 1. Convert the min-heap into a max-heap by changing only the comparisons, and verify that draining it yields descending order.
+> 2. Implement heapsort: heapify the array in place, then repeatedly swap the root with the last element and sift down over the shrinking prefix. Confirm it needs no extra memory.
+> 3. Write `heap_kth_smallest(const int *a, size_t n, size_t k)` using a heap of bounded size, and explain why it beats sorting the whole array when `k` is small.
+> 4. Interview-style: *"Why is building a heap by sifting down O(n) when inserting n elements one at a time is O(n log n)?"* Hint: count how many nodes sit at each depth and how far each can actually sink.
 
 #### Tries
 
+**Theory**
+
+A hash table finds an exact key fast, but it cannot answer "which keys start with `pre`" without examining every entry — hashing deliberately destroys the relationship between similar keys. A **trie** (from re*trie*val, usually pronounced "try") is built precisely for that question.
+
+The idea: instead of storing whole keys at nodes, store **one character per edge** and let the *path from the root* spell the key. A node is not "a word" — it is "a prefix", and a flag marks which prefixes are complete words.
+
+```text
+   Words: "cat", "car", "cart", "dog"
+
+              (root)
+              /     \
+            c        d
+            |        |
+            a        o
+           / \       |
+          t*  r*     g*
+              |
+              t*
+
+   * = terminal (a complete word ends here)
+
+   "car" and "cart" SHARE the path c-a-r, stored once.
+   All words starting with "ca" live under one node -- so prefix
+   search is: walk to that node, then collect everything below it.
+```
+
+Three properties follow directly from that shape:
+
+**Lookup time depends on the key length, not the number of keys.** Searching for a 5-character word takes 5 steps whether the trie holds 10 words or 10 million. That is O(m) for key length `m`, independent of `n` — better than a BST's O(m log n) and comparable to hashing, except that hashing must read the whole key to compute the hash anyway.
+
+**Prefixes are free.** Walk to the node for the prefix; every word beneath it matches. This makes tries the natural structure for autocomplete, spell-check dictionaries, IP routing tables (longest-prefix match), and word games.
+
+**Keys are stored implicitly and shared.** Common prefixes are stored once, which can save memory on a dictionary of related words.
+
+The dominant cost is the node representation. A node with a fixed array of 26 (or 256) child pointers gives O(1) child access but wastes enormous space — a 256-way node on a 64-bit machine is 2 KB, and most tries have far more nodes than words. Three alternatives trade lookup speed for size:
+
+| Node representation | Child lookup | Memory per node | Good for |
+|---|---|---|---|
+| Fixed array (26 or 256) | O(1) | large, mostly `NULL` | small alphabets, speed-critical |
+| Sorted array of pairs | O(log k) | proportional to real children | sparse tries |
+| Linked list of children | O(k) | smallest | very sparse tries |
+| Hash map per node | O(1) average | moderate + overhead | large alphabets |
+
+A **compressed trie** (radix tree or Patricia trie) collapses each chain of single-child nodes into one node holding the whole substring. For a dictionary of English words this removes the large majority of nodes and is what production implementations use.
+
+Deletion needs care: after clearing a word's terminal flag, you may remove the node only if it has no children *and* is not itself terminal — otherwise you would delete a prefix that other words still need.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <ctype.h>
+
+#define ALPHABET 26        /* lowercase a-z */
+
+typedef struct TrieNode {
+    struct TrieNode *children[ALPHABET];
+    bool             terminal;      /* a complete word ends at this node */
+    size_t           child_count;   /* maintained so deletion can prune */
+} TrieNode;
+
+static TrieNode *trie_node_new(void)
+{
+    return calloc(1, sizeof(TrieNode));    /* calloc: all children NULL */
+}
+
+/* Map a character to a child index, or -1 if it is outside the alphabet. */
+static int slot_of(char c)
+{
+    unsigned char u = (unsigned char)c;    /* cast: ctype needs unsigned char */
+    if (!isalpha(u)) return -1;
+    return tolower(u) - 'a';
+}
+
+static int trie_insert(TrieNode *root, const char *word)
+{
+    TrieNode *cur = root;
+
+    for (const char *p = word; *p; p++) {
+        int i = slot_of(*p);
+        if (i < 0) return -1;              /* reject unsupported characters */
+
+        if (!cur->children[i]) {
+            TrieNode *n = trie_node_new();
+            if (!n) return -1;
+            cur->children[i] = n;
+            cur->child_count++;
+        }
+        cur = cur->children[i];            /* descend one character */
+    }
+    cur->terminal = true;                  /* the path so far IS a word */
+    return 0;
+}
+
+/* Walk to the node for 'prefix', or NULL if the path does not exist. */
+static const TrieNode *trie_walk(const TrieNode *root, const char *prefix)
+{
+    const TrieNode *cur = root;
+    for (const char *p = prefix; *p && cur; p++) {
+        int i = slot_of(*p);
+        if (i < 0) return NULL;
+        cur = cur->children[i];
+    }
+    return cur;
+}
+
+/* An exact word must both exist as a path AND be marked terminal. */
+static bool trie_contains(const TrieNode *root, const char *word)
+{
+    const TrieNode *n = trie_walk(root, word);
+    return n && n->terminal;
+}
+
+/* Any existing path is a valid prefix, terminal or not. */
+static bool trie_has_prefix(const TrieNode *root, const char *prefix)
+{
+    return trie_walk(root, prefix) != NULL;
+}
+
+/* Collect every word beneath 'n', building the suffix in 'buf' as we go. */
+static void collect(const TrieNode *n, char *buf, size_t depth, size_t cap,
+                    void (*visit)(const char *))
+{
+    if (!n || depth + 1 >= cap) return;
+
+    if (n->terminal) { buf[depth] = '\0'; visit(buf); }
+
+    for (int i = 0; i < ALPHABET; i++)
+        if (n->children[i]) {
+            buf[depth] = (char)('a' + i);          /* append this edge's char */
+            collect(n->children[i], buf, depth + 1, cap, visit);
+            /* No explicit undo needed: depth is restored by the return. */
+        }
+}
+
+static void trie_complete(const TrieNode *root, const char *prefix,
+                          void (*visit)(const char *))
+{
+    const TrieNode *start = trie_walk(root, prefix);
+    if (!start) return;
+
+    char buf[128];
+    size_t plen = strlen(prefix);
+    if (plen >= sizeof buf) return;
+
+    memcpy(buf, prefix, plen);                     /* seed with the prefix */
+    collect(start, buf, plen, sizeof buf, visit);
+}
+
+/* Delete a word, pruning nodes that become useless. Returns true if the
+   caller should free the node it passed in. */
+static bool trie_delete(TrieNode *n, const char *word)
+{
+    if (!n) return false;
+
+    if (*word == '\0') {
+        n->terminal = false;                       /* no longer a word */
+    } else {
+        int i = slot_of(*word);
+        if (i < 0 || !n->children[i]) return false;
+
+        if (trie_delete(n->children[i], word + 1)) {
+            free(n->children[i]);
+            n->children[i] = NULL;
+            n->child_count--;
+        }
+    }
+    /* Prunable only if nothing else needs this node: no children AND not
+       itself the end of a shorter word. */
+    return n->child_count == 0 && !n->terminal;
+}
+
+static void trie_free(TrieNode *n)
+{
+    if (!n) return;
+    for (int i = 0; i < ALPHABET; i++) trie_free(n->children[i]);
+    free(n);
+}
+
+static void print_word(const char *w) { printf("  %s\n", w); }
+
+int main(void)
+{
+    TrieNode *root = trie_node_new();
+    if (!root) return 1;
+
+    const char *words[] = { "cat","car","cart","care","dog","do","door" };
+    for (size_t i = 0; i < 7; i++) trie_insert(root, words[i]);
+
+    printf("contains 'car':   %s\n", trie_contains(root, "car")  ? "yes" : "no");
+    printf("contains 'ca':    %s\n", trie_contains(root, "ca")   ? "yes" : "no");
+    printf("prefix   'ca':    %s\n", trie_has_prefix(root, "ca") ? "yes" : "no");
+
+    printf("completions for 'ca':\n");
+    trie_complete(root, "ca", print_word);      /* car, care, cart, cat */
+
+    printf("completions for 'do':\n");
+    trie_complete(root, "do", print_word);      /* do, dog, door */
+
+    trie_delete(root, "cart");
+    printf("after deleting 'cart', 'car' still present: %s\n",
+           trie_contains(root, "car") ? "yes" : "no");
+
+    trie_free(root);
+    return 0;
+}
+```
+
+| | Trie | Hash table | Balanced BST |
+|---|---|---|---|
+| Exact lookup | O(m) | O(1) average, O(m) to hash | O(m log n) |
+| Prefix search | O(m + k) for k results | O(n) — full scan | O(m log n + k) |
+| Sorted iteration | yes, natural | no | yes |
+| Worst case | O(m), no degradation | O(n) on collisions | O(log n) |
+| Memory | high; shares prefixes | moderate | moderate |
+| Best for | autocomplete, routing, dictionaries | exact-match lookup | ordered data, ranges |
+
+**Key Takeaways**
+
+- A trie stores one character per edge, so the path from the root spells the key and a flag marks which prefixes are complete words.
+- Lookup costs O(m) in the key length and is independent of how many keys the trie holds — no degradation as it grows.
+- Prefix queries are the trie's reason to exist: walk to the prefix node, then collect everything beneath it.
+- Node representation dominates memory: fixed 26- or 256-way arrays are fast and wasteful; sorted arrays, lists, or a radix tree that collapses single-child chains are far smaller.
+- Deletion may only prune a node that has no children and is not itself terminal, or it will remove a prefix that other words still need.
+
+> 🧪 Practice
+>
+> 1. Add `trie_count_words` and `trie_longest_prefix_of(root, text)` that returns the length of the longest stored word that prefixes `text`.
+> 2. Replace the fixed 26-pointer array with a linked list of children and measure the memory difference on a 100,000-word dictionary.
+> 3. Build a trie from `/usr/share/dict/words` and implement an autocomplete that returns only the first 10 completions for a prefix.
+> 4. Interview-style: *"You need autocomplete over a million product names. Trie or hash table?"* Hint: consider what a hash table must do to find every key beginning with three given characters.
+
 #### Graph Representations
+
+**Theory**
+
+A graph is the most general structure here: a set of **vertices** and a set of **edges** connecting them. Trees and linked lists are both special cases — a tree is a connected graph with no cycles, a list is a tree where every node has one child. Graphs model road networks, dependency chains, social connections, state machines, and package managers.
+
+Before writing any graph algorithm you must choose a representation, and that choice determines what is cheap:
+
+**Adjacency matrix.** A `V x V` array where `m[i][j]` is 1 if an edge runs from `i` to `j`. Checking whether two vertices are connected is a single array access — O(1), unbeatable. But it always costs `V²` memory regardless of edge count, and listing a vertex's neighbours means scanning an entire row of `V` entries, most of them zero.
+
+**Adjacency list.** For each vertex, a list of the vertices it connects to. Memory is O(V + E), which for a sparse graph is dramatically smaller. Iterating a vertex's neighbours takes time proportional to its degree — exactly what traversals need. Checking a specific edge costs O(degree) rather than O(1).
+
+The deciding factor is **density**. A graph with `V` vertices has at most `V²` edges. Real graphs are almost always *sparse* — a road network vertex connects to a handful of others, not to a million. For those, the matrix wastes essentially all of its memory: 100,000 vertices needs 10¹⁰ matrix entries but perhaps 500,000 list entries.
+
+```text
+   Graph:  0 --- 1
+           |   / |
+           |  /  |
+           2 --- 3
+
+   ADJACENCY MATRIX (V x V = 16 entries)     ADJACENCY LIST (V + 2E = 4 + 10)
+
+        0  1  2  3                            0 -> 1, 2
+     0  0  1  1  0                            1 -> 0, 2, 3
+     1  1  0  1  1                            2 -> 0, 1, 3
+     2  1  1  0  1                            3 -> 1, 2
+     3  0  1  1  0
+
+   has_edge(1,3): one lookup                  has_edge(1,3): scan 1's list
+   neighbours(1): scan 4 entries              neighbours(1): read 3 entries
+   memory: always V^2                         memory: proportional to real edges
+```
+
+Beyond representation, three properties change the code:
+
+- **Directed or undirected.** An undirected edge is stored twice in an adjacency list (once in each endpoint's list) and symmetrically in a matrix.
+- **Weighted or unweighted.** Weights live in the matrix cells or alongside each list entry. Unweighted shortest paths use BFS; weighted ones need Dijkstra.
+- **Self-loops and parallel edges** may or may not be permitted, and the representation should say which.
+
+The two fundamental traversals differ only in the container they use for the frontier, which is a genuinely useful thing to notice:
+
+**Breadth-first search** uses a **queue**. It visits all vertices at distance 1, then distance 2, and so on — so on an unweighted graph it finds shortest paths.
+
+**Depth-first search** uses a **stack** (often the call stack, via recursion). It follows one path as deep as possible before backtracking — which is what you want for cycle detection, topological sorting, and finding connected components.
+
+Both are O(V + E) with an adjacency list, and both need a `visited` array; without it, a cycle makes either loop forever.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+/* ---- adjacency list: an array of per-vertex edge lists ---- */
+typedef struct Edge { int to; int weight; struct Edge *next; } Edge;
+
+typedef struct {
+    Edge **adj;        /* adj[v] is the head of v's edge list */
+    int    nverts;
+    bool   directed;
+} Graph;
+
+static int graph_init(Graph *g, int nverts, bool directed)
+{
+    g->adj = calloc((size_t)nverts, sizeof *g->adj);
+    if (!g->adj) return -1;
+    g->nverts = nverts;
+    g->directed = directed;
+    return 0;
+}
+
+static void graph_free(Graph *g)
+{
+    for (int v = 0; v < g->nverts; v++)
+        for (Edge *e = g->adj[v], *next; e; e = next) { next = e->next; free(e); }
+    free(g->adj);
+    g->adj = NULL; g->nverts = 0;
+}
+
+static int add_directed(Graph *g, int from, int to, int weight)
+{
+    Edge *e = malloc(sizeof *e);
+    if (!e) return -1;
+    e->to = to; e->weight = weight;
+    e->next = g->adj[from];          /* push at the front: O(1) */
+    g->adj[from] = e;
+    return 0;
+}
+
+static int graph_add_edge(Graph *g, int a, int b, int weight)
+{
+    if (a < 0 || a >= g->nverts || b < 0 || b >= g->nverts) return -1;
+    if (add_directed(g, a, b, weight) != 0) return -1;
+    /* An UNDIRECTED edge is two directed edges. */
+    if (!g->directed && a != b && add_directed(g, b, a, weight) != 0) return -1;
+    return 0;
+}
+
+/* ---- BFS: a QUEUE gives shortest paths on an unweighted graph ---- */
+static void bfs(const Graph *g, int start, int *dist, int *parent)
+{
+    for (int v = 0; v < g->nverts; v++) { dist[v] = -1; parent[v] = -1; }
+
+    int *queue = malloc((size_t)g->nverts * sizeof *queue);
+    if (!queue) return;
+    int head = 0, tail = 0;
+
+    dist[start] = 0;
+    queue[tail++] = start;
+
+    while (head < tail) {
+        int v = queue[head++];                    /* FIFO: nearest first */
+        for (const Edge *e = g->adj[v]; e; e = e->next)
+            if (dist[e->to] == -1) {              /* -1 doubles as "unvisited" */
+                dist[e->to]   = dist[v] + 1;
+                parent[e->to] = v;
+                queue[tail++] = e->to;            /* enqueue for the next ring */
+            }
+    }
+    free(queue);
+}
+
+/* ---- DFS: a STACK (here, recursion) explores one path to the end ---- */
+static void dfs_visit(const Graph *g, int v, bool *visited, int depth)
+{
+    visited[v] = true;
+    printf("%*s%d\n", depth * 2, "", v);          /* indent by depth */
+
+    for (const Edge *e = g->adj[v]; e; e = e->next)
+        if (!visited[e->to])
+            dfs_visit(g, e->to, visited, depth + 1);
+}
+
+/* Cycle detection in a DIRECTED graph needs three states, not two:
+   a vertex still on the current path (GRAY) means a back edge = cycle. */
+typedef enum { WHITE = 0, GRAY, BLACK } Color;
+
+static bool has_cycle_from(const Graph *g, int v, Color *color)
+{
+    color[v] = GRAY;                              /* on the current path */
+    for (const Edge *e = g->adj[v]; e; e = e->next) {
+        if (color[e->to] == GRAY) return true;    /* back edge -> cycle */
+        if (color[e->to] == WHITE && has_cycle_from(g, e->to, color)) return true;
+    }
+    color[v] = BLACK;                             /* fully explored */
+    return false;
+}
+
+static bool graph_has_cycle(const Graph *g)
+{
+    Color *color = calloc((size_t)g->nverts, sizeof *color);   /* all WHITE */
+    if (!color) return false;
+
+    bool cycle = false;
+    for (int v = 0; v < g->nverts && !cycle; v++)
+        if (color[v] == WHITE) cycle = has_cycle_from(g, v, color);
+
+    free(color);
+    return cycle;
+}
+
+int main(void)
+{
+    /* Undirected:  0-1, 0-2, 1-2, 1-3, 2-3, 3-4 */
+    Graph g;
+    if (graph_init(&g, 5, false) != 0) return 1;
+    graph_add_edge(&g, 0, 1, 1); graph_add_edge(&g, 0, 2, 1);
+    graph_add_edge(&g, 1, 2, 1); graph_add_edge(&g, 1, 3, 1);
+    graph_add_edge(&g, 2, 3, 1); graph_add_edge(&g, 3, 4, 1);
+
+    int dist[5], parent[5];
+    bfs(&g, 0, dist, parent);
+    printf("BFS distances from 0: ");
+    for (int v = 0; v < 5; v++) printf("%d:%d ", v, dist[v]);
+    putchar('\n');
+
+    /* Reconstruct a shortest path by walking parents backwards. */
+    printf("path 0 -> 4: ");
+    int stack[5], top = 0;
+    for (int v = 4; v != -1; v = parent[v]) stack[top++] = v;
+    /* Decrement in its own statement: reading and modifying 'top' twice
+       in one expression would be unsequenced, and so undefined. */
+    while (top) { top--; printf("%d%s", stack[top], top ? " -> " : "\n"); }
+
+    printf("DFS from 0:\n");
+    bool visited[5] = {false};
+    dfs_visit(&g, 0, visited, 0);
+    graph_free(&g);
+
+    /* Directed acyclic vs cyclic. */
+    Graph dag;
+    graph_init(&dag, 3, true);
+    graph_add_edge(&dag, 0, 1, 1); graph_add_edge(&dag, 1, 2, 1);
+    printf("DAG has cycle: %s\n", graph_has_cycle(&dag) ? "yes" : "no");
+    graph_add_edge(&dag, 2, 0, 1);                /* close the loop */
+    printf("after 2->0:   %s\n", graph_has_cycle(&dag) ? "yes" : "no");
+    graph_free(&dag);
+    return 0;
+}
+```
+
+An adjacency matrix, for the dense case:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+typedef struct { int *m; int n; } Matrix;   /* flat array, indexed m[i*n + j] */
+
+static int mat_init(Matrix *g, int n)
+{
+    g->m = calloc((size_t)n * (size_t)n, sizeof *g->m);   /* always n^2 */
+    if (!g->m) return -1;
+    g->n = n;
+    return 0;
+}
+
+static void mat_add(Matrix *g, int a, int b, int w)
+{
+    g->m[a * g->n + b] = w;
+    g->m[b * g->n + a] = w;                /* undirected: symmetric */
+}
+
+/* The matrix's one decisive advantage: O(1) edge existence. */
+static bool mat_has_edge(const Matrix *g, int a, int b)
+{
+    return g->m[a * g->n + b] != 0;
+}
+
+int main(void)
+{
+    Matrix g;
+    if (mat_init(&g, 4) != 0) return 1;
+    mat_add(&g, 0, 1, 1); mat_add(&g, 0, 2, 1);
+    mat_add(&g, 1, 2, 1); mat_add(&g, 2, 3, 1);
+
+    for (int i = 0; i < g.n; i++) {
+        for (int j = 0; j < g.n; j++) printf("%d ", g.m[i * g.n + j]);
+        putchar('\n');
+    }
+    printf("edge 0-3? %s\n", mat_has_edge(&g, 0, 3) ? "yes" : "no");
+
+    free(g.m);
+    return 0;
+}
+```
+
+| | Adjacency matrix | Adjacency list |
+|---|---|---|
+| Memory | O(V²) always | O(V + E) |
+| Add edge | O(1) | O(1) |
+| Check edge (u,v) | O(1) | O(degree(u)) |
+| Iterate neighbours of u | O(V) | O(degree(u)) |
+| BFS / DFS total | O(V²) | O(V + E) |
+| Best when | dense, or edge checks dominate | sparse (almost always) |
+
+**Key Takeaways**
+
+- Choose the representation from the density: adjacency lists cost O(V + E) and suit sparse graphs, which is nearly all real graphs; matrices cost O(V²) but check a specific edge in O(1).
+- An undirected edge is two entries in an adjacency list — forgetting the second is the most common graph bug.
+- BFS and DFS are the same algorithm with a different frontier container: a queue gives level order and unweighted shortest paths, a stack gives deep-first exploration.
+- Both traversals need a `visited` array; without one, any cycle makes them run forever.
+- Directed cycle detection needs three colors, not a boolean — a vertex still on the current path (gray) signals a back edge, while a finished one (black) does not.
+
+> 🧪 Practice
+>
+> 1. Add `graph_degree(g, v)` and `graph_print(g)`, then verify that an undirected graph's degrees sum to twice the edge count.
+> 2. Implement an iterative DFS with an explicit stack and confirm it visits the same vertices as the recursive version (the order may differ).
+> 3. Write a topological sort for a DAG using DFS finish times, and make it report an error when the graph contains a cycle.
+> 4. Interview-style: *"A social network has 10 million users averaging 200 friends each. Matrix or list?"* Hint: compute both memory figures before answering.
 
 <a id="103-generic-and-reusable-code"></a>
 ### 10.3 Generic and Reusable Code
 
+Every structure so far was written for one element type. Writing `IntVec`, `StrVec`, and `TaskVec` by hand is how C code rots. This section covers the three techniques C offers for writing a container once — `void *`, macros, and intrusive links — plus the callback conventions and API design decisions that make a container usable by someone who did not write it.
+
 #### void Pointer Based Containers
+
+**Theory**
+
+C has no templates, but it does have a universal pointer type. **`void *` can hold the address of any object**, and any object pointer converts to it and back without loss. That is enough to build a container that stores anything: keep `void *` elements, and let the caller worry about what they point to.
+
+This is exactly how `qsort` and `bsearch` work, and the same trade-offs apply. What you gain is one implementation for every type. What you give up is significant and worth naming precisely:
+
+**All type checking disappears.** The compiler will happily let you push a `Person *` and read it back as a `char *`. Nothing catches it — not at compile time, not at run time. The container cannot help you; only discipline can.
+
+**Ownership becomes ambiguous.** When you push a `void *`, does the container now own that memory? Must the caller keep it alive? Who frees it? The type says nothing, so the *documentation* has to, and callers have to read it. This is the single largest source of bugs in `void *` containers.
+
+**Every element is an indirection.** Storing `void *` means the data lives elsewhere, so iterating touches two cache lines per element instead of one, and each element is usually a separate allocation.
+
+There are two distinct designs, and choosing between them matters more than the implementation details:
+
+| | Pointer container (`void *` elements) | Value container (`element_size` bytes) |
+|---|---|---|
+| Stores | addresses | copies of the data |
+| Element allocation | caller's, one per element | inside the container's block |
+| Memory layout | scattered | contiguous |
+| Ownership | ambiguous, must be documented | unambiguous — the container owns its copy |
+| Element size | not needed | required at construction |
+| Mixed types | possible (rarely wise) | no |
+| Resembles | `void **` array | `qsort`'s model |
+
+The **value container** — storing `element_size` and copying elements in with `memcpy` — is usually the better design. It keeps data contiguous, and ownership is unambiguous because the container holds its own copy. The pointer container earns its place when elements are large, when they are shared with other structures, or when they are polymorphic.
+
+For a value container, the API cannot return elements by value (C cannot return an unknown type), so it returns `void *` pointers into its own storage — which are invalidated by any growth, exactly as with a typed dynamic array. This is worth stating loudly in the header.
+
+One safety measure costs almost nothing: a thin, type-safe wrapper. Write the generic container once, then a handful of `static inline` functions per concrete type that cast for you. Callers use the typed API, get full type checking, and the generic code is still written once.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+/* ---------------------------------------------------------------------
+   A generic VALUE container: it stores copies, so ownership is clear.
+   --------------------------------------------------------------------- */
+typedef struct {
+    unsigned char *data;      /* unsigned char*: byte arithmetic is legal */
+    size_t elem_size;         /* bytes per element, fixed at init         */
+    size_t len, cap;
+} Vec;
+
+static int vec_init(Vec *v, size_t elem_size)
+{
+    if (elem_size == 0) return -1;
+    v->data = NULL; v->elem_size = elem_size; v->len = v->cap = 0;
+    return 0;
+}
+
+static void vec_free(Vec *v) { free(v->data); v->data = NULL; v->len = v->cap = 0; }
+
+/* Address of element i: byte arithmetic, which is why data is unsigned char*. */
+static void *vec_at(const Vec *v, size_t i)
+{
+    return i < v->len ? v->data + i * v->elem_size : NULL;
+}
+
+static int vec_reserve(Vec *v, size_t want)
+{
+    if (want <= v->cap) return 0;
+
+    size_t cap = v->cap ? v->cap : 4;
+    while (cap < want) {
+        if (cap > SIZE_MAX / 2) return -1;
+        cap *= 2;
+    }
+    if (cap > SIZE_MAX / v->elem_size) return -1;      /* byte-size overflow */
+
+    unsigned char *tmp = realloc(v->data, cap * v->elem_size);
+    if (!tmp) return -1;
+    v->data = tmp; v->cap = cap;
+    return 0;
+}
+
+/* Copies elem_size bytes IN. The caller's object may die immediately after. */
+static int vec_push(Vec *v, const void *elem)
+{
+    if (v->len == v->cap && vec_reserve(v, v->len + 1) != 0) return -1;
+    memcpy(v->data + v->len * v->elem_size, elem, v->elem_size);
+    v->len++;
+    return 0;
+}
+
+/* Copies elem_size bytes OUT, so the caller supplies the destination. */
+static int vec_get(const Vec *v, size_t i, void *out)
+{
+    if (i >= v->len) return -1;
+    memcpy(out, v->data + i * v->elem_size, v->elem_size);
+    return 0;
+}
+
+/* ---------------------------------------------------------------------
+   Type-safe wrappers: written once per concrete type, they restore full
+   compile-time checking while the generic code stays generic.
+   --------------------------------------------------------------------- */
+typedef struct { int id; double score; } Record;
+
+static inline int  recvec_init(Vec *v)                    { return vec_init(v, sizeof(Record)); }
+static inline int  recvec_push(Vec *v, Record r)          { return vec_push(v, &r); }
+static inline Record *recvec_at(const Vec *v, size_t i)   { return (Record *)vec_at(v, i); }
+
+int main(void)
+{
+    /* The same generic code, three element types, zero duplication. */
+    Vec ints;   vec_init(&ints,  sizeof(int));
+    Vec doubles;vec_init(&doubles, sizeof(double));
+    Vec recs;   recvec_init(&recs);
+
+    for (int i = 0; i < 5; i++)      vec_push(&ints, &i);
+    for (double d = 0.5; d < 3; d++) vec_push(&doubles, &d);
+    for (int i = 0; i < 3; i++)      recvec_push(&recs, (Record){ i, i * 1.5 });
+
+    int iv;
+    vec_get(&ints, 2, &iv);
+    printf("ints[2] = %d\n", iv);
+
+    printf("doubles: ");
+    for (size_t i = 0; i < doubles.len; i++)
+        printf("%.1f ", *(double *)vec_at(&doubles, i));    /* cast on every read */
+    putchar('\n');
+
+    /* The typed wrapper needs no cast and catches type errors at compile time. */
+    printf("records: ");
+    for (size_t i = 0; i < recs.len; i++) {
+        Record *r = recvec_at(&recs, i);
+        printf("(%d,%.1f) ", r->id, r->score);
+    }
+    putchar('\n');
+
+    vec_free(&ints); vec_free(&doubles); vec_free(&recs);
+    return 0;
+}
+```
+
+A pointer container, where ownership must be stated explicitly:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* A container of void* elements. The 'destroy' callback IS the ownership
+   contract: non-NULL means the container owns and frees its elements;
+   NULL means the caller retains ownership. Documented in the type. */
+typedef struct {
+    void  **items;
+    size_t  len, cap;
+    void  (*destroy)(void *);     /* NULL = the container does not own items */
+} PtrList;
+
+static void plist_init(PtrList *l, void (*destroy)(void *))
+{
+    l->items = NULL; l->len = l->cap = 0; l->destroy = destroy;
+}
+
+static int plist_push(PtrList *l, void *item)
+{
+    if (l->len == l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 8;
+        void **tmp = realloc(l->items, cap * sizeof *tmp);
+        if (!tmp) return -1;
+        l->items = tmp; l->cap = cap;
+    }
+    l->items[l->len++] = item;
+    return 0;
+}
+
+static void plist_free(PtrList *l)
+{
+    if (l->destroy)                                  /* only if we own them */
+        for (size_t i = 0; i < l->len; i++) l->destroy(l->items[i]);
+    free(l->items);
+    plist_init(l, NULL);
+}
+
+int main(void)
+{
+    /* OWNING list: strdup'd strings are freed by plist_free. */
+    PtrList owned;
+    plist_init(&owned, free);
+    plist_push(&owned, strdup("alpha"));
+    plist_push(&owned, strdup("beta"));
+    for (size_t i = 0; i < owned.len; i++) printf("%s ", (char *)owned.items[i]);
+    putchar('\n');
+    plist_free(&owned);                              /* frees each string too */
+
+    /* BORROWING list: string literals must NOT be freed. */
+    PtrList borrowed;
+    plist_init(&borrowed, NULL);
+    plist_push(&borrowed, (void *)"gamma");
+    plist_push(&borrowed, (void *)"delta");
+    for (size_t i = 0; i < borrowed.len; i++) printf("%s ", (char *)borrowed.items[i]);
+    putchar('\n');
+    plist_free(&borrowed);                           /* frees only the array */
+    return 0;
+}
+```
+
+**Key Takeaways**
+
+- `void *` gives one implementation for all types, at the cost of every compile-time type check the language would otherwise perform.
+- Prefer a value container storing `elem_size` bytes over a pointer container: data stays contiguous and the container unambiguously owns its copies.
+- Ownership is the hardest part of a `void *` API — state it in the header, and encode it in the type where you can, such as an optional `destroy` callback.
+- Pointers returned into a value container's storage are invalidated by any growth, exactly as with a typed dynamic array.
+- Thin `static inline` typed wrappers restore full type safety at zero run-time cost while the generic implementation is still written once.
+
+> 🧪 Practice
+>
+> 1. Add `vec_set`, `vec_remove`, and `vec_swap_remove` to the generic value container, keeping all byte arithmetic correct.
+> 2. Write type-safe wrappers for `int` and `char *` vectors, then try to push an `int` into the string vector and confirm the compiler rejects it.
+> 3. Build a generic `foreach(Vec *v, void (*fn)(void *elem, void *ctx), void *ctx)` and use it to sum a vector of doubles.
+> 4. Interview-style: *"What does a `void *` container give up compared with a C++ template?"* Hint: think about when errors are detected and how many times the code is compiled per type.
 
 #### Comparator and Destructor Callbacks
 
+**Theory**
+
+A generic container can store anything, but sooner or later it needs to *do* something type-specific: compare two elements to sort them, free an element that owns memory, hash a key, or copy an element deeply. It cannot know how — so the caller supplies a **function pointer** that does.
+
+This is the same mechanism `qsort` uses, generalized. The container calls back into code you wrote, at the moment it needs type knowledge. Three callbacks cover nearly everything:
+
+**Comparator** — `int (*cmp)(const void *a, const void *b)`. Returns negative, zero, or positive, and must be a consistent total order. Used for sorting, for ordered containers, and for equality tests.
+
+**Destructor** — `void (*destroy)(void *elem)`. Releases whatever the element owns. Its presence or absence is the cleanest way to encode ownership: a container given a destructor owns its elements; one given `NULL` borrows them. Note that `free` matches this signature exactly, which is why `PtrList` above could take it directly.
+
+**Hash** — `uint64_t (*hash)(const void *key)`. Required for generic hash tables, and must agree with the comparator: **if two keys compare equal they must hash equal**, or lookups will miss entries that are present.
+
+Three design points separate a usable callback API from an awkward one.
+
+**Provide a context parameter.** A bare `int (*cmp)(const void *, const void *)` cannot express "sort by whichever field the user selected" without a global variable — which breaks reentrancy and thread safety. Adding a `void *ctx` parameter that the container passes through untouched solves it cleanly. This is why POSIX has `qsort_r` and why nearly every modern C callback API carries a context pointer. Design yours with one from the start; adding it later breaks every caller.
+
+**Bundle related callbacks into a struct.** A container needing compare, hash, destroy, and copy should take one `const Ops *` rather than four parameters. New capabilities can then be added without changing every call site, and a single `static const Ops` per type is defined once and reused.
+
+**Be explicit about what the container may call and when.** May `destroy` be called on a partially constructed element after an allocation failure? Is the comparator allowed to be called with an element and itself? Unstated answers become version-dependent bugs.
+
+Finally, note the cost. An indirect call through a function pointer usually cannot be inlined, so a generic sort is several times slower than a type-specialized one. That is an acceptable price almost everywhere and unacceptable in a hot inner loop — which is what macro-generated containers, covered next, exist to solve.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+/* ---------------------------------------------------------------------
+   One Ops struct bundles everything type-specific. Adding a callback
+   later does not change any call site.
+   --------------------------------------------------------------------- */
+typedef struct {
+    size_t    size;                                     /* bytes per element */
+    int     (*cmp)(const void *a, const void *b, void *ctx);  /* note ctx */
+    void    (*destroy)(void *elem);                     /* NULL = not owned  */
+    uint64_t (*hash)(const void *elem);                 /* NULL = no hashing */
+} Ops;
+
+/* ---------------------------------------------------------------------
+   A generic sortable list built on Ops.
+   --------------------------------------------------------------------- */
+typedef struct {
+    unsigned char *data;
+    size_t         len, cap;
+    const Ops     *ops;
+} List;
+
+static void list_init(List *l, const Ops *ops)
+{
+    l->data = NULL; l->len = l->cap = 0; l->ops = ops;
+}
+
+static void list_free(List *l)
+{
+    if (l->ops->destroy)                       /* the destructor IS the contract */
+        for (size_t i = 0; i < l->len; i++)
+            l->ops->destroy(l->data + i * l->ops->size);
+    free(l->data);
+    l->data = NULL; l->len = l->cap = 0;
+}
+
+static int list_push(List *l, const void *elem)
+{
+    if (l->len == l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 8;
+        unsigned char *tmp = realloc(l->data, cap * l->ops->size);
+        if (!tmp) return -1;
+        l->data = tmp; l->cap = cap;
+    }
+    memcpy(l->data + l->len * l->ops->size, elem, l->ops->size);
+    l->len++;
+    return 0;
+}
+
+/* Insertion sort: short, and it shows the ctx threading clearly.
+   ctx flows from the caller, through the container, into the comparator,
+   with the container never inspecting it. */
+static void list_sort(List *l, void *ctx)
+{
+    size_t         sz  = l->ops->size;
+    unsigned char *tmp = malloc(sz);
+    if (!tmp) return;
+
+    for (size_t i = 1; i < l->len; i++) {
+        memcpy(tmp, l->data + i * sz, sz);                 /* lift element i */
+        size_t j = i;
+        while (j > 0 && l->ops->cmp(l->data + (j - 1) * sz, tmp, ctx) > 0) {
+            memcpy(l->data + j * sz, l->data + (j - 1) * sz, sz);   /* shift up */
+            j--;
+        }
+        memcpy(l->data + j * sz, tmp, sz);                 /* drop it in */
+    }
+    free(tmp);
+}
+
+/* ---------------------------------------------------------------------
+   A concrete element type, with its callbacks defined once.
+   --------------------------------------------------------------------- */
+typedef struct { char *name; int age; double salary; } Person;
+
+typedef enum { BY_NAME, BY_AGE, BY_SALARY } SortKey;
+
+/* One comparator handles every field, because ctx carries the choice.
+   Without ctx this would need a global variable or three comparators. */
+static int person_cmp(const void *a, const void *b, void *ctx)
+{
+    const Person *p = a, *q = b;
+    SortKey key = *(const SortKey *)ctx;
+
+    switch (key) {
+    case BY_NAME:   return strcmp(p->name, q->name);
+    case BY_AGE:    return (p->age > q->age) - (p->age < q->age);
+    case BY_SALARY: return (p->salary > q->salary) - (p->salary < q->salary);
+    }
+    return 0;
+}
+
+/* The element owns its name, so the destructor must free it. */
+static void person_destroy(void *elem)
+{
+    Person *p = elem;
+    free(p->name);
+    p->name = NULL;                       /* defensive: catch a double free */
+}
+
+static uint64_t person_hash(const void *elem)
+{
+    const Person *p = elem;
+    uint64_t h = 1469598103934665603ULL;
+    for (const char *s = p->name; *s; s++) { h ^= (unsigned char)*s; h *= 1099511628211ULL; }
+    return h;
+    /* Must agree with person_cmp under BY_NAME: equal names -> equal hashes. */
+}
+
+/* Defined once, referenced everywhere. */
+static const Ops PERSON_OPS = {
+    .size = sizeof(Person),
+    .cmp = person_cmp,
+    .destroy = person_destroy,
+    .hash = person_hash,
+};
+
+static void dump(const List *l, const char *label)
+{
+    printf("%-18s", label);
+    for (size_t i = 0; i < l->len; i++) {
+        const Person *p = (const Person *)(l->data + i * l->ops->size);
+        printf("%s(%d) ", p->name, p->age);
+    }
+    putchar('\n');
+}
+
+int main(void)
+{
+    List people;
+    list_init(&people, &PERSON_OPS);
+
+    const char *names[] = { "carol", "alice", "bob" };
+    const int   ages[]  = { 41, 29, 35 };
+
+    for (int i = 0; i < 3; i++) {
+        Person p = { strdup(names[i]), ages[i], 50000.0 + i * 1000 };
+        if (!p.name || list_push(&people, &p) != 0) { free(p.name); break; }
+        /* Ownership of p.name has moved into the list -- do NOT free it here. */
+    }
+
+    dump(&people, "unsorted:");
+
+    SortKey key = BY_NAME;  list_sort(&people, &key); dump(&people, "by name:");
+    key = BY_AGE;           list_sort(&people, &key); dump(&people, "by age:");
+
+    printf("hash of first: %llu\n",
+           (unsigned long long)people.ops->hash(people.data));
+
+    list_free(&people);          /* calls person_destroy on every element */
+    return 0;
+}
+```
+
+Why the context parameter is not optional:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+/* WITHOUT ctx, a configurable comparator needs shared mutable state. */
+static int g_descending = 0;                    /* a global: not thread-safe */
+
+static int cmp_global(const void *a, const void *b)
+{
+    int x = *(const int *)a, y = *(const int *)b;
+    int r = (x > y) - (x < y);
+    return g_descending ? -r : r;               /* two threads sorting in
+                                                   different directions race */
+}
+
+/* WITH ctx, the direction travels with the call: reentrant and thread-safe. */
+static int cmp_ctx(const void *a, const void *b, void *ctx)
+{
+    int x = *(const int *)a, y = *(const int *)b;
+    int r = (x > y) - (x < y);
+    return *(const int *)ctx ? -r : r;
+}
+
+int main(void)
+{
+    int v[] = { 3, 1, 2 };
+
+    g_descending = 1;
+    qsort(v, 3, sizeof *v, cmp_global);         /* standard qsort has no ctx */
+    printf("%d %d %d\n", v[0], v[1], v[2]);     /* 3 2 1 */
+
+    int descending = 0;
+    printf("cmp_ctx(1,2) ascending  = %d\n", cmp_ctx(&v[2], &v[1], &descending));
+    descending = 1;
+    printf("cmp_ctx(1,2) descending = %d\n", cmp_ctx(&v[2], &v[1], &descending));
+    return 0;
+}
+```
+
+| Callback | Signature | Purpose | Omitting it means |
+|---|---|---|---|
+| Compare | `int (*)(const void *, const void *, void *ctx)` | ordering, equality | no sorting or ordered lookup |
+| Destroy | `void (*)(void *)` | release owned resources | the container borrows, caller frees |
+| Hash | `uint64_t (*)(const void *)` | bucket selection | no hash-table use |
+| Copy | `int (*)(void *dst, const void *src)` | deep copy | shallow `memcpy` only |
+
+**Key Takeaways**
+
+- Callbacks supply the type-specific behavior a generic container cannot know: comparing, destroying, hashing, and copying.
+- Always include a `void *ctx` parameter the container passes through untouched — without it, configurable comparators need globals, which breaks reentrancy and thread safety.
+- The presence of a destructor is the cleanest encoding of ownership: with one, the container owns its elements; with `NULL`, it borrows them.
+- Bundle related callbacks in an `Ops` struct so new capabilities can be added without changing every call site.
+- A hash callback must agree with the comparator — equal elements must hash equally, or lookups will miss entries that are present.
+
+> 🧪 Practice
+>
+> 1. Add a `copy` callback to `Ops` and implement `list_clone` that deep-copies every element, correctly handling a failure partway through.
+> 2. Write comparators for a `Person` list that sort by salary descending and then by name ascending, using only `ctx` to select between orderings.
+> 3. Replace the insertion sort in `list_sort` with a call to `qsort`, and explain why the `ctx` parameter cannot be passed through the standard `qsort`.
+> 4. Interview-style: *"Why do modern C callback APIs almost always take a context pointer?"* Hint: consider two threads calling the same function with different configurations.
+
 #### Macro-Generated Containers
+
+**Theory**
+
+The `void *` approach costs type safety and an unindexable indirect call per comparison. There is another way to get generic containers in C, and it operates at a different stage of the build: **generate real, typed code with the preprocessor**.
+
+The idea is to write the container once as a macro whose parameter is a *type*, then instantiate it per element type. `DEFINE_VEC(int)` expands into a complete `int` vector — a real `struct`, real functions taking `int`, real comparisons the compiler can inline. This is C's closest analogue to C++ templates, and the resulting code is exactly what you would have written by hand.
+
+The gains are the mirror image of `void *`'s losses:
+
+- **Full type checking.** Pushing a `double` into an `int` vector is a compile error.
+- **No indirection.** Elements are stored by value in a typed array; comparisons are inline operators, not calls through a pointer.
+- **Optimizable.** The compiler sees concrete types and can vectorize, unroll, and inline. A macro-generated sort typically runs several times faster than `qsort`.
+
+The costs are equally real:
+
+- **Code bloat.** Each instantiation is a full copy of every function. Ten types means ten copies in the binary.
+- **Miserable diagnostics.** An error inside a macro expansion is reported at the instantiation line, often as a wall of text about tokens you never wrote.
+- **Undebuggable.** The whole expansion is one logical line, so a debugger cannot step through it and breakpoints inside it are impossible.
+- **Awkward to write.** Every line needs a trailing backslash, and the code cannot be compiled or tested on its own.
+
+Two preprocessor operators make this possible:
+
+- **`##`** (token pasting) joins tokens to build names: `vec_##T##_push` becomes `vec_int_push` when `T` is `int`. This is how each instantiation gets distinct function names.
+- **`#`** (stringizing) turns a parameter into a string literal, useful for generating format strings and debug output.
+
+A crucial detail: **the type must be a single token** to paste into a name. `unsigned int` and `char *` will not work directly. The standard workaround is a `typedef` first (`typedef char *str;`), or a separate name parameter (`DEFINE_VEC(char *, str)`).
+
+The alternative style, used by several well-known single-header libraries, is the **X-macro / include trick**: write the container in a header that reads `#define T ...` from the includer, then `#include` it once per type. It keeps the code readable — real lines, no backslashes, and it can be syntax-highlighted — at the cost of an unusual include pattern.
+
+In practice, the choice is: use `void *` by default for lower binary size and comprehensible errors; reach for macro generation when profiling shows the indirect calls matter, or when the type safety is worth the diagnostics.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ---------------------------------------------------------------------
+   DEFINE_VEC(T) expands into a complete, typed dynamic array.
+   Every line but the last needs a trailing backslash, and nothing --
+   not even a space -- may follow one.
+   --------------------------------------------------------------------- */
+#define DEFINE_VEC(T)                                                        \
+                                                                             \
+    typedef struct {                                                         \
+        T     *data;                                                         \
+        size_t len, cap;                                                     \
+    } Vec_##T;                        /* ## pastes: Vec_int, Vec_double */   \
+                                                                             \
+    static inline void vec_##T##_init(Vec_##T *v)                            \
+    {                                                                        \
+        v->data = NULL; v->len = v->cap = 0;                                 \
+    }                                                                        \
+                                                                             \
+    static inline void vec_##T##_free(Vec_##T *v)                            \
+    {                                                                        \
+        free(v->data); v->data = NULL; v->len = v->cap = 0;                  \
+    }                                                                        \
+                                                                             \
+    static inline int vec_##T##_push(Vec_##T *v, T value)                    \
+    {                                                                        \
+        if (v->len == v->cap) {                                              \
+            size_t cap = v->cap ? v->cap * 2 : 8;                            \
+            T *tmp = realloc(v->data, cap * sizeof *tmp);                    \
+            if (!tmp) return -1;                                             \
+            v->data = tmp; v->cap = cap;                                     \
+        }                                                                    \
+        v->data[v->len++] = value;    /* a real typed assignment */          \
+        return 0;                                                            \
+    }                                                                        \
+                                                                             \
+    static inline int vec_##T##_pop(Vec_##T *v, T *out)                      \
+    {                                                                        \
+        if (v->len == 0) return -1;                                          \
+        *out = v->data[--v->len];                                            \
+        return 0;                                                            \
+    }                                                                        \
+                                                                             \
+    /* The comparison is an inline operator, not a call through a            \
+       function pointer -- this is the whole performance argument. */        \
+    static inline void vec_##T##_sort(Vec_##T *v)                            \
+    {                                                                        \
+        for (size_t i = 1; i < v->len; i++) {                                \
+            T key = v->data[i];                                              \
+            size_t j = i;                                                    \
+            while (j > 0 && v->data[j - 1] > key) {                          \
+                v->data[j] = v->data[j - 1];                                 \
+                j--;                                                         \
+            }                                                                \
+            v->data[j] = key;                                                \
+        }                                                                    \
+    }
+
+/* A multi-token type must be typedef'd to a single token before pasting. */
+typedef char *str;
+
+/* Each line generates an entire typed container. */
+DEFINE_VEC(int)
+DEFINE_VEC(double)
+DEFINE_VEC(str)
+
+int main(void)
+{
+    Vec_int vi;
+    vec_int_init(&vi);
+    int values[] = { 5, 2, 9, 1, 7 };
+    for (int i = 0; i < 5; i++) vec_int_push(&vi, values[i]);
+
+    vec_int_sort(&vi);
+    printf("ints: ");
+    for (size_t i = 0; i < vi.len; i++) printf("%d ", vi.data[i]);
+    putchar('\n');
+
+    Vec_double vd;
+    vec_double_init(&vd);
+    vec_double_push(&vd, 3.5);
+    vec_double_push(&vd, 1.25);
+    vec_double_sort(&vd);
+    printf("doubles: %.2f %.2f\n", vd.data[0], vd.data[1]);
+
+    /* vec_int_push(&vi, 3.7);  <-- would be a type ERROR, caught at compile
+       time. The void* version would silently accept it. */
+
+    Vec_str vs;
+    vec_str_init(&vs);
+    vec_str_push(&vs, "hello");
+    printf("strings: %s\n", vs.data[0]);
+
+    vec_int_free(&vi); vec_double_free(&vd); vec_str_free(&vs);
+    return 0;
+}
+```
+
+A macro-generated intrusive-free linked list, showing stringizing alongside pasting:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+#define DEFINE_LIST(T, FMT)                                                  \
+                                                                             \
+    typedef struct Node_##T {                                                \
+        T                value;                                              \
+        struct Node_##T *next;                                               \
+    } Node_##T;                                                              \
+                                                                             \
+    static inline int list_##T##_push(Node_##T **head, T value)              \
+    {                                                                        \
+        Node_##T *n = malloc(sizeof *n);                                     \
+        if (!n) return -1;                                                   \
+        n->value = value; n->next = *head; *head = n;                        \
+        return 0;                                                            \
+    }                                                                        \
+                                                                             \
+    static inline void list_##T##_print(const Node_##T *head)                \
+    {                                                                        \
+        /* # stringizes the type name into the label. */                     \
+        printf("%s: ", #T);                                                  \
+        for (const Node_##T *n = head; n; n = n->next)                       \
+            printf(FMT " ", n->value);                                       \
+        putchar('\n');                                                       \
+    }                                                                        \
+                                                                             \
+    static inline void list_##T##_free(Node_##T *head)                       \
+    {                                                                        \
+        while (head) { Node_##T *next = head->next; free(head); head = next; }\
+    }
+
+DEFINE_LIST(int, "%d")
+DEFINE_LIST(float, "%.1f")
+
+int main(void)
+{
+    Node_int *ints = NULL;
+    for (int i = 1; i <= 3; i++) list_int_push(&ints, i * 11);
+    list_int_print(ints);                  /* int: 33 22 11 */
+    list_int_free(ints);
+
+    Node_float *floats = NULL;
+    list_float_push(&floats, 2.5f);
+    list_float_push(&floats, 1.5f);
+    list_float_print(floats);              /* float: 1.5 2.5 */
+    list_float_free(floats);
+    return 0;
+}
+```
+
+```bash
+# Inspect an expansion when a macro-generated error makes no sense.
+# -E stops after preprocessing; a formatter makes the result readable.
+$ gcc -E prog.c | sed -n '/Vec_int/,/^$/p' | head -20
+
+# Without formatting, the whole instantiation is ONE line -- which is also
+# why a debugger cannot step through it and breakpoints inside it fail.
+```
+
+| | `void *` container | Macro-generated container |
+|---|---|---|
+| Type checking | none | full, at compile time |
+| Element storage | `void *` or opaque bytes | the real type, by value |
+| Comparison | indirect call | inlined operator |
+| Binary size | one copy | one copy per type |
+| Error messages | normal | expansion-site walls of text |
+| Debugger stepping | normal | impossible inside the macro |
+| Runtime type flexibility | can hold mixed types | fixed at compile time |
+| Best when | many types, size matters | few types, speed matters |
+
+**Key Takeaways**
+
+- Macro generation produces real typed code per element type, restoring full type checking and letting the compiler inline comparisons that a `void *` container must make through a pointer.
+- `##` pastes tokens to build per-type names and `#` stringizes them; the type must be a single token, so multi-word types need a `typedef` first.
+- The costs are code bloat, diagnostics reported at the instantiation site, and the inability to step through the expansion in a debugger.
+- Inspect a confusing expansion with `gcc -E`; it is the only practical way to debug a macro-generated container.
+- Default to `void *` for flexibility and comprehensible errors, and switch to macro generation when profiling shows the indirect calls actually matter.
+
+> 🧪 Practice
+>
+> 1. Extend `DEFINE_VEC` with `insert`, `remove`, and `find`, then instantiate it for a `struct Point` typedef'd to a single token.
+> 2. Deliberately introduce a syntax error inside `DEFINE_VEC` and read the resulting message; then use `gcc -E` to locate the real problem.
+> 3. Benchmark sorting a million `int`s with `qsort` against `vec_int_sort` upgraded to quicksort. Explain the difference in terms of the comparison.
+> 4. Interview-style: *"When would you choose macro-generated containers over `void *` ones?"* Hint: name what each approach costs and which cost your hot loop actually pays.
 
 #### Intrusive Data Structures
 
+**Theory**
+
+Every container so far *contains* its elements: the list allocates a node that holds your data, or the vector copies your data into its array. An **intrusive** structure inverts this. The link fields live **inside your own struct**, and the container is just the code that manipulates them.
+
+```text
+   NON-INTRUSIVE (the list owns nodes that point at your data)
+
+     list -> +--------+     +--------+
+             | next   |---->| next   |---> NULL
+             | data * |     | data * |
+             +--------+     +--------+
+                  |              |
+                  v              v
+             +--------+     +--------+
+             | Task   |     | Task   |     two allocations per element
+             +--------+     +--------+     two pointer hops to reach data
+
+   INTRUSIVE (the links live inside your struct)
+
+     list -> +-----------+       +-----------+
+             | Task      |       | Task      |
+             |  id       |       |  id       |
+             |  name     |       |  name     |
+             |  link.next|------>|  link.next|---> NULL
+             +-----------+       +-----------+
+
+             one allocation, data reached directly, and the SAME Task
+             can carry a second link field to sit in a second list
+```
+
+The consequences are substantial enough that the Linux kernel, BSD's `<sys/queue.h>`, and most embedded systems use intrusive lists almost exclusively:
+
+**One allocation instead of two.** The node *is* the element. Insertion cannot fail on allocation, because there is nothing to allocate — which matters enormously in kernels, interrupt handlers, and any code where failure has no good recovery.
+
+**No indirection.** The link and the data are in the same cache line, so traversal touches half as much memory.
+
+**One element, several containers.** Add two link fields and the same object can sit in a free list and a hash bucket simultaneously, or in both an LRU list and a priority queue. A non-intrusive container cannot express this without duplicating pointers to the element.
+
+**O(1) removal given only the element.** You already hold the object; its links are right there. No lookup needed.
+
+The cost is a genuine coupling: **your struct must know about the container**, so the container cannot store types you do not control. You cannot put an `int` or a third-party struct in an intrusive list without wrapping it.
+
+The technique that makes it work is recovering the containing struct from a pointer to its embedded link. `offsetof` (from `<stddef.h>`) gives the byte distance from the start of a struct to a member; subtracting it from the member's address yields the struct's address. That is the famous `container_of` macro:
+
+```c
+#define container_of(ptr, type, member) \
+    ((type *)((char *)(ptr) - offsetof(type, member)))
+```
+
+Because the link fields are identical for every element type, the traversal code is written once and is genuinely type-agnostic — no `void *`, no callbacks, no code duplication per type.
+
+Two cautions. `container_of` is only valid when `ptr` really points at that member of that type; get the type wrong and you compute a bogus address with no diagnostic. And **ownership is entirely the caller's**: the container never allocates or frees, so removing an element from a list does not free it.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>      /* offsetof */
+#include <string.h>
+
+/* ---------------------------------------------------------------------
+   The generic link. Every element embeds one (or several) of these.
+   This is the Linux kernel's list_head, simplified.
+   --------------------------------------------------------------------- */
+typedef struct Link { struct Link *prev, *next; } Link;
+
+/* Recover the enclosing struct from a pointer to its embedded Link.
+   'member' names WHICH link, so an element in two lists is unambiguous. */
+#define container_of(ptr, type, member) \
+    ((type *)((char *)(ptr) - offsetof(type, member)))
+
+/* A circular list with a sentinel: next/prev are never NULL, so every
+   operation is branch-free. */
+static void link_init(Link *l)          { l->prev = l->next = l; }
+
+static void link_insert_before(Link *at, Link *n)
+{
+    n->prev = at->prev; n->next = at;
+    at->prev->next = n; at->prev = n;
+}
+
+static void link_remove(Link *n)
+{
+    n->prev->next = n->next;
+    n->next->prev = n->prev;
+    link_init(n);                        /* self-link: removing twice is safe */
+}
+
+static int link_empty(const Link *head) { return head->next == head; }
+
+/* Iterate the links of a list bounded by its sentinel. */
+#define list_for_each(pos, head) \
+    for (Link *pos = (head)->next; pos != (head); pos = pos->next)
+
+/* Iterate safely when the body may remove the current element. */
+#define list_for_each_safe(pos, tmp, head)                       \
+    for (Link *pos = (head)->next, *tmp = pos->next;             \
+         pos != (head); pos = tmp, tmp = pos->next)
+
+/* ---------------------------------------------------------------------
+   An element that lives in TWO lists at once -- the thing a non-intrusive
+   container cannot express without duplicating the element.
+   --------------------------------------------------------------------- */
+typedef struct {
+    int  id;
+    char name[24];
+    int  priority;
+
+    Link all_link;        /* membership in the "every task" list */
+    Link ready_link;      /* membership in the "runnable" list   */
+} Task;
+
+static Task *task_new(int id, const char *name, int priority)
+{
+    Task *t = malloc(sizeof *t);          /* ONE allocation: node and data */
+    if (!t) return NULL;
+    t->id = id;
+    snprintf(t->name, sizeof t->name, "%s", name);
+    t->priority = priority;
+    link_init(&t->all_link);
+    link_init(&t->ready_link);
+    return t;
+}
+
+int main(void)
+{
+    Link all_tasks, ready;
+    link_init(&all_tasks);
+    link_init(&ready);
+
+    const char *names[] = { "compile", "test", "deploy", "notify" };
+    for (int i = 0; i < 4; i++) {
+        Task *t = task_new(i, names[i], i % 2);
+        if (!t) break;
+
+        /* Insertion CANNOT FAIL -- there is nothing to allocate. */
+        link_insert_before(&all_tasks, &t->all_link);
+        if (t->priority == 1)
+            link_insert_before(&ready, &t->ready_link);   /* the SAME object */
+    }
+
+    printf("all tasks:\n");
+    list_for_each(p, &all_tasks) {
+        Task *t = container_of(p, Task, all_link);       /* link -> element */
+        printf("  %d %-8s prio=%d\n", t->id, t->name, t->priority);
+    }
+
+    printf("ready tasks:\n");
+    list_for_each(p, &ready) {
+        Task *t = container_of(p, Task, ready_link);     /* the OTHER link */
+        printf("  %d %s\n", t->id, t->name);
+    }
+
+    /* Remove from one list without touching the other, and without any
+       lookup -- we already hold the element. */
+    list_for_each_safe(p, tmp, &ready) {
+        Task *t = container_of(p, Task, ready_link);
+        if (t->id == 1) {
+            link_remove(&t->ready_link);                 /* still in all_tasks */
+            printf("unqueued %s (still tracked: %s)\n", t->name,
+                   link_empty(&t->all_link) ? "no" : "yes");
+        }
+    }
+
+    /* The container never owns anything: freeing is entirely ours. */
+    list_for_each_safe(p, tmp, &all_tasks) {
+        Task *t = container_of(p, Task, all_link);
+        link_remove(&t->all_link);
+        link_remove(&t->ready_link);
+        free(t);
+    }
+    printf("all empty: %s\n", link_empty(&all_tasks) ? "yes" : "no");
+    return 0;
+}
+```
+
+How `container_of` computes the address:
+
+```c
+#include <stdio.h>
+#include <stddef.h>
+
+typedef struct Link { struct Link *prev, *next; } Link;
+
+typedef struct {
+    int  id;          /* offset 0  */
+    char name[24];    /* offset 4  */
+    Link hook;        /* offset 32 (after padding) */
+} Item;
+
+#define container_of(ptr, type, member) \
+    ((type *)((char *)(ptr) - offsetof(type, member)))
+
+int main(void)
+{
+    Item it = { 7, "example", { NULL, NULL } };
+    Link *l = &it.hook;                    /* all the container ever sees */
+
+    printf("offsetof(Item, hook) = %zu\n", offsetof(Item, hook));
+    printf("&it       = %p\n", (void *)&it);
+    printf("&it.hook  = %p\n", (void *)l);
+
+    /* Subtract the member's offset from its address to recover the struct. */
+    Item *back = container_of(l, Item, hook);
+    printf("recovered = %p  id=%d name=%s\n", (void *)back, back->id, back->name);
+    printf("identical: %s\n", back == &it ? "yes" : "no");
+    return 0;
+}
+```
+
+| | Non-intrusive | Intrusive |
+|---|---|---|
+| Allocations per element | 2 (node + data) | 1 (the element itself) |
+| Insertion can fail | yes (`malloc`) | no |
+| Pointer hops to reach data | 2 | 1 |
+| Element in multiple containers | needs duplicate pointers | one extra link field each |
+| Remove given the element | needs a lookup | O(1), links are right there |
+| Works with types you do not control | yes | no — the struct must embed the link |
+| Type safety | via `void *` or macros | via `container_of`, unchecked |
+
+**Key Takeaways**
+
+- An intrusive structure puts the link fields inside your struct, so the element *is* the node — one allocation, no indirection, and insertion that cannot fail.
+- `container_of` recovers the enclosing struct from an embedded link by subtracting `offsetof`, which is what lets one traversal implementation serve every element type.
+- Embedding several link fields lets one object belong to several containers at once, which non-intrusive containers cannot express without duplicating pointers.
+- The container never allocates or frees, so ownership stays entirely with the caller; removing an element does not destroy it.
+- The cost is coupling — your struct must embed the container's link — so intrusive structures cannot hold primitives or third-party types without a wrapper.
+
+> 🧪 Practice
+>
+> 1. Add `link_insert_after` and `list_count`, then build an intrusive LRU cache that moves an accessed element to the front in O(1).
+> 2. Give `Task` a third link field and place the same task in an all-tasks list, a ready list, and a per-owner list simultaneously.
+> 3. Write `list_for_each_entry(pos, head, type, member)` that yields typed element pointers directly, hiding the `container_of` call from the loop body.
+> 4. Interview-style: *"Why does the Linux kernel use intrusive lists everywhere?"* Hint: consider what a non-intrusive insertion must do that can fail, and what a kernel can do when it does.
+
 #### API Design for Libraries
+
+**Theory**
+
+A container that only its author can use is not reusable, no matter how good the algorithm is. Turning working code into a library is a distinct skill, and in C — with no namespaces, no destructors, and no exceptions — the conventions carry all the weight the language does not.
+
+**Prefix everything.** C has one global namespace, so every exported symbol needs a project prefix: `vec_push`, not `push`. Without it, linking two libraries that both define `list_init` fails, or worse, silently binds to the wrong one. The same applies to macros and typedefs. Make every non-exported function `static`.
+
+**Hide the representation.** If callers can see your struct's fields, they will read them, and you can never change the layout again without breaking every user. The **opaque pointer** (or handle) pattern declares the type in the header without defining it:
+
+```c
+typedef struct Vec Vec;         /* in the header: an incomplete type */
+```
+
+Callers can hold a `Vec *` but cannot dereference it, cannot see its size, and cannot allocate one on the stack — so they must use your `vec_create`. In exchange you can change everything about the layout without recompiling their code. The cost is one heap allocation per object and no inlining across the boundary; for performance-critical small types, exposing the struct and documenting the fields as private is the usual compromise.
+
+**Pair every constructor with exactly one destructor.** `vec_create` / `vec_destroy`. Make the destructor accept `NULL` (as `free` does), so error paths do not need a check. Never require the caller to release something through a different mechanism than the one that produced it.
+
+**Make ownership explicit in the names and the docs.** Does `vec_push` copy the string or take it? Does `vec_get` return a borrowed pointer valid until the next mutation, or a copy the caller must free? Every function that takes or returns a pointer needs a documented answer. Conventions help: a `_copy` suffix for functions that duplicate, `_ref` or a `const` return for borrowed values, and `_take` or `_own` for transfer.
+
+**Report errors consistently.** One convention for the whole library, as in Chapter 9. Say what happens on failure — in particular whether the object is still usable, which is what decides if the caller can retry.
+
+**Keep the header self-contained and minimal.** It must compile when included first and alone. Include only what its declarations need, and put implementation-only includes in the `.c` file. Wrap it in an include guard and, for C++ consumers, `extern "C"`.
+
+**Design for testability and the future.** Take a context parameter in callbacks. Let callers supply allocators if the library might be used in an embedded or arena-based setting. Version the library, and treat every exported symbol as a promise you must keep.
+
+**Examples**
+
+A complete public header showing the opaque-handle pattern:
+
+```c
+/* ============================== vec.h ============================== */
+#ifndef VEC_H
+#define VEC_H
+
+#include <stddef.h>      /* size_t -- self-contained: include what you use */
+
+#ifdef __cplusplus
+extern "C" {             /* let C++ consumers link against C symbols */
+#endif
+
+/* Opaque handle: declared, never defined here. Callers can hold a Vec*
+   but cannot see the fields, cannot know sizeof(Vec), and cannot put one
+   on the stack -- so the layout is free to change without breaking them. */
+typedef struct Vec Vec;
+
+/* One error convention for the entire library. */
+typedef enum {
+    VEC_OK = 0,
+    VEC_ERR_ALLOC   = -1,   /* out of memory; the vector is unchanged */
+    VEC_ERR_BOUNDS  = -2,   /* index out of range; the vector is unchanged */
+    VEC_ERR_INVALID = -3    /* NULL handle or a nonsensical argument */
+} VecStatus;
+
+/* Human-readable text for a status code. The returned string is static:
+   the caller must NOT free it. */
+const char *vec_strerror(VecStatus status);
+
+/* --- lifecycle: exactly one constructor, exactly one destructor ------
+ * vec_create: returns NULL on allocation failure.
+ *   elem_size must be > 0. If 'destroy' is non-NULL the vector OWNS its
+ *   elements and calls destroy on each during vec_destroy; if it is NULL
+ *   the vector only stores bytes and owns nothing beyond its own buffer.
+ * vec_destroy: accepts NULL (a no-op), so error paths need no check.
+ */
+Vec *vec_create(size_t elem_size, void (*destroy)(void *elem));
+void vec_destroy(Vec *v);
+
+/* --- capacity ------------------------------------------------------- */
+size_t    vec_len(const Vec *v);
+size_t    vec_capacity(const Vec *v);
+VecStatus vec_reserve(Vec *v, size_t want);
+
+/* --- element access -------------------------------------------------
+ * vec_push COPIES elem_size bytes from 'elem'; the caller keeps ownership
+ *   of the object it passed and may destroy it immediately after.
+ * vec_at returns a BORROWED pointer into the vector's own storage. It is
+ *   invalidated by any push, reserve, or destroy. Do not free it.
+ * vec_get COPIES the element out into caller-supplied storage, which is
+ *   the safe choice when the vector may be modified afterwards.
+ */
+VecStatus vec_push(Vec *v, const void *elem);
+void      *vec_at(const Vec *v, size_t index);
+VecStatus vec_get(const Vec *v, size_t index, void *out);
+
+/* --- iteration ------------------------------------------------------
+ * 'ctx' is passed through untouched, so callbacks need no globals.
+ * Returning non-zero from fn stops the iteration early.
+ */
+VecStatus vec_foreach(const Vec *v, int (*fn)(void *elem, void *ctx), void *ctx);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* VEC_H */
+```
+
+The implementation, where the struct actually lives:
+
+```c
+/* ============================== vec.c ============================== */
+#include "vec.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+/* The definition is here, not in the header: callers cannot depend on it. */
+struct Vec {
+    unsigned char *data;
+    size_t         elem_size;
+    size_t         len, cap;
+    void         (*destroy)(void *elem);
+};
+
+/* Internal helpers are static: they never reach the global namespace. */
+static void *slot(const Vec *v, size_t i) { return v->data + i * v->elem_size; }
+
+const char *vec_strerror(VecStatus status)
+{
+    switch (status) {
+    case VEC_OK:            return "success";
+    case VEC_ERR_ALLOC:     return "allocation failed";
+    case VEC_ERR_BOUNDS:    return "index out of bounds";
+    case VEC_ERR_INVALID:   return "invalid argument";
+    }
+    return "unknown error";
+}
+
+Vec *vec_create(size_t elem_size, void (*destroy)(void *elem))
+{
+    if (elem_size == 0) return NULL;
+
+    Vec *v = malloc(sizeof *v);
+    if (!v) return NULL;
+
+    v->data = NULL;
+    v->elem_size = elem_size;
+    v->len = v->cap = 0;
+    v->destroy = destroy;
+    return v;
+}
+
+void vec_destroy(Vec *v)
+{
+    if (!v) return;                       /* NULL-tolerant, like free() */
+
+    if (v->destroy)                       /* only if we were told we own them */
+        for (size_t i = 0; i < v->len; i++) v->destroy(slot(v, i));
+
+    free(v->data);
+    free(v);
+}
+
+size_t vec_len(const Vec *v)      { return v ? v->len : 0; }
+size_t vec_capacity(const Vec *v) { return v ? v->cap : 0; }
+
+VecStatus vec_reserve(Vec *v, size_t want)
+{
+    if (!v) return VEC_ERR_INVALID;
+    if (want <= v->cap) return VEC_OK;
+
+    size_t cap = v->cap ? v->cap : 4;
+    while (cap < want) {
+        if (cap > SIZE_MAX / 2) return VEC_ERR_ALLOC;
+        cap *= 2;
+    }
+    if (cap > SIZE_MAX / v->elem_size) return VEC_ERR_ALLOC;
+
+    unsigned char *tmp = realloc(v->data, cap * v->elem_size);
+    if (!tmp) return VEC_ERR_ALLOC;       /* v is UNCHANGED and still usable */
+
+    v->data = tmp;
+    v->cap  = cap;
+    return VEC_OK;
+}
+
+VecStatus vec_push(Vec *v, const void *elem)
+{
+    if (!v || !elem) return VEC_ERR_INVALID;
+
+    if (v->len == v->cap) {
+        VecStatus st = vec_reserve(v, v->len + 1);
+        if (st != VEC_OK) return st;
+    }
+    memcpy(slot(v, v->len), elem, v->elem_size);   /* COPY: caller keeps its object */
+    v->len++;
+    return VEC_OK;
+}
+
+void *vec_at(const Vec *v, size_t index)
+{
+    if (!v || index >= v->len) return NULL;
+    return slot(v, index);                          /* BORROWED, not owned */
+}
+
+VecStatus vec_get(const Vec *v, size_t index, void *out)
+{
+    if (!v || !out)        return VEC_ERR_INVALID;
+    if (index >= v->len)   return VEC_ERR_BOUNDS;
+    memcpy(out, slot(v, index), v->elem_size);
+    return VEC_OK;
+}
+
+VecStatus vec_foreach(const Vec *v, int (*fn)(void *elem, void *ctx), void *ctx)
+{
+    if (!v || !fn) return VEC_ERR_INVALID;
+    for (size_t i = 0; i < v->len; i++)
+        if (fn(slot(v, i), ctx) != 0) break;        /* non-zero stops early */
+    return VEC_OK;
+}
+```
+
+Using it, with the header's promises made concrete:
+
+```c
+/* ============================== main.c ============================== */
+#include "vec.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Elements own a heap string, so the vector needs a destructor. */
+typedef struct { int id; char *label; } Item;
+
+static void item_destroy(void *elem) { free(((Item *)elem)->label); }
+
+static int print_item(void *elem, void *ctx)
+{
+    Item *it = elem;
+    int *limit = ctx;                       /* ctx: no global needed */
+    printf("  %d: %s\n", it->id, it->label);
+    return --(*limit) <= 0 ? 1 : 0;         /* non-zero stops the iteration */
+}
+
+int main(void)
+{
+    Vec *v = vec_create(sizeof(Item), item_destroy);   /* owning vector */
+    if (!v) { fprintf(stderr, "out of memory\n"); return EXIT_FAILURE; }
+
+    const char *labels[] = { "alpha", "beta", "gamma", "delta" };
+    for (int i = 0; i < 4; i++) {
+        Item it = { i, strdup(labels[i]) };
+        if (!it.label) break;
+
+        VecStatus st = vec_push(v, &it);
+        if (st != VEC_OK) {
+            fprintf(stderr, "push: %s\n", vec_strerror(st));
+            free(it.label);                 /* push failed: still OURS to free */
+            break;
+        }
+        /* push succeeded: the copy inside the vector owns it.label now. */
+    }
+
+    printf("len=%zu cap=%zu\n", vec_len(v), vec_capacity(v));
+
+    int limit = 2;
+    printf("first two:\n");
+    vec_foreach(v, print_item, &limit);
+
+    /* Borrowed pointer: valid only until the next mutation. */
+    Item *first = vec_at(v, 0);
+    if (first) printf("first label: %s\n", first->label);
+
+    vec_destroy(v);          /* calls item_destroy on every element */
+    vec_destroy(NULL);       /* documented as safe */
+    return EXIT_SUCCESS;
+}
+```
+
+| Decision | Options | Guidance |
+|---|---|---|
+| Struct visibility | opaque handle vs. exposed | opaque unless inlining or stack allocation matters |
+| Allocation | library allocates vs. caller provides storage | library-allocates by default; caller-provided for embedded |
+| Errors | status enum, `errno`-style, `NULL` | one convention, documented, used everywhere |
+| Element ownership | copy in vs. take pointer | copy by default; a destructor callback makes taking explicit |
+| Returned pointers | borrowed vs. owned | borrowed with a documented lifetime; say what invalidates it |
+| Naming | prefixed vs. bare | always prefixed — C has one namespace |
+| Callbacks | with `ctx` vs. without | always with `ctx` |
+
+**Key Takeaways**
+
+- Prefix every exported symbol and mark everything else `static` — C has a single global namespace and no other protection against collisions.
+- An opaque handle (`typedef struct Vec Vec;` with no definition in the header) lets you change the layout without recompiling callers, at the cost of an allocation and no cross-boundary inlining.
+- Pair exactly one constructor with one destructor, make the destructor accept `NULL`, and never require release through a different mechanism than the one that allocated.
+- Document ownership for every pointer crossing the API: what is copied, what is borrowed, what invalidates a returned pointer, and who frees what when a call fails partway.
+- Use one error convention throughout, state whether the object remains usable after a failure, and give every callback a `void *ctx` so callers never need globals.
+
+> 🧪 Practice
+>
+> 1. Add `vec_pop`, `vec_remove`, and `vec_clear` to the library, updating the header documentation to state the ownership and invalidation rules for each.
+> 2. Split an existing single-file container into `foo.h` and `foo.c` with an opaque handle, and verify that `main.c` still compiles when the struct's field order changes.
+> 3. Write a test that exercises every error path — `NULL` handle, out-of-bounds index, zero element size — and confirm the vector remains usable after each.
+> 4. Interview-style: *"What are the trade-offs of an opaque pointer API in C?"* Hint: weigh what the caller can no longer do against what you become free to change.
 
 ---
 
 ## 11. Systems Programming
 
+Everything so far stayed inside a single process using only the standard library. This chapter crosses the boundary into the operating system: starting and reaping processes, reading and writing through raw file descriptors, talking over the network, and running several threads at once. These interfaces are POSIX rather than ISO C, they report errors through a different convention than you may expect, and they are where a program stops being a calculation and starts being a participant in a running system.
+
 <a id="111-processes-and-the-os-interface"></a>
 ### 11.1 Processes and the OS Interface
 
+A process is a running program plus everything the kernel tracks on its behalf: memory, open files, a user identity, and a parent. This section covers how a process receives its inputs, how it asks the kernel for services, how it creates and replaces other processes, and how it learns that something happened to it.
+
 #### Command-Line Arguments and Environment
+
+**Theory**
+
+A program needs inputs before it can do anything, and the operating system supplies two sets of them at startup. Both arrive without any parsing, allocation, or system call on your part — they are simply there when `main` begins.
+
+**Command-line arguments** arrive through `main`'s parameters:
+
+```c
+int main(int argc, char *argv[])
+```
+
+`argc` is the count of arguments, and `argv` is an array of that many string pointers plus a terminating `NULL`. The essential detail that trips people up: **`argv[0]` is the program's own name**, not the first real argument. So a program invoked as `./tool -v file.txt` receives `argc == 3`, with the actual arguments at `argv[1]` and `argv[2]`. Loops must start at 1.
+
+Two guarantees are worth knowing. `argv[argc]` is always `NULL`, so you can iterate either by counting or by walking until `NULL`. And the strings are writable — modifying them is legal, which is how programs like `ps` show altered command lines, though it is rarely a good idea.
+
+The shell, not your program, does the splitting. `./tool "two words"` delivers one argument containing a space; `./tool *.txt` delivers however many files the shell's glob matched, because the shell expanded it before your program ever ran. Understanding that boundary explains most "why did my program see something different from what I typed" confusion.
+
+**Environment variables** are the second channel: a set of `NAME=value` strings inherited from the parent process. Where arguments are explicit and per-invocation, the environment is ambient and inherited — the right place for configuration that applies to every invocation (`PATH`, `HOME`, `LANG`, `TZ`) rather than to this particular one.
+
+Access it with `getenv("NAME")`, which returns a pointer to the value or `NULL` if unset. That pointer is **owned by the environment, not by you**: do not free it, do not modify it, and copy it if you need it after a later `setenv` call, which may reallocate the whole block. POSIX adds `setenv`, `unsetenv`, and the `environ` global for walking the entire set.
+
+There is a third, non-standard form of `main` taking `char *envp[]`. It works on POSIX systems but `getenv` and `environ` are the portable path.
+
+For anything beyond two or three flags, parse arguments with **`getopt`** rather than by hand. It handles the conventions users expect — clustered short flags (`-abc`), an option's argument attached or separate (`-ofile` or `-o file`), and `--` terminating the options — and it reports unknown options for you. Rolling this by hand gets subtly wrong in ways users notice.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* POSIX declares 'environ' but no header does; this is the standard idiom. */
+extern char **environ;
+
+int main(int argc, char *argv[])
+{
+    /* argv[0] is the PROGRAM NAME -- real arguments start at index 1. */
+    printf("invoked as: %s\n", argv[0]);
+    printf("argc = %d\n", argc);
+
+    for (int i = 1; i < argc; i++)              /* note: i = 1, not 0 */
+        printf("  argv[%d] = \"%s\"\n", i, argv[i]);
+
+    /* argv[argc] is guaranteed NULL, so walking works too. */
+    printf("argv[argc] is %s\n", argv[argc] == NULL ? "NULL" : "not NULL");
+
+    /* --- environment: ambient configuration, inherited from the parent --- */
+    const char *home = getenv("HOME");          /* NULL if unset */
+    const char *path = getenv("PATH");
+    printf("HOME = %s\n", home ? home : "(unset)");
+    printf("PATH = %.40s...\n", path ? path : "(unset)");
+
+    /* The returned pointer belongs to the environment: never free it, and
+       copy it if you need it to survive a later setenv. */
+    if (home) {
+        char *copy = strdup(home);
+        if (copy) { printf("safe copy: %s\n", copy); free(copy); }
+    }
+
+    /* Count the whole environment by walking to the NULL terminator. */
+    size_t n = 0;
+    for (char **e = environ; *e; e++) n++;
+    printf("%zu environment variables; first three:\n", n);
+    for (size_t i = 0; i < 3 && environ[i]; i++)
+        printf("  %.60s\n", environ[i]);
+
+    /* Read a tunable with a sensible default -- the common config pattern. */
+    const char *level = getenv("APP_LOG_LEVEL");
+    int verbosity = level ? atoi(level) : 1;
+    printf("verbosity = %d\n", verbosity);
+
+    setenv("APP_CHILD_MARKER", "1", 1);         /* 1 = overwrite if present */
+    printf("marker now: %s\n", getenv("APP_CHILD_MARKER"));
+    return 0;
+}
+```
+
+Proper option parsing with `getopt`:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>     /* getopt, optarg, optind, opterr */
+
+int main(int argc, char *argv[])
+{
+    int         verbose = 0;
+    const char *outfile = NULL;
+    int         count   = 1;
+    int         opt;
+
+    /* The optstring: a letter alone is a flag, a letter followed by ':'
+       takes an argument, and a leading ':' makes a missing argument
+       report as ':' rather than '?'. */
+    while ((opt = getopt(argc, argv, ":vo:n:h")) != -1) {
+        switch (opt) {
+        case 'v': verbose++;             break;   /* -vvv increments thrice */
+        case 'o': outfile = optarg;      break;   /* optarg holds the value */
+        case 'n': count   = atoi(optarg); break;
+        case 'h':
+            printf("usage: %s [-v] [-o FILE] [-n N] [files...]\n", argv[0]);
+            return EXIT_SUCCESS;
+        case ':':                                  /* option missing its argument */
+            fprintf(stderr, "%s: option -%c requires an argument\n", argv[0], optopt);
+            return EXIT_FAILURE;
+        case '?':                                  /* unrecognized option */
+        default:
+            fprintf(stderr, "%s: unknown option -%c\n", argv[0], optopt);
+            return EXIT_FAILURE;
+        }
+    }
+
+    printf("verbose=%d outfile=%s count=%d\n",
+           verbose, outfile ? outfile : "(stdout)", count);
+
+    /* getopt leaves 'optind' at the first NON-option argument. */
+    printf("%d operand(s):\n", argc - optind);
+    for (int i = optind; i < argc; i++)
+        printf("  %s\n", argv[i]);
+    return EXIT_SUCCESS;
+}
+```
+
+```text
+   WHAT THE SHELL DOES BEFORE YOUR PROGRAM RUNS
+
+   you type:   ./tool -v "two words" *.txt
+
+   the shell:  splits on whitespace, honours quoting, expands globs,
+               substitutes variables, then calls execve with the result
+
+   your main receives:
+        argc = 5
+        argv[0] = "./tool"          <- the program name
+        argv[1] = "-v"
+        argv[2] = "two words"       <- quoting preserved the space
+        argv[3] = "a.txt"           <- the glob was expanded by the SHELL
+        argv[4] = "b.txt"
+        argv[5] = NULL              <- always
+
+   ARGUMENTS vs ENVIRONMENT
+        arguments   explicit, per-invocation, ordered, visible in 'ps'
+        environment ambient, inherited by every child, unordered, hidden
+```
+
+**Key Takeaways**
+
+- `argv[0]` is the program's own name, so real arguments start at index 1, and `argv[argc]` is always `NULL`.
+- The shell performs splitting, quote handling, and glob expansion before your program starts — your program sees only the result.
+- Environment variables are inherited ambient configuration; `getenv` returns a pointer you must not free or modify, and which a later `setenv` may invalidate.
+- Use arguments for per-invocation inputs and the environment for settings that should apply to every invocation and be inherited by children.
+- Parse anything beyond a couple of flags with `getopt`, which handles clustering, attached arguments, and `--`, and leaves `optind` at the first operand.
+
+> 🧪 Practice
+>
+> 1. Write a program that prints each argument with its index and length, then run it with quoted strings, globs, and no arguments at all.
+> 2. Extend the `getopt` example with a `-d DIR` option and a mandatory operand, reporting a usage error when the operand is missing.
+> 3. Write a program that reads a configuration value from an argument if given, otherwise from an environment variable, otherwise from a built-in default, and prints which source won.
+> 4. Interview-style: *"When should a setting be a command-line flag rather than an environment variable?"* Hint: think about which one a child process inherits automatically, and which one shows up in `ps`.
 
 #### System Calls vs Library Calls
 
+**Theory**
+
+Your program cannot read a file. It cannot allocate a page of memory, open a socket, or create a process. Those actions require privileges the CPU denies to ordinary code, because a program that could do them directly could also read another process's memory or scribble on the disk.
+
+The CPU therefore runs in (at least) two modes. **User mode** is where your code runs, with restricted instructions and access only to its own address space. **Kernel mode** is where the operating system runs, with full access to hardware. A **system call** is the controlled doorway between them: a special instruction that transfers control to a fixed entry point in the kernel, which validates your request, performs it, and returns.
+
+The cost of that doorway is what makes the distinction practical rather than academic. A system call must switch privilege level, save and restore register state, validate every pointer you passed, and often flush CPU state that speculation depends on. It costs on the order of hundreds of nanoseconds to a few microseconds — perhaps a hundred times an ordinary function call.
+
+A **library call**, by contrast, is an ordinary function in a library linked into your process. `strlen` never leaves user mode. And this is where the standard library earns its keep: **`fprintf` is a library call that buffers your data and issues a `write` system call only when the buffer fills**. Writing a million short lines through `fprintf` might make 250 system calls; writing them through raw `write` makes a million.
+
+That gives the practical rule: prefer buffered library I/O for ordinary work, and drop to raw system calls when you need control the library does not offer — exact byte counts, non-blocking behavior, or a file descriptor to hand to `select`.
+
+Three signatures of a system call are worth recognizing in the wild:
+
+**They report errors differently from most library functions.** POSIX system calls return `-1` on failure and set `errno`, without exception. Some can also return a short count — `write` may write fewer bytes than you asked without that being an error at all.
+
+**They can be interrupted.** A blocking system call interrupted by a signal returns `-1` with `errno == EINTR`, having done nothing. This is not a failure to report to the user; it is a request to retry.
+
+**They are the boundary the system can observe.** `strace` shows every system call a process makes, with arguments and results — which makes it the single most useful tool for understanding what a program actually does, as opposed to what its source suggests.
+
+Note that the C standard library's own functions are usually thin wrappers: `fopen` calls `open`, `malloc` calls `mmap` or `brk` (but only occasionally, satisfying most requests from its own pool). The wrapper is where buffering, retrying, and portability live.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>     /* write, close  -- SYSTEM CALLS */
+#include <fcntl.h>      /* open          -- SYSTEM CALL  */
+#include <errno.h>
+#include <time.h>
+
+#define LINES 20000
+
+/* Every fputs may be a library call only: data accumulates in the stdio
+   buffer, and one write() is issued per bufferful (typically 4 KB). */
+static double with_buffered_io(const char *path)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) { perror(path); return -1; }
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    for (int i = 0; i < LINES; i++)
+        fprintf(f, "line %d\n", i);          /* buffered: few syscalls */
+
+    fclose(f);                                /* flushes the tail */
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    return (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+}
+
+/* Raw write(): one SYSTEM CALL per line, each crossing into the kernel. */
+static double with_raw_syscalls(const char *path)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { perror(path); return -1; }
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    for (int i = 0; i < LINES; i++) {
+        char buf[32];
+        int n = snprintf(buf, sizeof buf, "line %d\n", i);
+        if (write(fd, buf, (size_t)n) < 0) { perror("write"); break; }
+    }
+
+    close(fd);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    return (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+}
+
+int main(void)
+{
+    printf("buffered (fprintf): %.4f s\n", with_buffered_io("/tmp/buffered.txt"));
+    printf("raw (write):        %.4f s\n", with_raw_syscalls("/tmp/raw.txt"));
+    remove("/tmp/buffered.txt");
+    remove("/tmp/raw.txt");
+    return 0;
+}
+```
+
+The two error conventions, side by side:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
+
+int main(void)
+{
+    /* LIBRARY call: returns NULL on failure, and also sets errno. */
+    FILE *f = fopen("/no/such/file", "r");
+    if (f == NULL)
+        printf("fopen  -> NULL,  errno=%d (%s)\n", errno, strerror(errno));
+
+    /* SYSTEM call: returns -1 on failure and sets errno. ALWAYS -1,
+       never NULL, and a non-negative return is a valid descriptor. */
+    int fd = open("/no/such/file", O_RDONLY);
+    if (fd < 0)
+        printf("open   -> -1,    errno=%d (%s)\n", errno, strerror(errno));
+
+    /* A short write is NOT an error -- the loop that handles it correctly
+       is covered later, but note that the return value is a COUNT. */
+    fd = open("/tmp/demo.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        const char msg[] = "hello\n";
+        ssize_t n = write(fd, msg, sizeof msg - 1);
+        printf("write  -> %zd bytes requested %zu\n", n, sizeof msg - 1);
+        close(fd);
+        remove("/tmp/demo.txt");
+    }
+
+    /* EINTR: a blocking call interrupted by a signal. The correct
+       response is to RETRY, not to report a failure. */
+    printf("EINTR is %d -- retry, do not abort\n", EINTR);
+    return 0;
+}
+```
+
+```bash
+# strace shows the syscall boundary directly. Count them for each version:
+$ strace -c -e trace=write ./buffered_version
+% time     seconds  usecs/call     calls    errors syscall
+100.00    0.000512           2       196           write
+
+$ strace -c -e trace=write ./raw_version
+% time     seconds  usecs/call     calls    errors syscall
+100.00    0.041233           2     20000           write
+#                                  ^^^^^ 100x more crossings for the same data
+```
+
+```text
+   USER MODE / KERNEL MODE
+
+   +-----------------------------------------------------+
+   |  YOUR PROCESS (user mode)                           |
+   |                                                     |
+   |   strlen()  memcpy()  qsort()   <- pure library,    |
+   |                                    never leaves     |
+   |   fprintf() ---> [ stdio buffer ]                   |
+   |                        |                            |
+   +------------------------|----------------------------+
+                            | write()  <- SYSTEM CALL, only when
+                            |             the buffer fills
+   =========================|============================ privilege boundary
+                            v
+   +-----------------------------------------------------+
+   |  KERNEL (kernel mode)                               |
+   |   validate arguments, copy data, schedule I/O       |
+   +-----------------------------------------------------+
+
+   Crossing costs ~100x an ordinary call. Buffering exists to cross rarely.
+```
+
+| | Library call | System call |
+|---|---|---|
+| Runs in | user mode | kernel mode |
+| Cost | nanoseconds | hundreds of ns to microseconds |
+| Examples | `strlen`, `qsort`, `malloc` (usually) | `read`, `write`, `open`, `fork` |
+| Error convention | varies (`NULL`, `EOF`, `0`) | always `-1` plus `errno` |
+| Interruptible by a signal | no | yes — `EINTR` |
+| Visible to `strace` | no | yes |
+| Buffered | often | never |
+
+**Key Takeaways**
+
+- A system call crosses a privilege boundary into the kernel and costs roughly a hundred times an ordinary function call; a library call stays in user mode.
+- Buffered stdio exists to turn many library calls into few system calls — this is why `fprintf` in a loop vastly outperforms raw `write` in a loop.
+- POSIX system calls signal failure with `-1` plus `errno`, uniformly; library functions use varied conventions, so read each one's documentation.
+- A system call interrupted by a signal fails with `EINTR` and must be retried, not reported as an error.
+- `strace` lists every system call a process makes, making it the fastest way to see what a program actually asks of the kernel.
+
+> 🧪 Practice
+>
+> 1. Run both versions of the I/O benchmark under `strace -c` and record the syscall counts and total time for each.
+> 2. Use `setvbuf` to give the buffered version a 1-byte buffer, then re-measure and explain the result.
+> 3. Write a program that reads a file with `fgetc` and another that reads it with `read` one byte at a time, and compare the syscall counts.
+> 4. Interview-style: *"Why is `write` in a loop so much slower than `fprintf` in a loop, when both end up writing the same bytes?"* Hint: count how many times each one crosses into the kernel.
+
 #### fork, exec, and wait
+
+**Theory**
+
+Unix creates new processes in a way that surprises everyone at first: there is no "run this program" call. Instead there are two separate operations, and understanding why they are separate is understanding Unix process management.
+
+**`fork()` duplicates the calling process.** The child gets a copy of the parent's memory, its open file descriptors, its working directory, and its environment. Both processes then continue from the same point — the return from `fork` — as two independent processes.
+
+The famous consequence is that **`fork` returns twice**, with different values, which is how each copy knows which one it is:
+
+| Return value | Meaning | Runs in |
+|---|---|---|
+| `0` | you are the child | child |
+| `> 0` | the child's PID | parent |
+| `-1` | fork failed; no child exists | parent only |
+
+Copying an entire address space sounds ruinously expensive. It is not, because of **copy-on-write**: the kernel maps the same physical pages into both processes marked read-only, and only makes a private copy of a page when one of them writes to it. A `fork` is therefore cheap regardless of how much memory the parent holds.
+
+**`exec()` replaces the current process image with a different program.** The PID stays the same, open file descriptors stay open (unless marked close-on-exec), but the code, data, heap, and stack are discarded and replaced. **A successful `exec` never returns** — there is nothing to return to. Reaching the line after `exec` means it failed.
+
+Splitting creation from replacement is what makes shell features possible. Between `fork` and `exec` the child is still running your code and can redirect its own file descriptors, change its working directory, drop privileges, or set up a pipe — and then `exec` the target program, which inherits all of it without knowing anything about it. A combined "spawn" call would have to anticipate every such adjustment as a parameter.
+
+The `exec` family varies along two axes, encoded in the suffix letters:
+
+| Function | Arguments | Path search |
+|---|---|---|
+| `execl` | list, ending in `(char *)NULL` | no — full path required |
+| `execv` | vector (`char *[]`) | no |
+| `execlp` / `execvp` | list / vector | yes — searches `PATH` |
+| `execle` / `execve` | plus an explicit environment | no |
+
+**`wait()` and `waitpid()`** let the parent collect a finished child's exit status. This is not optional bookkeeping. When a child exits, the kernel keeps a small record of it until the parent collects it; an uncollected finished child is a **zombie**, visible in `ps` as `<defunct>`, holding a process-table slot forever. A long-running parent that forks without waiting eventually exhausts the process table.
+
+The mirror case: if the *parent* exits first, the child is **orphaned** and re-parented to `init` (PID 1), which reaps it automatically. Orphans are harmless; zombies are not.
+
+`wait` blocks until any child exits. `waitpid` can target a specific child and, with `WNOHANG`, can poll without blocking. The status it fills in is a packed integer that must be decoded with macros — `WIFEXITED`/`WEXITSTATUS` for a normal exit, `WIFSIGNALED`/`WTERMSIG` for death by signal. Reading the raw integer is meaningless.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>      /* fork, exec*, getpid, getppid */
+#include <sys/wait.h>    /* wait, waitpid, W* macros    */
+#include <errno.h>
+#include <string.h>
+
+int main(void)
+{
+    printf("parent: pid=%d\n", (int)getpid());
+    fflush(stdout);        /* flush BEFORE forking, or the child inherits a
+                              copy of the buffer and the output appears twice */
+
+    pid_t pid = fork();    /* this call returns TWICE, in two processes */
+
+    if (pid < 0) {
+        perror("fork");
+        return EXIT_FAILURE;
+    }
+
+    if (pid == 0) {
+        /* ------------------- CHILD ------------------- */
+        printf("child:  pid=%d ppid=%d\n", (int)getpid(), (int)getppid());
+
+        /* This is the window that makes fork/exec powerful: we are still
+           running our own code and can adjust the environment the new
+           program will inherit. */
+        setenv("CHILD_MARKER", "set-by-parent-code", 1);
+
+        /* execvp searches PATH and replaces this process image entirely.
+           On success it NEVER RETURNS. */
+        char *args[] = { "echo", "hello from the exec'd program", NULL };
+        execvp(args[0], args);
+
+        /* Reaching here means exec FAILED. Use _exit, not exit: the stdio
+           buffers belong to the parent's copy and must not be flushed twice. */
+        fprintf(stderr, "execvp: %s\n", strerror(errno));
+        _exit(127);                    /* 127 is the shell's "not found" code */
+    }
+
+    /* ------------------- PARENT ------------------- */
+    printf("parent: forked child %d, waiting\n", (int)pid);
+
+    int status;
+    pid_t done = waitpid(pid, &status, 0);   /* blocks until the child ends */
+    if (done < 0) { perror("waitpid"); return EXIT_FAILURE; }
+
+    /* The status integer is PACKED: decode it with macros, never read it raw. */
+    if (WIFEXITED(status))
+        printf("child exited normally with code %d\n", WEXITSTATUS(status));
+    else if (WIFSIGNALED(status))
+        printf("child killed by signal %d (%s)\n",
+               WTERMSIG(status), strsignal(WTERMSIG(status)));
+
+    return EXIT_SUCCESS;
+}
+```
+
+Copy-on-write, zombies, and reaping several children:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+static int global_counter = 100;
+
+int main(void)
+{
+    int local = 5;
+
+    /* --- memory is COPIED, not shared: the child's writes are private --- */
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return 1; }
+
+    if (pid == 0) {
+        global_counter += 1000;         /* copy-on-write triggers HERE */
+        local += 1000;
+        printf("child:  global=%d local=%d\n", global_counter, local);
+        _exit(0);                        /* 1100 / 1005 */
+    }
+
+    wait(NULL);                          /* reap it, discarding the status */
+    printf("parent: global=%d local=%d (unchanged)\n", global_counter, local);
+
+    /* --- forking several children and reaping ALL of them --- */
+    const int N = 3;
+    for (int i = 0; i < N; i++) {
+        pid_t c = fork();
+        if (c < 0) { perror("fork"); break; }
+        if (c == 0) {
+            /* Each child exits with a distinct status so we can tell them apart. */
+            _exit(i + 1);
+        }
+    }
+
+    /* Loop until wait reports ECHILD ("no children left"), which is the
+       only reliable way to reap every child regardless of finish order. */
+    int status;
+    pid_t child;
+    while ((child = wait(&status)) > 0) {
+        if (WIFEXITED(status))
+            printf("reaped %d -> exit %d\n", (int)child, WEXITSTATUS(status));
+    }
+    /* Skipping this loop would leave three ZOMBIES: finished processes whose
+       exit status nobody collected, each holding a process-table slot. */
+
+    printf("all children reaped\n");
+    return 0;
+}
+```
+
+```text
+   fork() SPLITS, exec() REPLACES
+
+   BEFORE FORK                  AFTER FORK                AFTER EXEC IN CHILD
+
+   +-------------+          +-------------+            +-------------+
+   | parent      |          | parent      |            | parent      |
+   | pid 100     |          | pid 100     |            | pid 100     |
+   | code: mine  |  fork()  | fork -> 101 |            | waiting...  |
+   +-------------+  ----->  +-------------+            +-------------+
+                            +-------------+            +-------------+
+                            | CHILD       |  execvp()  | CHILD       |
+                            | pid 101     |  ------->  | pid 101     |
+                            | fork -> 0   |            | code: /bin/echo
+                            | same code   |            | fds INHERITED
+                            | copy-on-write            | memory REPLACED
+                            +-------------+            +-------------+
+
+   The gap between fork and exec is where the child redirects its own
+   file descriptors, changes directory, or drops privileges -- which is
+   exactly how a shell implements  ls > out.txt
+
+   ZOMBIE:  child exited, parent never waited -> record kept forever
+   ORPHAN:  parent exited first -> child re-parented to init, reaped for you
+```
+
+| Call | Creates a process | Returns | On success |
+|---|---|---|---|
+| `fork` | yes, a duplicate | twice: `0` in child, PID in parent | both continue |
+| `exec*` | no — replaces this one | never | old image is gone |
+| `wait` / `waitpid` | no | the reaped child's PID | status decoded via `W*` macros |
+| `system` | yes (forks a shell) | the shell's status | convenient, but unsafe with untrusted input |
+| `posix_spawn` | yes | `0` or an error code | fork+exec combined, for constrained platforms |
+
+**Key Takeaways**
+
+- `fork` duplicates the process and returns twice — `0` to the child, the child's PID to the parent — with memory copied lazily through copy-on-write.
+- `exec` replaces the current process image and never returns on success; any code after it runs only if it failed.
+- Splitting the two is what allows the child to redirect descriptors, change directory, or drop privileges before the new program starts.
+- Always reap children with `wait` or `waitpid`, or they become zombies that occupy process-table slots permanently; orphans, by contrast, are adopted and reaped by `init`.
+- Decode the wait status with `WIFEXITED`/`WEXITSTATUS` and `WIFSIGNALED`/`WTERMSIG`, and call `_exit` rather than `exit` in a child that must not flush the parent's inherited stdio buffers.
+
+> 🧪 Practice
+>
+> 1. Write a program that forks three children, each sleeping a different duration, and prints them in completion order as they are reaped.
+> 2. Deliberately create a zombie by forking without waiting, then observe it with `ps -el | grep defunct` before the parent exits.
+> 3. Implement a minimal shell loop that reads a line, splits it on spaces, forks, `execvp`s the result, and reports the exit status.
+> 4. Interview-style: *"Why does Unix separate `fork` from `exec` instead of providing a single spawn call?"* Hint: think about what a shell must do between deciding to run a program and actually running it.
 
 #### Exit Status and Signals
 
+**Theory**
+
+A process ends in one of two ways, and the distinction matters because they carry different information and are reported differently.
+
+**Normal termination** happens when the program returns from `main` or calls `exit`. It supplies an **exit status**: a small integer conventionally meaning `0` for success and non-zero for failure. On POSIX only the **low 8 bits** survive, so `exit(256)` is seen as `0` and `exit(-1)` as `255`. Shells expose the status as `$?`, and it is what makes `cmd1 && cmd2` work.
+
+**Abnormal termination** happens when a signal kills the process. There is no exit status — instead the wait status records *which signal*. This is why a program killed by `SIGKILL` and a program that returned 9 are entirely different events, even though both might loosely be called "exit 9".
+
+A **signal** is an asynchronous notification delivered to a process: the software equivalent of a tap on the shoulder. Some come from the kernel reporting a fault the process caused (`SIGSEGV` for an invalid memory access, `SIGFPE` for integer division by zero), some from the user (`SIGINT` from Control-C), some from other processes (`kill`), and some from the process's own state changing (`SIGCHLD` when a child exits).
+
+Every signal has a **default action**, and knowing the categories saves a lot of guessing:
+
+| Signal | Number | Default action | Typical source | Catchable |
+|---|---|---|---|---|
+| `SIGINT` | 2 | terminate | Control-C | yes |
+| `SIGQUIT` | 3 | terminate + core | Control-\\ | yes |
+| `SIGKILL` | 9 | terminate | `kill -9` | **no** |
+| `SIGSEGV` | 11 | terminate + core | invalid memory access | yes |
+| `SIGPIPE` | 13 | terminate | writing to a closed pipe | yes |
+| `SIGTERM` | 15 | terminate | `kill` (polite default) | yes |
+| `SIGCHLD` | 17 | ignore | a child exited | yes |
+| `SIGSTOP` | 19 | stop | Control-Z (via `SIGTSTP`) | **no** |
+
+Two entries are special on purpose: **`SIGKILL` and `SIGSTOP` cannot be caught, blocked, or ignored.** That is a deliberate guarantee — the system must always retain a way to stop a runaway process. It also means "trap SIGKILL to clean up" is impossible, and any cleanup-on-exit design must accept that it can be skipped.
+
+`SIGPIPE` deserves special mention because it surprises network and pipeline programmers. Writing to a pipe or socket whose reader has closed raises `SIGPIPE`, whose default action *terminates your process* — so a server can vanish silently when a client disconnects. The standard fix is to ignore `SIGPIPE` and handle the `EPIPE` error from `write` instead.
+
+When a shell reports a signal death it usually encodes it as `128 + signal number`, so a process killed by `SIGKILL` (9) shows `$?` as 137. That is a shell convention, not a kernel one; a program using `waitpid` should decode with `WIFSIGNALED` and `WTERMSIG`.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <string.h>
+
+/* Fork a child, have it end in the requested way, and decode the result. */
+static void run_child(const char *what)
+{
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return; }
+
+    if (pid == 0) {
+        if      (strcmp(what, "success") == 0) _exit(EXIT_SUCCESS);
+        else if (strcmp(what, "failure") == 0) _exit(3);
+        else if (strcmp(what, "big")     == 0) _exit(300);   /* truncated to 8 bits */
+        else if (strcmp(what, "abort")   == 0) abort();      /* SIGABRT */
+        else if (strcmp(what, "segv")    == 0) {
+            raise(SIGSEGV);                                  /* simulate a fault */
+        }
+        else if (strcmp(what, "kill")    == 0) {
+            raise(SIGKILL);                                  /* uncatchable */
+        }
+        _exit(0);
+    }
+
+    int status;
+    if (waitpid(pid, &status, 0) < 0) { perror("waitpid"); return; }
+
+    printf("%-8s -> ", what);
+    if (WIFEXITED(status)) {
+        /* NORMAL termination: an exit status, truncated to 8 bits. */
+        printf("exited, status %d\n", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        /* ABNORMAL termination: a SIGNAL, not a status. */
+        int sig = WTERMSIG(status);
+        printf("killed by signal %d (%s)%s\n", sig, strsignal(sig),
+               WCOREDUMP(status) ? ", core dumped" : "");
+    }
+}
+
+int main(void)
+{
+    const char *cases[] = { "success", "failure", "big", "abort", "segv", "kill" };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++)
+        run_child(cases[i]);
+
+    /* 'big' shows the truncation: exit(300) becomes 300 & 0xFF == 44. */
+    printf("\n300 & 0xFF = %d -- only the low 8 bits survive\n", 300 & 0xFF);
+    return 0;
+}
+```
+
+Sending signals, and the `SIGPIPE` trap:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <string.h>
+
+int main(void)
+{
+    /* --- sending a signal to another process --- */
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return 1; }
+
+    if (pid == 0) {
+        pause();                     /* wait for any signal */
+        _exit(0);
+    }
+
+    usleep(100000);                  /* give the child time to reach pause() */
+    kill(pid, SIGTERM);              /* the POLITE termination request */
+
+    int status;
+    waitpid(pid, &status, 0);
+    if (WIFSIGNALED(status))
+        printf("child terminated by %s\n", strsignal(WTERMSIG(status)));
+
+    /* --- kill(pid, 0): does this process exist and may I signal it? --- */
+    if (kill(pid, 0) < 0 && errno == ESRCH)
+        printf("pid %d no longer exists\n", (int)pid);
+
+    /* --- SIGPIPE: the trap that silently kills servers --- */
+    /* Default action for SIGPIPE is TERMINATE. Ignoring it converts the
+       event into a normal EPIPE error from write(), which we can handle. */
+    signal(SIGPIPE, SIG_IGN);
+
+    int fds[2];
+    if (pipe(fds) == 0) {
+        close(fds[0]);                               /* close the READ end */
+
+        ssize_t n = write(fds[1], "data", 4);        /* nobody is reading */
+        if (n < 0 && errno == EPIPE)
+            printf("write failed with EPIPE -- process survived because "
+                   "SIGPIPE was ignored\n");
+        close(fds[1]);
+    }
+
+    /* Uncatchable signals: setting a handler for SIGKILL simply fails. */
+    if (signal(SIGKILL, SIG_IGN) == SIG_ERR)
+        printf("cannot catch SIGKILL: %s\n", strerror(errno));
+
+    return 0;
+}
+```
+
+```bash
+# The shell reports a signal death as 128 + signal number.
+$ ./crash_program ; echo "status=$?"
+Segmentation fault (core dumped)
+status=139                       # 128 + 11 (SIGSEGV)
+
+$ sleep 100 & kill -9 %1 ; wait ; echo "status=$?"
+status=137                       # 128 + 9 (SIGKILL)
+
+$ (exit 3) ; echo "status=$?"
+status=3                         # a normal exit status
+
+# List every signal your system defines:
+$ kill -l
+```
+
+**Key Takeaways**
+
+- Normal termination carries an exit status truncated to its low 8 bits; abnormal termination carries a signal number instead, and the two are different events.
+- Decode a wait status with `WIFEXITED`/`WEXITSTATUS` and `WIFSIGNALED`/`WTERMSIG` — the raw integer is packed and meaningless on its own.
+- `SIGKILL` and `SIGSTOP` cannot be caught, blocked, or ignored, so no cleanup handler can be guaranteed to run.
+- `SIGPIPE` terminates the process by default when writing to a closed pipe or socket; ignore it and handle `EPIPE` from `write` instead.
+- Shells report a signal death as `128 + signum`, and `kill(pid, 0)` tests for a process's existence without sending anything.
+
+> 🧪 Practice
+>
+> 1. Write a program that exits with a status taken from `argv[1]`, and confirm from the shell that values above 255 wrap.
+> 2. Write a parent that forks a child which loops forever, sends it `SIGTERM` after one second, and reports exactly how it died.
+> 3. Build a two-process pipeline where the reader exits early, and demonstrate the writer dying from `SIGPIPE` and then surviving once it is ignored.
+> 4. Interview-style: *"Why can't a process catch `SIGKILL`?"* Hint: consider what an administrator needs to be able to guarantee about any process on the system.
+
 #### signal and sigaction Basics
+
+**Theory**
+
+Catching a signal means installing a **handler**: a function the kernel calls, asynchronously, when the signal arrives. Your normal control flow is suspended wherever it happened to be, the handler runs, and then execution resumes. That "wherever it happened to be" is the whole difficulty.
+
+There are two APIs, and the choice between them is not a matter of taste.
+
+**`signal()`** is in ISO C, is two lines to use, and has **historically inconsistent semantics**. On old System V systems the handler reset itself to the default after firing once, creating a race; on BSD it stayed installed and restarted interrupted system calls. Modern glibc follows BSD, but the standard permits either. Use it only for `SIG_IGN` and `SIG_DFL`, where the ambiguity does not matter.
+
+**`sigaction()`** is POSIX, specifies everything explicitly, and is what production code uses. It lets you state which other signals to block during the handler, whether to restart interrupted system calls, and whether you want extended information about the signal's cause.
+
+The rules for what a handler may do are far stricter than most people assume, because a handler can interrupt your program *between any two machine instructions* — including in the middle of `malloc` updating its free lists, or `printf` updating the stdio buffer. If the handler then calls the same function, it operates on half-updated state.
+
+A function safe to call in this situation is **async-signal-safe**. POSIX publishes the list, and it is short. `write`, `_exit`, `kill`, and `signal` are on it. **`printf`, `malloc`, `free`, and almost everything else are not.** A handler that calls `printf` works nearly always and deadlocks occasionally, which is the worst possible failure mode.
+
+Similarly, the only variable type a handler may safely share with the main program is **`volatile sig_atomic_t`**. `volatile` stops the compiler from caching it in a register across the handler's invisible interruption; `sig_atomic_t` guarantees reads and writes happen in one indivisible step.
+
+Those two constraints produce the standard design, which is what nearly all real programs do:
+
+> **The handler sets a flag and returns. The main loop checks the flag and does the real work.**
+
+Everything unsafe — logging, freeing, closing files, printing a summary — happens in the main loop, where all functions are legal again.
+
+Two more mechanics matter. A handler receives the signal number as its only argument, so one function can serve several signals. And signals do **not queue**: if the same signal arrives three times while blocked, it is delivered once. Never use signal counts to count events.
+
+Finally, installing a handler affects blocking system calls. Without `SA_RESTART`, an interrupted `read` returns `-1` with `EINTR` and you must retry; with `SA_RESTART`, the kernel restarts it for you. Choose deliberately — a program that wants Control-C to interrupt a long read needs `EINTR`, while one that merely wants to note the signal wants `SA_RESTART`.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+#include <string.h>
+#include <errno.h>
+
+/* The ONLY safe way to share state with a handler:
+   volatile  -> the compiler must reload it, not cache it in a register
+   sig_atomic_t -> reads and writes are indivisible */
+static volatile sig_atomic_t got_sigint  = 0;
+static volatile sig_atomic_t got_sigterm = 0;
+
+/* A handler may interrupt the program between ANY two instructions, so it
+   may only call async-signal-safe functions. printf, malloc, and free are
+   NOT safe. Setting a flag and returning is the safe universal pattern. */
+static void flag_handler(int signum)
+{
+    switch (signum) {
+    case SIGINT:  got_sigint  = 1; break;
+    case SIGTERM: got_sigterm = 1; break;
+    default: break;
+    }
+    /* write() IS async-signal-safe, unlike printf, so a minimal note is legal. */
+    const char msg[] = "[signal received]\n";
+    ssize_t ignored = write(STDERR_FILENO, msg, sizeof msg - 1);
+    (void)ignored;                       /* silence the unused-result warning */
+}
+
+static int install(int signum, void (*fn)(int), int restart)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);           /* zero EVERY field first */
+
+    sa.sa_handler = fn;
+    sigemptyset(&sa.sa_mask);            /* which signals to block in the handler */
+    sigaddset(&sa.sa_mask, SIGINT);      /* block these two so the handler   */
+    sigaddset(&sa.sa_mask, SIGTERM);     /* cannot interrupt itself          */
+
+    /* SA_RESTART: restart interrupted system calls automatically.
+       Without it, a blocking read() returns -1 with errno == EINTR. */
+    sa.sa_flags = restart ? SA_RESTART : 0;
+
+    return sigaction(signum, &sa, NULL); /* POSIX: explicit, unambiguous */
+}
+
+int main(void)
+{
+    if (install(SIGINT, flag_handler, 1) < 0 ||
+        install(SIGTERM, flag_handler, 1) < 0) {
+        perror("sigaction");
+        return EXIT_FAILURE;
+    }
+
+    /* Ignore SIGPIPE outright -- signal() is fine for SIG_IGN/SIG_DFL. */
+    signal(SIGPIPE, SIG_IGN);
+
+    printf("pid %d running; press Ctrl-C or send SIGTERM\n", (int)getpid());
+
+    /* THE STANDARD SHUTDOWN PATTERN: the handler only sets a flag; all the
+       real work -- which is not async-signal-safe -- happens out here. */
+    for (int tick = 0; tick < 3; tick++) {
+        if (got_sigint) {
+            printf("SIGINT noticed; cleaning up safely in the main loop\n");
+            got_sigint = 0;              /* signals do NOT queue: reset it */
+        }
+        if (got_sigterm) {
+            printf("SIGTERM noticed; shutting down\n");
+            break;
+        }
+        usleep(100000);
+    }
+
+    printf("clean exit\n");
+    return EXIT_SUCCESS;
+}
+```
+
+Blocking signals around a critical section, and `sigaction`'s extended form:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+#include <string.h>
+
+static volatile sig_atomic_t deliveries = 0;
+
+/* SA_SIGINFO gives a three-argument handler with details about the cause. */
+static void info_handler(int signum, siginfo_t *info, void *ucontext)
+{
+    (void)ucontext;
+    deliveries++;
+    /* info->si_pid is the SENDING process; si_code says why it was sent.
+       Only note them here -- inspecting them fully belongs in the main loop. */
+    (void)signum; (void)info;
+}
+
+int main(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = info_handler;      /* note: sa_sigaction, not sa_handler */
+    sa.sa_flags     = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGUSR1, &sa, NULL) < 0) { perror("sigaction"); return 1; }
+
+    /* --- blocking signals around a critical section --- */
+    sigset_t block, saved;
+    sigemptyset(&block);
+    sigaddset(&block, SIGUSR1);
+
+    /* Defer SIGUSR1 while we touch state a handler must not see half-updated. */
+    if (sigprocmask(SIG_BLOCK, &block, &saved) < 0) { perror("sigprocmask"); return 1; }
+
+    raise(SIGUSR1);                      /* delivered LATER, not now */
+    raise(SIGUSR1);                      /* signals do NOT queue: still one */
+    printf("inside critical section, deliveries=%d\n", (int)deliveries);
+
+    /* Restore the previous mask: the pending signal is delivered here. */
+    sigprocmask(SIG_SETMASK, &saved, NULL);
+    printf("after unblocking,      deliveries=%d\n", (int)deliveries);
+    printf("two raises produced %d delivery -- signals are not counted\n",
+           (int)deliveries);
+    return 0;
+}
+```
+
+```text
+   WHY A HANDLER MUST NOT CALL printf OR malloc
+
+   main:      printf("hello")
+                  |
+                  +--> stdio locks the buffer
+                  +--> starts writing into it   <-- SIGNAL ARRIVES HERE
+                                                      |
+   handler:                                           v
+              printf("caught!")  --> tries to lock the SAME buffer
+                                     which this thread already holds
+                                     -> deadlock, or corrupted output
+
+   Same story for malloc: the handler enters a free list that is
+   half-updated, and corrupts the heap.
+
+   THE SAFE PATTERN
+       handler:    flag = 1;  return;          (async-signal-safe only)
+       main loop:  if (flag) { do the real work here }
+```
+
+| | `signal()` | `sigaction()` |
+|---|---|---|
+| Standard | ISO C | POSIX |
+| Semantics across systems | ambiguous | fully specified |
+| Handler stays installed | not guaranteed | yes |
+| Block other signals during handler | no control | `sa_mask` |
+| Restart interrupted syscalls | unspecified | `SA_RESTART`, explicit |
+| Extended signal information | no | `SA_SIGINFO` |
+| Use for | `SIG_IGN` and `SIG_DFL` only | everything else |
+
+**Key Takeaways**
+
+- Prefer `sigaction` over `signal`: `signal`'s semantics vary between systems, while `sigaction` specifies handler persistence, masking, and restart behavior explicitly.
+- A handler may interrupt the program between any two instructions, so it may call only async-signal-safe functions — `write` and `_exit` are safe, `printf`, `malloc`, and `free` are not.
+- Share state with a handler only through `volatile sig_atomic_t`, and use the flag-and-return pattern so all unsafe work happens in the main loop.
+- Signals do not queue: several deliveries of the same signal while it is blocked collapse into one, so never count events with signal counts.
+- `SA_RESTART` decides whether an interrupted blocking call is restarted or fails with `EINTR` — choose according to whether the signal should interrupt long operations.
+
+> 🧪 Practice
+>
+> 1. Install a `SIGINT` handler that sets a flag, and write a main loop that prints a summary and exits cleanly on the second Control-C.
+> 2. Write a handler that calls `printf` in a tight loop while the main program also prints, run it under load, and look for interleaved or corrupted output.
+> 3. Install a `SIGALRM` handler with and without `SA_RESTART`, call `alarm(1)` before a blocking `read` from the terminal, and compare the two behaviors.
+> 4. Interview-style: *"Why is calling `malloc` inside a signal handler unsafe?"* Hint: consider what happens if the signal arrives while the main program is already inside `malloc`.
 
 <a id="112-files-and-io-at-the-system-level"></a>
 ### 11.2 Files and I/O at the System Level
 
+Beneath `FILE *` and its buffer sits a smaller, sharper interface: integer file descriptors and unbuffered system calls that do exactly what you ask, once. This section covers that layer — what a descriptor really is, the four calls that drive it, what happens when I/O would block, how to wait on many sources at once, and how to skip the copying entirely with `mmap`.
+
 #### File Descriptors
+
+**Theory**
+
+A **file descriptor** is a small non-negative integer that names an open file — or a pipe, socket, terminal, or device. It is deliberately not a pointer or a handle object: it is an index into a per-process table the kernel maintains on your behalf.
+
+That indirection is the whole design. The number `3` means nothing by itself; it means "entry 3 of *this process's* open-file table", and that entry points to a kernel structure holding the current offset, the access mode, and a reference to the underlying file. Two processes can both hold descriptor 3 referring to completely different files.
+
+Three descriptors are open before your program starts, by convention rather than magic:
+
+| Descriptor | Constant | Purpose |
+|---|---|---|
+| 0 | `STDIN_FILENO` | standard input |
+| 1 | `STDOUT_FILENO` | standard output |
+| 2 | `STDERR_FILENO` | standard error |
+
+New descriptors are always assigned **the lowest available number**. That rule sounds like trivia and is actually the mechanism behind shell redirection: close descriptor 1, then open a file, and the file *becomes* descriptor 1 because 1 was the lowest free slot. Everything that writes to `stdout` now writes to the file, without knowing anything changed.
+
+The modern way to do that deliberately is **`dup2(oldfd, newfd)`**, which makes `newfd` a copy of `oldfd`, closing `newfd` first if it was open. It is atomic, unlike close-then-open, so a signal cannot arrive at the wrong moment.
+
+The crucial subtlety is what "a copy" means. Descriptors created by `dup`/`dup2` or inherited across `fork` **share the same open-file description**, which means they share the file offset. Reading through one advances the other. A separate `open` of the same file creates an independent description with its own offset. Confusing the two produces file corruption that looks random.
+
+```text
+   TWO PROCESSES, TWO KINDS OF SHARING
+
+   process A            kernel open-file table          inode / file
+   fd table
+   [0] --------+
+   [1] ----+   |        +-------------------+
+   [2]     +-> |        | offset: 1024      |          +-----------+
+   [3] --------+------> | mode: O_RDWR      |--------> | data.txt  |
+                        +-------------------+          +-----------+
+   process B                                                ^
+   fd table             +-------------------+               |
+   [3] ---------------> | offset: 0         |---------------+
+                        | mode: O_RDONLY    |
+                        +-------------------+
+
+   A's fd 3 and B's fd 3 have SEPARATE offsets (separate open() calls).
+   A's fd 0 and fd 3 above share ONE offset (dup2) -- reading through
+   either advances both.
+```
+
+Descriptors are a finite resource. Each process has a limit (`ulimit -n`, often 1024 or a few thousand), and a **descriptor leak** — opening without closing in a loop — eventually causes `open` to fail with `EMFILE`. Because the failure appears far from the leak, this is a genuinely annoying bug; `ls -l /proc/self/fd` and `lsof` are how you find it.
+
+Two flags matter for real programs. **`FD_CLOEXEC`** marks a descriptor to be closed automatically on `exec`, which prevents a child program from inheriting descriptors it has no business holding — a real security concern when the child is less trusted. Open with `O_CLOEXEC` to set it atomically rather than with a separate `fcntl`, which would leave a window in a threaded program.
+
+Finally, the relationship with `FILE *`: `fileno(fp)` extracts the descriptor from a stream, and `fdopen(fd, mode)` wraps a descriptor in a stream. Mixing buffered and raw access to the same file is a reliable way to corrupt your output, so pick one layer per descriptor.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>     /* read, write, close, dup, dup2, STDOUT_FILENO */
+#include <fcntl.h>      /* open, O_* flags */
+#include <string.h>
+#include <errno.h>
+
+int main(void)
+{
+    /* The three standard descriptors are open before main runs. */
+    printf("stdin=%d stdout=%d stderr=%d\n",
+           STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO);
+
+    /* A new descriptor gets the LOWEST FREE number -- usually 3. */
+    int fd = open("/tmp/fd_demo.txt", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { perror("open"); return EXIT_FAILURE; }
+    printf("opened /tmp/fd_demo.txt as fd %d\n", fd);
+
+    write(fd, "hello descriptors\n", 18);
+
+    /* --- dup2: what shell redirection actually does ------------------- */
+    int saved_stdout = dup(STDOUT_FILENO);     /* keep a way back */
+    if (saved_stdout < 0) { perror("dup"); return EXIT_FAILURE; }
+
+    if (dup2(fd, STDOUT_FILENO) < 0) {         /* fd 1 now refers to the file */
+        perror("dup2"); return EXIT_FAILURE;
+    }
+
+    /* printf still writes to "stdout" -- it has no idea it is now a file. */
+    printf("this line lands in the FILE, not the terminal\n");
+    fflush(stdout);                            /* flush before restoring */
+
+    dup2(saved_stdout, STDOUT_FILENO);         /* put the terminal back */
+    close(saved_stdout);
+    printf("stdout restored to the terminal\n");
+
+    /* --- shared vs independent offsets -------------------------------- */
+    int dup_fd = dup(fd);           /* SHARES the offset with fd */
+    int new_fd = open("/tmp/fd_demo.txt", O_RDONLY);   /* INDEPENDENT offset */
+
+    lseek(fd, 0, SEEK_SET);
+    char a[6] = {0}, b[6] = {0};
+
+    read(fd, a, 5);                 /* fd offset: 0 -> 5 */
+    read(dup_fd, b, 5);             /* SHARED: continues from 5 */
+    printf("fd read \"%s\", dup_fd read \"%s\" (shared offset)\n", a, b);
+
+    char c[6] = {0};
+    read(new_fd, c, 5);             /* independent: starts at 0 again */
+    printf("new_fd read \"%s\" (independent offset)\n", c);
+
+    close(dup_fd); close(new_fd); close(fd);
+
+    /* --- O_CLOEXEC: do not leak descriptors into exec'd children ------ */
+    int secret = open("/tmp/fd_demo.txt", O_RDONLY | O_CLOEXEC);
+    if (secret >= 0) {
+        int flags = fcntl(secret, F_GETFD);
+        printf("FD_CLOEXEC set: %s\n", (flags & FD_CLOEXEC) ? "yes" : "no");
+        close(secret);
+    }
+
+    remove("/tmp/fd_demo.txt");
+    return EXIT_SUCCESS;
+}
+```
+
+Descriptor exhaustion, and finding a leak:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
+
+int main(void)
+{
+    int count = 0;
+
+    /* Leak descriptors deliberately: open without ever closing. */
+    for (;;) {
+        int fd = open("/dev/null", O_RDONLY);
+        if (fd < 0) {
+            /* EMFILE = this PROCESS hit its limit (ulimit -n)
+               ENFILE = the whole SYSTEM ran out */
+            printf("open failed after %d descriptors: %s\n",
+                   count, strerror(errno));
+            break;
+        }
+        count++;
+        if (count > 100000) { printf("stopping early\n"); break; }
+    }
+
+    /* The failure appears wherever the next open() happens, which is
+       usually far from the code that leaked. Inspect the real list with:
+           ls -l /proc/self/fd        (Linux)
+           lsof -p <pid>              (portable-ish) */
+    printf("check 'ls -l /proc/%d/fd' to see what is open\n", (int)getpid());
+    return 0;
+}
+```
+
+| | File descriptor (`int`) | Stream (`FILE *`) |
+|---|---|---|
+| Layer | kernel, system call | C standard library |
+| Buffered | no | yes |
+| Portability | POSIX | ISO C, everywhere |
+| Works with `select`/`poll` | yes | no (extract with `fileno`) |
+| Handles sockets and pipes | yes | via `fdopen` |
+| Error reporting | `-1` plus `errno` | `NULL`, `EOF`, `ferror` |
+| Convert | `fdopen(fd, mode)` | `fileno(fp)` |
+
+**Key Takeaways**
+
+- A file descriptor is an index into a per-process table, not a pointer; the same number in two processes usually refers to different files.
+- New descriptors always take the lowest free number, which is the mechanism behind shell redirection and the reason `dup2` works as it does.
+- Descriptors from `dup`/`dup2` or inherited across `fork` share one file offset; separate `open` calls on the same file have independent offsets.
+- Descriptors are finite — leaking them causes `open` to fail with `EMFILE` far from the leaking code; inspect `/proc/self/fd` or use `lsof` to find it.
+- Use `O_CLOEXEC` so descriptors are not inherited by exec'd children, and avoid mixing raw descriptor I/O with buffered stream I/O on the same file.
+
+> 🧪 Practice
+>
+> 1. Write a program that redirects its own `stdout` to a file with `dup2`, writes several lines, then restores the terminal and confirms both destinations received the right output.
+> 2. Demonstrate the shared-offset behavior: `dup` a descriptor, read through both, and show that the offset advanced once per byte, not twice.
+> 3. Write a loop that opens files until it fails, print the limit you reached, and compare it against `ulimit -n`.
+> 4. Interview-style: *"How does the shell implement `command > file.txt`?"* Hint: think about which descriptor number the child must end up with, and what the lowest-free-number rule gives you.
 
 #### open, read, write, close
 
+**Theory**
+
+These four system calls are the entire raw I/O interface. Everything else — `FILE *`, sockets, pipes — is built on them or resembles them.
+
+**`open(path, flags, mode)`** returns a descriptor or `-1`. The `flags` argument combines one required access mode with any number of optional flags:
+
+| Flag | Meaning |
+|---|---|
+| `O_RDONLY` / `O_WRONLY` / `O_RDWR` | access mode — exactly one is required |
+| `O_CREAT` | create if missing (then `mode` matters) |
+| `O_EXCL` | with `O_CREAT`, fail if it already exists |
+| `O_TRUNC` | truncate to zero length |
+| `O_APPEND` | every write goes to the end, atomically |
+| `O_NONBLOCK` | do not block (see the next topic) |
+| `O_CLOEXEC` | close automatically on `exec` |
+
+The third argument is the permission mode, used **only** when creating. It is modified by the process's `umask`, so requesting `0666` typically produces `0644`. Passing `0` by accident creates a file nobody can open, including you.
+
+`O_CREAT | O_EXCL` together are the atomic "create it, but only if it does not exist" primitive — the correct way to create a lock file, because checking with `stat` and then creating leaves a window where another process can win the race.
+
+**`read(fd, buf, count)`** returns the number of bytes actually read, `0` at end of file, or `-1` on error. The critical fact, which the next topic explores in depth: **a short read is normal, not an error.** Asking for 4096 bytes from a pipe, socket, or terminal commonly returns far fewer. Code that assumes `read` fills the buffer is broken on every input source except a regular file.
+
+**`write(fd, buf, count)`** returns the number of bytes written, which can also be less than requested. For regular files it usually writes everything; for pipes and sockets it may not.
+
+**`close(fd)`** releases the descriptor. It can fail — a delayed write error may surface here — so a program that must know its data was stored should check it. And note that `close` does **not** guarantee the data reached the disk; it only reached the kernel's cache. `fsync(fd)` is what forces it to stable storage, at considerable cost.
+
+Two properties of the descriptor layer distinguish it from stdio:
+
+**No buffering.** Every `read` and `write` is a system call. This gives exact control — you know precisely what crossed the boundary and when — and it is why a byte-at-a-time loop through `read` is disastrously slow.
+
+**Exact semantics.** `O_APPEND` guarantees that the seek-to-end and the write are one atomic operation, which is what makes concurrent appends to a log file safe. Buffered stdio cannot promise that.
+
+Because short transfers are normal, the essential idiom is the **full-write loop**: keep writing until everything is transferred, retrying on `EINTR`. Getting this right once, in a helper function, and using it everywhere is the difference between code that works and code that works until the load increases.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
+
+/* --- the two helpers every program using raw I/O needs ---------------- */
+
+/* Write ALL n bytes, handling short writes and EINTR.
+   Returns 0 on success, -1 on a real error. */
+static int write_all(int fd, const void *buf, size_t n)
+{
+    const char *p = buf;
+
+    while (n > 0) {
+        ssize_t written = write(fd, p, n);
+
+        if (written < 0) {
+            if (errno == EINTR) continue;     /* interrupted: retry, not fail */
+            return -1;                         /* a genuine error */
+        }
+        p += written;                          /* advance by what ACTUALLY went */
+        n -= (size_t)written;                  /* which may be less than asked */
+    }
+    return 0;
+}
+
+/* Read up to n bytes, stopping at EOF. Returns the count, or -1 on error. */
+static ssize_t read_all(int fd, void *buf, size_t n)
+{
+    char  *p = buf;
+    size_t total = 0;
+
+    while (total < n) {
+        ssize_t got = read(fd, p + total, n - total);
+
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (got == 0) break;                   /* 0 means END OF FILE */
+        total += (size_t)got;
+    }
+    return (ssize_t)total;
+}
+
+int main(void)
+{
+    /* --- create: O_CREAT|O_EXCL is the atomic "only if absent" ---------- */
+    const char *path = "/tmp/raw_io_demo.txt";
+    remove(path);
+
+    /* The mode 0644 is masked by the process umask, so the result is
+       typically 0644 & ~umask -- often 0644 exactly. */
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd < 0) { perror("open O_EXCL"); return EXIT_FAILURE; }
+
+    const char *msg = "line one\nline two\nline three\n";
+    if (write_all(fd, msg, strlen(msg)) < 0) { perror("write"); close(fd); return 1; }
+
+    /* close() can report a DELAYED write error -- check it when the data
+       matters. Note it does NOT mean the bytes reached the disk. */
+    if (close(fd) < 0) { perror("close"); return EXIT_FAILURE; }
+
+    /* A second O_EXCL create must fail: that is the point of the flag. */
+    int again = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (again < 0 && errno == EEXIST)
+        printf("O_EXCL correctly refused to clobber the existing file\n");
+    else close(again);
+
+    /* --- read it back in chunks --------------------------------------- */
+    fd = open(path, O_RDONLY);
+    if (fd < 0) { perror("open"); return EXIT_FAILURE; }
+
+    char buf[16];
+    ssize_t n;
+    int chunk = 0;
+    /* Note the loop condition: > 0 continues, 0 is EOF, < 0 is an error. */
+    while ((n = read(fd, buf, sizeof buf)) > 0)
+        printf("chunk %d: %zd bytes \"%.*s\"\n", ++chunk, n, (int)n, buf);
+
+    if (n < 0) perror("read");
+    close(fd);
+
+    /* read_all instead: fill the buffer completely, stopping only at EOF. */
+    fd = open(path, O_RDONLY);
+    if (fd >= 0) {
+        char whole[64];
+        ssize_t got = read_all(fd, whole, sizeof whole - 1);
+        if (got >= 0) { whole[got] = '\0'; printf("read_all got %zd bytes\n", got); }
+        close(fd);
+    }
+
+    /* --- O_APPEND: atomic seek-to-end + write, safe with many writers -- */
+    fd = open(path, O_WRONLY | O_APPEND);
+    if (fd >= 0) {
+        write_all(fd, "appended\n", 9);        /* always lands at the end,
+                                                  regardless of any lseek */
+        close(fd);
+    }
+
+    /* --- fsync: force the data to STABLE STORAGE ---------------------- */
+    fd = open(path, O_WRONLY | O_APPEND);
+    if (fd >= 0) {
+        write_all(fd, "durable\n", 8);
+        if (fsync(fd) < 0) perror("fsync");    /* expensive, but survives a
+                                                  power loss; close() does not */
+        close(fd);
+    }
+
+    remove(path);
+    return EXIT_SUCCESS;
+}
+```
+
+A correct file copy — the canonical use of these four calls:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
+
+#define BUFSZ 65536      /* large enough that syscall overhead is amortized */
+
+static int write_all(int fd, const void *buf, size_t n)
+{
+    const char *p = buf;
+    while (n > 0) {
+        ssize_t w = write(fd, p, n);
+        if (w < 0) { if (errno == EINTR) continue; return -1; }
+        p += w; n -= (size_t)w;
+    }
+    return 0;
+}
+
+static int copy_file(const char *src, const char *dst)
+{
+    int in = open(src, O_RDONLY);
+    if (in < 0) return -1;
+
+    /* 0666 is masked by umask; O_TRUNC discards any existing content. */
+    int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (out < 0) { int e = errno; close(in); errno = e; return -1; }
+
+    char   *buf = malloc(BUFSZ);
+    int     rc  = -1;
+    ssize_t n;
+
+    if (!buf) goto done;
+
+    while ((n = read(in, buf, BUFSZ)) > 0)      /* 0 ends the loop at EOF */
+        if (write_all(out, buf, (size_t)n) < 0) goto done;
+
+    if (n < 0) goto done;                        /* the read itself failed */
+
+    rc = 0;
+
+done:
+    free(buf);
+    close(in);
+    /* close() on the OUTPUT can surface a deferred write error, so its
+       result decides success when everything else went well. */
+    if (close(out) < 0) rc = -1;
+    return rc;
+}
+
+int main(void)
+{
+    FILE *f = fopen("/tmp/copy_src.txt", "w");
+    if (f) { fputs("some content to copy\n", f); fclose(f); }
+
+    if (copy_file("/tmp/copy_src.txt", "/tmp/copy_dst.txt") < 0)
+        perror("copy_file");
+    else
+        printf("copied successfully\n");
+
+    remove("/tmp/copy_src.txt");
+    remove("/tmp/copy_dst.txt");
+    return 0;
+}
+```
+
+**Key Takeaways**
+
+- `open` returns the lowest free descriptor or `-1`; the permission argument applies only with `O_CREAT` and is filtered by the process umask.
+- `O_CREAT | O_EXCL` is the atomic create-if-absent primitive — checking with `stat` first leaves a race window.
+- A short `read` or `write` is normal, not an error, especially on pipes, sockets, and terminals; `read` returning `0` means end of file.
+- Wrap raw I/O in `write_all`/`read_all` helpers that loop on partial transfers and retry on `EINTR`, and use them everywhere.
+- `close` can report a deferred write error and must be checked when data matters, but only `fsync` forces bytes to stable storage.
+
+> 🧪 Practice
+>
+> 1. Implement `cat` using only `open`, `read`, `write`, and `close`, handling short reads and `EINTR` correctly.
+> 2. Compare copy throughput with buffer sizes of 1, 512, 4096, and 65536 bytes on a 100 MB file, and explain the curve.
+> 3. Use `O_CREAT | O_EXCL` to build a lock file, run two instances concurrently, and confirm exactly one acquires it.
+> 4. Interview-style: *"Your `write` returns 300 when you asked it to write 1000 bytes. Is that an error?"* Hint: consider what the kernel does when a pipe's buffer is nearly full.
+
 #### Blocking vs Non-Blocking I/O
+
+**Theory**
+
+When you call `read` on a socket with no data available, what should happen? There are two defensible answers, and POSIX lets you choose.
+
+**Blocking** is the default. The kernel suspends your process until data arrives, then returns it. The code reads naturally — `read` gives you data, full stop — and while you are blocked the process consumes no CPU. This is the right model for a program doing one thing at a time.
+
+The problem appears when you must handle several sources. Blocked on a `read` from client A, you cannot notice that client B sent something, that a timer expired, or that the user pressed a key. The process is parked.
+
+**Non-blocking** mode changes the contract: if the operation cannot proceed immediately, it returns `-1` immediately with `errno` set to **`EAGAIN`** (or `EWOULDBLOCK`, the same value on Linux). Nothing was read, nothing failed — the answer is simply "not right now, try later".
+
+That single change is what makes event-driven programs possible. Combined with `select` or `poll`, it lets one thread service thousands of connections: ask which descriptors are ready, service exactly those, never block on any of them.
+
+Enable it either at `open` time with `O_NONBLOCK`, or afterwards with `fcntl`. The `fcntl` form must **read the existing flags and add to them** — overwriting the flag word instead of OR-ing into it is a common bug that silently clears the access mode.
+
+```c
+int flags = fcntl(fd, F_GETFL, 0);       /* fetch first */
+fcntl(fd, F_SETFL, flags | O_NONBLOCK);  /* then add */
+```
+
+Three points are essential to using this correctly.
+
+**`EAGAIN` is not an error.** Treating it as one — logging it, closing the connection — turns a normal condition into a bug. It means "retry when ready", and the whole point of `select`/`poll` is to know when that is, rather than spinning.
+
+**Non-blocking mode is a property of the open-file description, not the descriptor.** Setting it affects every descriptor sharing that description, including ones inherited across `fork` — which has surprised many programmers when a child unexpectedly saw `EAGAIN`.
+
+**Regular files are always "ready".** `O_NONBLOCK` has essentially no effect on them: a read from a local file blocks on disk I/O regardless. Non-blocking mode is meaningful for pipes, sockets, terminals, and other things that can genuinely have nothing available. For files, the answer is asynchronous I/O or a thread pool.
+
+Busy-waiting — calling `read` in a tight loop until it succeeds — technically works and is almost always wrong: it burns an entire CPU core to avoid waiting. Non-blocking I/O should be paired with a readiness mechanism, which is the next topic.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
+
+/* Add O_NONBLOCK without clobbering the existing flags. */
+static int set_nonblocking(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);       /* READ the current flags */
+    if (flags < 0) return -1;
+    /* OR the new flag in. Writing  fcntl(fd, F_SETFL, O_NONBLOCK)  would
+       discard O_APPEND, the access mode, and everything else. */
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+int main(void)
+{
+    int fds[2];
+    if (pipe(fds) < 0) { perror("pipe"); return EXIT_FAILURE; }
+
+    int rd = fds[0], wr = fds[1];
+
+    /* --- blocking behavior (the default) ------------------------------ */
+    printf("pipe is empty; a blocking read here would hang forever.\n");
+
+    /* --- switch the read end to non-blocking -------------------------- */
+    if (set_nonblocking(rd) < 0) { perror("fcntl"); return EXIT_FAILURE; }
+
+    char buf[64];
+    ssize_t n = read(rd, buf, sizeof buf);
+
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        /* This is the NORMAL, expected outcome -- not an error to report. */
+        printf("read -> EAGAIN: nothing available, try again later\n");
+    } else {
+        printf("unexpected: n=%zd errno=%d\n", n, errno);
+    }
+
+    /* Now put data in, and the same call succeeds immediately. */
+    write(wr, "now there is data", 17);
+
+    n = read(rd, buf, sizeof buf);
+    if (n > 0) printf("read -> %zd bytes: \"%.*s\"\n", n, (int)n, buf);
+
+    /* --- a non-blocking WRITE can also transfer only part of the data -- */
+    set_nonblocking(wr);
+
+    size_t total = 0;
+    char big[4096];
+    memset(big, 'x', sizeof big);
+
+    /* Fill the pipe until the kernel buffer is full. */
+    for (;;) {
+        ssize_t w = write(wr, big, sizeof big);
+        if (w < 0) {
+            if (errno == EAGAIN) {
+                printf("pipe buffer full after %zu bytes -> EAGAIN\n", total);
+                break;                        /* again: normal, not an error */
+            }
+            if (errno == EINTR) continue;
+            perror("write");
+            break;
+        }
+        total += (size_t)w;                   /* w may be a PARTIAL write */
+        if (total > 1u << 20) break;          /* safety stop */
+    }
+
+    close(rd); close(wr);
+    return EXIT_SUCCESS;
+}
+```
+
+The busy-wait trap, and why readiness notification exists:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <time.h>
+#include <sys/select.h>
+
+int main(void)
+{
+    int fds[2];
+    if (pipe(fds) < 0) return 1;
+
+    int flags = fcntl(fds[0], F_GETFL, 0);
+    fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
+
+    /* A child writes after a short delay, so the parent must wait somehow. */
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(fds[0]);
+        usleep(200000);                        /* 200 ms */
+        write(fds[1], "ready", 5);
+        close(fds[1]);
+        _exit(0);
+    }
+    close(fds[1]);
+
+    /* --- WRONG: busy-waiting burns a full CPU core doing nothing ------ */
+    long spins = 0;
+    char buf[16];
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    for (;;) {
+        ssize_t n = read(fds[0], buf, sizeof buf);
+        if (n > 0) break;
+        if (n < 0 && errno != EAGAIN) break;
+        spins++;                               /* millions of useless syscalls */
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+
+    printf("busy-wait: %ld failed read() calls in %.3f s of 100%% CPU\n",
+           spins, (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9);
+    printf("The fix is to ask the kernel to TELL you when the descriptor is\n"
+           "ready -- select, poll, or epoll -- and sleep until then.\n");
+
+    close(fds[0]);
+    return 0;
+}
+```
+
+| | Blocking | Non-blocking |
+|---|---|---|
+| No data available | sleeps until there is | returns `-1`, `errno == EAGAIN` |
+| CPU while waiting | none — the process is suspended | none *if* paired with `select`/`poll` |
+| Code shape | simple, sequential | event loop with state per connection |
+| Handling many sources | needs a thread or process each | one thread can serve thousands |
+| Partial transfers | still possible | very likely |
+| Meaningful for regular files | n/a | no — files are always "ready" |
+
+**Key Takeaways**
+
+- Blocking mode suspends the process until the operation can proceed; non-blocking mode returns immediately with `EAGAIN` when it cannot.
+- `EAGAIN`/`EWOULDBLOCK` means "not right now", not "something went wrong" — treating it as an error is a common and damaging mistake.
+- Set the flag with `fcntl(F_GETFL)` then `F_SETFL` with the flags OR-ed in; overwriting the flag word discards the access mode and other settings.
+- Non-blocking is a property of the open-file description, so it is shared by duplicated and inherited descriptors.
+- `O_NONBLOCK` is meaningless for regular files, and non-blocking I/O without a readiness mechanism degenerates into busy-waiting that burns a whole core.
+
+> 🧪 Practice
+>
+> 1. Create a pipe, set the read end non-blocking, and demonstrate `EAGAIN` before data is written and success afterwards.
+> 2. Fill a pipe's buffer with non-blocking writes until you get `EAGAIN`, and report the kernel pipe capacity you discovered.
+> 3. Set `stdin` non-blocking and write a loop that prints a tick every 100 ms while still reading input when it appears, using `usleep` between polls. Then explain why `select` is better.
+> 4. Interview-style: *"Your non-blocking server uses 100% CPU with no traffic. What is wrong?"* Hint: the loop never sleeps because nothing tells it when to wake.
 
 #### I/O Multiplexing with select and poll
 
+**Theory**
+
+Non-blocking I/O tells you a descriptor is not ready. It does not tell you *when* it becomes ready, and polling in a loop wastes a core. **I/O multiplexing** closes that gap: hand the kernel a set of descriptors, and it puts your process to sleep until at least one of them can be used without blocking.
+
+This is what lets a single-threaded server handle ten thousand connections. The alternative — a thread or process per connection — costs a stack and a scheduler entry each, and collapses under load. Multiplexing costs one descriptor per connection plus a little state.
+
+There are two portable interfaces, and one important non-portable one.
+
+**`select`** is the oldest and most widely available:
+
+```c
+int select(int nfds, fd_set *readfds, fd_set *writefds,
+           fd_set *exceptfds, struct timeval *timeout);
+```
+
+You build up to three `fd_set` bitmaps, pass the highest descriptor plus one as `nfds`, and `select` returns with the sets **modified in place** to contain only the ready descriptors. Its limitations are real:
+
+- **`FD_SETSIZE` caps the descriptor number**, typically at 1024. A descriptor numbered 1024 or higher cannot be represented, and using one is undefined behavior — often silent stack corruption.
+- **The sets are destroyed on each call**, so you must rebuild them every iteration.
+- **The timeout struct may be modified**, so it must be reset too.
+
+**`poll`** fixes all three:
+
+```c
+int poll(struct pollfd *fds, nfds_t nfds, int timeout);
+```
+
+You pass an *array* of `struct pollfd`, each with a descriptor, an `events` mask of what you care about, and a `revents` field the kernel fills in. There is no descriptor-number limit, the input is not destroyed (only `revents` changes), and the timeout is a plain millisecond integer. **Prefer `poll` for new code.**
+
+Both share a scalability limit: they are **O(n) in the number of descriptors watched**, because the kernel must examine every one on every call and you must scan the results. At a few hundred descriptors this is irrelevant; at tens of thousands it dominates. That is what `epoll` (Linux), `kqueue` (BSD and macOS), and IOCP (Windows) exist to solve — they keep the interest set in the kernel across calls and report only what changed, giving O(ready) instead of O(watched). They are not portable, which is why portable code uses `poll` and high-performance code uses a library that wraps whichever is native.
+
+Two practical notes. **Readiness is a hint, not a promise of quantity**: `poll` saying a socket is readable means at least one byte is available, not that your whole buffer will fill — so always pair multiplexing with non-blocking descriptors and short-transfer handling. And **a listening socket becomes "readable" when a connection is pending**, which is how a server folds `accept` into the same loop as everything else.
+
+The `POLLHUP` and `POLLERR` bits in `revents` are set by the kernel even if you did not request them, and ignoring them is how event loops end up spinning on a closed connection forever.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/wait.h>   /* wait */
+
+#define MAX_FDS 16
+
+static int set_nonblocking(int fd)
+{
+    int f = fcntl(fd, F_GETFL, 0);
+    return f < 0 ? -1 : fcntl(fd, F_SETFL, f | O_NONBLOCK);
+}
+
+int main(void)
+{
+    /* Two pipes stand in for two independent clients. */
+    int a[2], b[2];
+    if (pipe(a) < 0 || pipe(b) < 0) { perror("pipe"); return EXIT_FAILURE; }
+
+    set_nonblocking(a[0]);
+    set_nonblocking(b[0]);
+
+    /* Children write at different times, so neither source can be waited
+       on first without risking a delay on the other. */
+    pid_t p1 = fork();
+    if (p1 == 0) {
+        close(a[0]); close(b[0]); close(b[1]);
+        usleep(150000); write(a[1], "from pipe A", 11);
+        close(a[1]); _exit(0);
+    }
+    pid_t p2 = fork();
+    if (p2 == 0) {
+        close(a[0]); close(a[1]); close(b[0]);
+        usleep(50000);  write(b[1], "from pipe B", 11);
+        close(b[1]); _exit(0);
+    }
+    close(a[1]); close(b[1]);
+
+    /* Build the watch list once: poll does NOT destroy it. */
+    struct pollfd fds[MAX_FDS];
+    memset(fds, 0, sizeof fds);
+    fds[0].fd = a[0]; fds[0].events = POLLIN;   /* POLLIN: readable */
+    fds[1].fd = b[0]; fds[1].events = POLLIN;
+    nfds_t nfds = 2;
+    int open_count = 2;
+
+    while (open_count > 0) {
+        /* Sleep until something is ready, or 2000 ms elapse. */
+        int ready = poll(fds, nfds, 2000);
+
+        if (ready < 0) {
+            if (errno == EINTR) continue;        /* interrupted: just retry */
+            perror("poll"); break;
+        }
+        if (ready == 0) { printf("timeout: nothing became ready\n"); break; }
+
+        for (nfds_t i = 0; i < nfds; i++) {
+            if (fds[i].fd < 0) continue;         /* already closed */
+
+            /* POLLHUP and POLLERR are set by the KERNEL whether or not you
+               asked for them. Ignoring them makes the loop spin forever. */
+            if (fds[i].revents & (POLLHUP | POLLERR)) {
+                printf("fd %d hung up\n", fds[i].fd);
+                close(fds[i].fd);
+                fds[i].fd = -1;                  /* -1 makes poll skip it */
+                open_count--;
+                continue;
+            }
+
+            if (fds[i].revents & POLLIN) {
+                char buf[128];
+                /* Readable means AT LEAST ONE byte -- not a full buffer. */
+                ssize_t n = read(fds[i].fd, buf, sizeof buf);
+
+                if (n > 0) {
+                    printf("fd %d: \"%.*s\"\n", fds[i].fd, (int)n, buf);
+                } else if (n == 0) {             /* EOF: the writer closed */
+                    printf("fd %d: EOF\n", fds[i].fd);
+                    close(fds[i].fd);
+                    fds[i].fd = -1;
+                    open_count--;
+                } else if (errno != EAGAIN && errno != EINTR) {
+                    perror("read");
+                }
+            }
+        }
+    }
+
+    while (wait(NULL) > 0) ;                     /* reap both children */
+    printf("all sources drained\n");
+    return EXIT_SUCCESS;
+}
+```
+
+The same logic with `select`, showing what makes it more awkward:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/select.h>
+#include <sys/wait.h>   /* wait */
+#include <errno.h>
+#include <string.h>
+
+int main(void)
+{
+    int fds[2];
+    if (pipe(fds) < 0) return 1;
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(fds[0]);
+        usleep(100000);
+        write(fds[1], "hello via select", 16);
+        close(fds[1]);
+        _exit(0);
+    }
+    close(fds[1]);
+
+    int rd = fds[0];
+
+    /* select IMPOSES a hard limit: a descriptor >= FD_SETSIZE cannot be
+       represented, and using one is undefined behavior. */
+    printf("FD_SETSIZE = %d (descriptors >= this cannot be watched)\n", FD_SETSIZE);
+    if (rd >= FD_SETSIZE) { fprintf(stderr, "fd too large for select\n"); return 1; }
+
+    for (;;) {
+        /* The set and the timeout are MODIFIED by select, so both must be
+           rebuilt on EVERY iteration -- a classic source of bugs. */
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(rd, &readfds);
+
+        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+
+        /* nfds is the HIGHEST descriptor PLUS ONE, not a count. */
+        int ready = select(rd + 1, &readfds, NULL, NULL, &tv);
+
+        if (ready < 0) { if (errno == EINTR) continue; perror("select"); break; }
+        if (ready == 0) { printf("timeout\n"); break; }
+
+        if (FD_ISSET(rd, &readfds)) {            /* the set now holds only ready fds */
+            char buf[64];
+            ssize_t n = read(rd, buf, sizeof buf);
+            if (n > 0)      printf("read: \"%.*s\"\n", (int)n, buf);
+            else            { printf("EOF\n"); break; }
+        }
+    }
+
+    close(rd);
+    wait(NULL);
+    return 0;
+}
+```
+
+```text
+   ONE THREAD, MANY CONNECTIONS
+
+   THREAD PER CONNECTION              MULTIPLEXED EVENT LOOP
+
+   client A --> [thread 1: read]      client A --+
+   client B --> [thread 2: read]      client B --+--> poll() sleeps
+   client C --> [thread 3: read]      client C --+       |
+   ...                                ...               | one wakes it
+   10,000 clients = 10,000 stacks                        v
+   (~8 MB each = 80 GB)               service ONLY the ready ones
+                                      10,000 clients = 1 stack + 10,000 fds
+
+   COMPLEXITY PER CALL
+     select / poll : O(n) -- the kernel scans every watched descriptor
+     epoll / kqueue: O(ready) -- interest set kept in the kernel between calls
+```
+
+| | `select` | `poll` | `epoll` / `kqueue` |
+|---|---|---|---|
+| Portability | everywhere | POSIX, near-universal | Linux / BSD only |
+| Descriptor limit | `FD_SETSIZE` (~1024) | none | none |
+| Input destroyed per call | yes — rebuild every time | no | no (kernel-resident) |
+| Complexity per call | O(watched) | O(watched) | O(ready) |
+| Timeout resolution | microseconds | milliseconds | milliseconds |
+| Use for | legacy and maximum portability | new portable code | high-connection servers |
+
+**Key Takeaways**
+
+- Multiplexing lets one thread wait on many descriptors at once, sleeping until at least one is ready — the foundation of servers that scale past a thread per connection.
+- Prefer `poll` to `select`: `select` caps descriptor numbers at `FD_SETSIZE`, destroys its sets on every call, and may modify its timeout.
+- Both are O(n) in the number of watched descriptors; `epoll` and `kqueue` are O(ready) but non-portable, so portable code uses `poll` and scales with a wrapper library.
+- Readiness means at least one byte, not a full buffer, so always combine multiplexing with non-blocking descriptors and partial-transfer handling.
+- Always check `POLLHUP` and `POLLERR` — the kernel sets them regardless of your `events` mask, and ignoring them makes an event loop spin on a dead connection.
+
+> 🧪 Practice
+>
+> 1. Write a program that watches both `stdin` and a pipe with `poll`, printing which source produced data and exiting when both reach EOF.
+> 2. Add a 500 ms timeout to the loop and print a heartbeat each time `poll` returns zero, without disturbing the data handling.
+> 3. Convert the `poll` example to `select` and list every additional step you had to take per iteration.
+> 4. Interview-style: *"Why does `epoll` scale better than `poll` for 10,000 connections?"* Hint: consider what each call must transfer between user space and the kernel, and how often.
+
 #### Memory-Mapped Files with mmap
+
+**Theory**
+
+Reading a file with `read` copies data twice: the kernel pulls it from disk into its page cache, then copies it into your buffer. For large files this copying is pure overhead, and the buffer is a second copy of data the kernel already holds.
+
+**`mmap` removes the copy entirely** by mapping the file's pages directly into your process's address space. After the call, the file *is* an array of bytes at some address. Reading it is a pointer dereference. Writing it is an assignment. There is no `read`, no `write`, and no buffer of your own.
+
+```c
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
+```
+
+The mechanism is the virtual memory system rather than the I/O system. The kernel sets up page-table entries that point at the file's pages but marks them **not present**. When you first touch an address, the CPU raises a page fault, the kernel loads that page from disk, and your instruction resumes. Data is therefore loaded lazily, on demand, one page at a time — you can map a 10 GB file on a machine with 1 GB of RAM and read scattered parts of it without ever loading the rest.
+
+Two flag choices define the behavior:
+
+| `prot` | Access allowed |
+|---|---|
+| `PROT_READ` | read |
+| `PROT_WRITE` | write |
+| `PROT_EXEC` | execute |
+| `PROT_NONE` | none — useful for guard pages |
+
+| `flags` | Effect |
+|---|---|
+| `MAP_SHARED` | writes go to the file and are visible to other mappers |
+| `MAP_PRIVATE` | copy-on-write; writes are private and never reach the file |
+| `MAP_ANONYMOUS` | not backed by a file — this is how `malloc` gets large blocks |
+| `MAP_FIXED` | map at exactly this address (dangerous; can replace existing mappings) |
+
+`MAP_SHARED` is also the simplest form of **shared memory between processes**: two processes mapping the same file see each other's writes immediately, with no system call per access. `MAP_ANONYMOUS | MAP_SHARED` gives shared memory with no file at all, which is how related processes commonly share a region.
+
+The advantages are substantial for the right workload: no copying, lazy loading, natural random access, and page sharing between processes mapping the same file. The costs are equally real and less obvious:
+
+- **`mmap` returns `MAP_FAILED`, which is `(void *)-1`, not `NULL`.** Checking for `NULL` silently succeeds on failure.
+- **Page faults are not free.** For small files or purely sequential access, `read` into a buffer is usually faster, because the fault-per-page overhead exceeds the copy it avoids.
+- **Errors become signals.** A read error on a mapped page — or reading past the end of a file that was truncated after you mapped it — arrives as `SIGBUS`, not as an error return. There is no `errno` to check.
+- **The mapping size is rounded up to whole pages**, so bytes between the file's end and the end of the last page read as zero and are discarded on write.
+- **Durability still requires `msync`.** Writes go to the page cache; only `msync` (or `munmap` plus `fsync`) pushes them toward the disk.
+
+Always `munmap` when done, and note that the file descriptor may be closed immediately after `mmap` — the mapping keeps its own reference.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>    /* mmap, munmap, msync */
+#include <sys/stat.h>    /* fstat */
+#include <string.h>
+#include <errno.h>
+
+int main(void)
+{
+    const char *path = "/tmp/mmap_demo.txt";
+
+    /* Create a file with known content. */
+    FILE *f = fopen(path, "w");
+    if (!f) { perror(path); return EXIT_FAILURE; }
+    for (int i = 0; i < 100; i++) fprintf(f, "line %03d padding text here\n", i);
+    fclose(f);
+
+    /* --- map it read-only --------------------------------------------- */
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror("open"); return EXIT_FAILURE; }
+
+    struct stat st;
+    if (fstat(fd, &st) < 0) { perror("fstat"); close(fd); return EXIT_FAILURE; }
+
+    /* mmap fails with MAP_FAILED == (void*)-1, NOT NULL. */
+    char *data = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (data == MAP_FAILED) { perror("mmap"); close(fd); return EXIT_FAILURE; }
+
+    /* The mapping holds its own reference: the fd may be closed now. */
+    close(fd);
+
+    printf("mapped %lld bytes at %p\n", (long long)st.st_size, (void *)data);
+
+    /* The file is now just an array. No read(), no buffer, no copy.
+       Each first touch of a page triggers a page fault that loads it. */
+    printf("first 26 bytes: %.26s\n", data);
+
+    /* Random access costs nothing extra -- no lseek, no syscall at all. */
+    printf("byte 500 onward: %.26s\n", data + 500);
+
+    /* Counting newlines is a plain memory scan. */
+    size_t lines = 0;
+    for (off_t i = 0; i < st.st_size; i++)
+        if (data[i] == '\n') lines++;
+    printf("%zu lines counted by scanning memory directly\n", lines);
+
+    munmap(data, (size_t)st.st_size);
+
+    /* --- map it read-write and modify the file through memory --------- */
+    fd = open(path, O_RDWR);
+    if (fd < 0) { perror("open rw"); return EXIT_FAILURE; }
+
+    /* MAP_SHARED: writes reach the file and other mappers.
+       MAP_PRIVATE would give copy-on-write, invisible to the file. */
+    char *rw = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE,
+                    MAP_SHARED, fd, 0);
+    if (rw == MAP_FAILED) { perror("mmap rw"); close(fd); return EXIT_FAILURE; }
+    close(fd);
+
+    memcpy(rw, "MODIFIED", 8);            /* an assignment IS a file write */
+
+    /* Writes land in the page cache; msync pushes them toward the disk. */
+    if (msync(rw, (size_t)st.st_size, MS_SYNC) < 0) perror("msync");
+    munmap(rw, (size_t)st.st_size);
+
+    /* Verify through ordinary I/O that the file really changed. */
+    f = fopen(path, "r");
+    if (f) { char buf[32] = {0}; fgets(buf, sizeof buf, f); printf("file now: %s", buf); fclose(f); }
+
+    remove(path);
+    return EXIT_SUCCESS;
+}
+```
+
+Anonymous shared memory between parent and child:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <string.h>
+
+typedef struct { int counter; char message[64]; } Shared;
+
+int main(void)
+{
+    /* MAP_ANONYMOUS: no file at all -- just memory.
+       MAP_SHARED: the mapping SURVIVES fork as shared, not copy-on-write. */
+    Shared *sh = mmap(NULL, sizeof *sh, PROT_READ | PROT_WRITE,
+                      MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (sh == MAP_FAILED) { perror("mmap"); return EXIT_FAILURE; }
+
+    sh->counter = 0;
+    strcpy(sh->message, "written by parent");
+
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); munmap(sh, sizeof *sh); return EXIT_FAILURE; }
+
+    if (pid == 0) {
+        /* Ordinary memory writes -- but the PARENT sees them, because the
+           pages are shared rather than copied. */
+        sh->counter = 42;
+        strcpy(sh->message, "written by child");
+        _exit(0);
+    }
+
+    wait(NULL);
+    printf("parent sees counter=%d message=\"%s\"\n", sh->counter, sh->message);
+    /* With MAP_PRIVATE instead, the parent would still see 0 and its own
+       message: the child's writes would have been copy-on-write copies. */
+
+    munmap(sh, sizeof *sh);
+    return EXIT_SUCCESS;
+}
+```
+
+```text
+   read() COPIES TWICE          mmap() MAPS ONCE
+
+   [ disk ]                     [ disk ]
+       |                            |
+       v  DMA                       v  DMA
+   +-------------+              +-------------+
+   | page cache  |              | page cache  |
+   +-------------+              +-------------+
+       |                            ^
+       v  copy #2                   |  page table entry -- NO COPY
+   +-------------+              +-------------+
+   | your buffer |              | your VA     |  data[i] is a dereference;
+   +-------------+              +-------------+  a fault loads the page
+
+   WHEN mmap WINS                 WHEN read WINS
+     large files                    small files
+     random access                  purely sequential
+     repeated access                one pass
+     sharing between processes      streaming (pipes, sockets)
+     no need for a buffer           errors as errno, not SIGBUS
+```
+
+**Key Takeaways**
+
+- `mmap` maps a file into the address space so reads and writes become ordinary memory access, eliminating the copy that `read` and `write` perform.
+- Pages load lazily on page faults, so a file far larger than RAM can be mapped and accessed sparsely.
+- `MAP_SHARED` makes writes visible in the file and to other mappers; `MAP_PRIVATE` gives copy-on-write that never reaches the file; `MAP_ANONYMOUS` gives memory with no file behind it.
+- `mmap` fails with `MAP_FAILED` (`(void *)-1`), not `NULL`, and I/O errors on mapped pages arrive as `SIGBUS` rather than as an error return.
+- Use `msync` for durability, `munmap` when done, and prefer plain `read` for small files or purely sequential access where fault overhead outweighs the saved copy.
+
+> 🧪 Practice
+>
+> 1. Map a text file read-only and count the occurrences of a character by scanning memory, then compare the timing against a `read`-based version.
+> 2. Map a file `MAP_SHARED` from two processes simultaneously and demonstrate that a write in one is immediately visible in the other.
+> 3. Map a file, truncate it to zero from another process, then touch the mapping and observe the `SIGBUS`.
+> 4. Interview-style: *"When would you use `read` instead of `mmap` for a large file?"* Hint: think about access pattern, and about how each one reports a disk error.
 
 <a id="113-networking"></a>
 ### 11.3 Networking
 
+A socket is a file descriptor that happens to reach another machine. That framing is most of what makes the Berkeley sockets API learnable — but the network adds failure modes files do not have: partial transfers, byte-order differences, and a peer that can vanish mid-conversation. This section covers the API's shape, both transport protocols, and the two details that break more networking code than anything else.
+
 #### Sockets API Overview
+
+**Theory**
+
+A **socket** is an endpoint for communication, represented — like everything else in Unix — as a file descriptor. Once connected, you can `read` and `write` it exactly as you would a file. What differs is the setup, because unlike a file, a network endpoint needs an address family, a protocol, and a negotiation with a peer.
+
+`socket(domain, type, protocol)` creates one:
+
+| `domain` | Address family |
+|---|---|
+| `AF_INET` | IPv4 |
+| `AF_INET6` | IPv6 |
+| `AF_UNIX` | local, filesystem-named (fastest for same-machine IPC) |
+
+| `type` | Semantics |
+|---|---|
+| `SOCK_STREAM` | reliable, ordered byte stream (TCP) |
+| `SOCK_DGRAM` | unreliable, unordered messages (UDP) |
+| `SOCK_RAW` | direct protocol access (needs privileges) |
+
+The `protocol` argument is almost always `0`, meaning "the default for this domain and type".
+
+The two roles follow different call sequences, and memorizing the shape is most of learning the API:
+
+```text
+   SERVER                                CLIENT
+
+   socket()      create the endpoint      socket()
+      |                                      |
+   bind()        claim an address            |
+      |                                      |
+   listen()      mark it as accepting        |
+      |                                      |
+   accept()  <-------- connection -------  connect()
+      |          (accept returns a NEW         |
+      |           fd for THIS client)          |
+   read/write  <------ data both ways ---> read/write
+      |                                      |
+   close()                                close()
+```
+
+The step that surprises newcomers is `accept`. It returns a **new descriptor** for the accepted connection; the original listening socket stays open and keeps accepting. A server therefore holds one listening descriptor plus one per active client — which is precisely why the multiplexing of the previous section matters.
+
+Addresses are the API's ugliest part, for a historical reason. `bind`, `connect`, and `accept` all take a generic `struct sockaddr *`, but you actually fill in a family-specific struct — `struct sockaddr_in` for IPv4, `sockaddr_in6` for IPv6, `sockaddr_un` for Unix domain — and cast. This is C's pre-`void *` approach to polymorphism, and the cast is required rather than optional.
+
+Modern code avoids hand-filling those structs by using **`getaddrinfo`**, which turns a hostname and service name into a linked list of ready-to-use address structures. It handles DNS, IPv4 and IPv6 transparently, and service-name lookup ("http" to port 80). Code written with `getaddrinfo` and a loop over its results is IP-version agnostic for free; code that hardcodes `sockaddr_in` is IPv4-only forever.
+
+Two options are worth setting on nearly every server. **`SO_REUSEADDR`** allows binding to a port still in the `TIME_WAIT` state from a previous run — without it, restarting a server fails with "Address already in use" for a minute or two. **`SO_KEEPALIVE`** enables periodic probes so a connection to a crashed peer is eventually detected rather than hanging forever.
+
+Ports below 1024 are privileged and require root to bind.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>     /* inet_pton, inet_ntop */
+#include <netdb.h>         /* getaddrinfo */
+#include <errno.h>
+
+int main(void)
+{
+    /* --- creating sockets of each kind --------------------------------- */
+    int tcp = socket(AF_INET, SOCK_STREAM, 0);    /* IPv4 TCP */
+    int udp = socket(AF_INET, SOCK_DGRAM, 0);     /* IPv4 UDP */
+    if (tcp < 0 || udp < 0) { perror("socket"); return EXIT_FAILURE; }
+    printf("tcp fd=%d  udp fd=%d  (ordinary file descriptors)\n", tcp, udp);
+
+    /* --- filling an address by hand (IPv4-only; instructive, not ideal) -- */
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);          /* zero EVERY field first */
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(8080);          /* htons: host -> NETWORK byte order */
+
+    /* inet_pton parses a textual address; it returns 1 on success,
+       0 for a malformed string, -1 for a bad family. */
+    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
+        fprintf(stderr, "inet_pton failed\n");
+        close(tcp); close(udp); return EXIT_FAILURE;
+    }
+
+    /* And back to text, for logging. */
+    char text[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr.sin_addr, text, sizeof text);
+    printf("address: %s:%d\n", text, ntohs(addr.sin_port));
+
+    /* --- SO_REUSEADDR: without it, a restart fails while the old socket
+           lingers in TIME_WAIT ------------------------------------------ */
+    int yes = 1;
+    if (setsockopt(tcp, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) < 0)
+        perror("setsockopt SO_REUSEADDR");
+    else
+        printf("SO_REUSEADDR set: rebinding after restart will succeed\n");
+
+    close(tcp); close(udp);
+
+    /* --- getaddrinfo: the modern, IP-version-agnostic way -------------- */
+    struct addrinfo hints, *result, *rp;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family   = AF_UNSPEC;      /* AF_UNSPEC = IPv4 OR IPv6 */
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags    = AI_PASSIVE;     /* suitable for bind() */
+
+    /* Note the error convention: getaddrinfo returns a CODE, not -1/errno,
+       and gai_strerror translates it. */
+    int rc = getaddrinfo(NULL, "8080", &hints, &result);
+    if (rc != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rc));
+        return EXIT_FAILURE;
+    }
+
+    printf("candidate addresses for port 8080:\n");
+    for (rp = result; rp != NULL; rp = rp->ai_next) {
+        char host[NI_MAXHOST];
+        if (getnameinfo(rp->ai_addr, rp->ai_addrlen, host, sizeof host,
+                        NULL, 0, NI_NUMERICHOST) == 0)
+            printf("  %-6s %s\n",
+                   rp->ai_family == AF_INET ? "IPv4" :
+                   rp->ai_family == AF_INET6 ? "IPv6" : "other", host);
+    }
+
+    freeaddrinfo(result);               /* the list is heap-allocated */
+    return EXIT_SUCCESS;
+}
+```
+
+| Call | Role | Purpose |
+|---|---|---|
+| `socket` | both | create the endpoint |
+| `bind` | server | claim a local address and port |
+| `listen` | server | mark it as accepting, set the backlog |
+| `accept` | server | take one pending connection, returning a NEW fd |
+| `connect` | client | initiate a connection to a peer |
+| `send` / `recv` | both | like `write`/`read`, plus socket-specific flags |
+| `sendto` / `recvfrom` | both | datagram forms carrying the peer address |
+| `setsockopt` | both | tune behavior (`SO_REUSEADDR`, timeouts, buffers) |
+| `shutdown` | both | close one direction while keeping the other |
+| `close` | both | release the descriptor |
+
+**Key Takeaways**
+
+- A socket is a file descriptor, so `read`, `write`, `poll`, and `close` all work on it; only the setup differs from a file.
+- Servers follow `socket` → `bind` → `listen` → `accept`, and `accept` returns a *new* descriptor per connection while the listener keeps accepting.
+- Address structs are family-specific but passed as `struct sockaddr *`, so the cast is mandatory; `getaddrinfo` builds them for you and makes code work over IPv4 and IPv6 alike.
+- `getaddrinfo` reports errors as a return code translated by `gai_strerror`, not through `errno`, and its result list must be released with `freeaddrinfo`.
+- Set `SO_REUSEADDR` on servers so a restart can rebind a port still in `TIME_WAIT`, and remember that ports below 1024 require privileges.
+
+> 🧪 Practice
+>
+> 1. Write a program that resolves a hostname with `getaddrinfo` and prints every address returned, labelled IPv4 or IPv6.
+> 2. Create a TCP socket, bind it to port 0, and use `getsockname` to discover which ephemeral port the kernel assigned.
+> 3. Compare `AF_UNIX` and `AF_INET` sockets on the same machine by timing a million small round trips through each.
+> 4. Interview-style: *"Why does `accept` return a new file descriptor instead of reusing the listening one?"* Hint: consider what the server must still be able to do while a client is connected.
 
 #### TCP Client and Server
 
+**Theory**
+
+TCP gives you a **reliable, ordered byte stream**. The kernel handles retransmission, reordering, duplicate removal, and flow control; what arrives is exactly what was sent, in order, or the connection fails. That reliability is why TCP carries HTTP, SSH, and essentially everything where correctness matters more than latency.
+
+The phrase **byte stream** is the part that must be taken literally, because it causes more bugs than anything else in network programming. TCP has **no concept of messages**. If the sender calls `write` three times with 10 bytes each, the receiver may get all 30 in one `read`, or 7 then 23, or 30 separate single-byte reads. The boundaries are not preserved because they were never transmitted — TCP moves bytes, not records.
+
+Therefore **every TCP protocol must define its own framing**. The three standard approaches:
+
+| Framing | How | Used by |
+|---|---|---|
+| Delimiter | read until a marker (`\n`, `\r\n\r\n`) | HTTP headers, SMTP, line protocols |
+| Length prefix | send a fixed-size length, then that many bytes | most binary protocols |
+| Fixed size | every message is exactly N bytes | simple telemetry |
+
+The server sequence has one call worth explaining. **`listen(fd, backlog)`** does not wait for anything; it converts the socket into one that accepts connections and sets the queue depth for connections completed but not yet `accept`ed. A small backlog under load causes clients to be refused.
+
+`accept` then blocks until a connection is pending and returns a new descriptor for it. The classic structure is a loop: accept, handle, close, repeat. Handling one client at a time is fine for a demo and useless in production, so real servers either fork per client, use a thread pool, or — best — use the multiplexing from the previous section.
+
+Two behaviors regularly surprise people:
+
+**`read` returning `0` means the peer closed the connection.** It is an orderly shutdown, not an error. A `read` loop must treat `0` as "connection finished", distinct from `-1`.
+
+**A dead peer is not detected immediately.** If the remote machine loses power, your socket stays open and your `read` blocks indefinitely, because nothing was sent to indicate closure. `SO_KEEPALIVE` or an application-level heartbeat is the only way to notice.
+
+`shutdown(fd, SHUT_WR)` closes only the sending direction, sending a FIN while still allowing reads. That is how a client says "I have sent everything, now tell me your answer" — with `close` you would lose the ability to read the reply.
+
+Finally, `connect` on a blocking socket can take a long time on an unreachable host (up to minutes). Non-blocking `connect` plus `poll` with a timeout is the standard remedy.
+
+**Examples**
+
+A complete, correct echo server with length-prefixed framing:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define PORT     18080
+#define BACKLOG  16
+
+/* --- the two helpers every TCP program needs ------------------------- */
+
+static int send_all(int fd, const void *buf, size_t n)
+{
+    const char *p = buf;
+    while (n > 0) {
+        ssize_t w = send(fd, p, n, 0);
+        if (w < 0) { if (errno == EINTR) continue; return -1; }
+        p += w; n -= (size_t)w;               /* a short send is NORMAL */
+    }
+    return 0;
+}
+
+static int recv_all(int fd, void *buf, size_t n)
+{
+    char *p = buf;
+    while (n > 0) {
+        ssize_t r = recv(fd, p, n, 0);
+        if (r < 0) { if (errno == EINTR) continue; return -1; }
+        if (r == 0) return 1;                  /* peer closed: orderly EOF */
+        p += r; n -= (size_t)r;
+    }
+    return 0;
+}
+
+/* Framing: a 4-byte big-endian length, then that many bytes. Without
+   framing, TCP's byte stream gives no way to tell messages apart. */
+static int send_msg(int fd, const char *msg, uint32_t len)
+{
+    uint32_t net_len = htonl(len);             /* network byte order */
+    if (send_all(fd, &net_len, sizeof net_len) < 0) return -1;
+    return send_all(fd, msg, len);
+}
+
+static int recv_msg(int fd, char *buf, uint32_t cap, uint32_t *out_len)
+{
+    uint32_t net_len;
+    int rc = recv_all(fd, &net_len, sizeof net_len);
+    if (rc != 0) return rc;                    /* 1 = closed, -1 = error */
+
+    uint32_t len = ntohl(net_len);
+    if (len >= cap) return -1;                 /* refuse an oversized frame */
+
+    rc = recv_all(fd, buf, len);
+    if (rc != 0) return rc;
+
+    buf[len] = '\0';
+    *out_len = len;
+    return 0;
+}
+
+static void serve_client(int cfd, const struct sockaddr_in *peer)
+{
+    char text[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &peer->sin_addr, text, sizeof text);
+    printf("[server] client %s:%d connected\n", text, ntohs(peer->sin_port));
+
+    char    buf[1024];
+    uint32_t len;
+    int      rc;
+
+    /* rc == 1 means the client closed cleanly; that ends the loop. */
+    while ((rc = recv_msg(cfd, buf, sizeof buf, &len)) == 0) {
+        printf("[server] received %u bytes: \"%s\"\n", len, buf);
+        if (send_msg(cfd, buf, len) < 0) { perror("send"); break; }
+    }
+    if (rc < 0) perror("recv");
+
+    printf("[server] client disconnected\n");
+    close(cfd);
+}
+
+int main(void)
+{
+    /* A client that vanishes mid-write would otherwise kill us outright. */
+    signal(SIGPIPE, SIG_IGN);
+
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd < 0) { perror("socket"); return EXIT_FAILURE; }
+
+    /* Without SO_REUSEADDR, restarting fails with EADDRINUSE while the
+       old socket sits in TIME_WAIT. */
+    int yes = 1;
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);   /* every local interface */
+    addr.sin_port        = htons(PORT);
+
+    if (bind(lfd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+        perror("bind"); close(lfd); return EXIT_FAILURE;
+    }
+    /* listen() does NOT wait -- it marks the socket as accepting and sets
+       the queue depth for completed-but-unaccepted connections. */
+    if (listen(lfd, BACKLOG) < 0) {
+        perror("listen"); close(lfd); return EXIT_FAILURE;
+    }
+
+    printf("[server] listening on port %d\n", PORT);
+
+    for (int served = 0; served < 1; served++) {
+        struct sockaddr_in peer;
+        socklen_t peerlen = sizeof peer;
+
+        /* accept returns a NEW descriptor; lfd keeps listening. */
+        int cfd = accept(lfd, (struct sockaddr *)&peer, &peerlen);
+        if (cfd < 0) {
+            if (errno == EINTR) continue;
+            perror("accept"); break;
+        }
+        serve_client(cfd, &peer);
+    }
+
+    close(lfd);
+    return EXIT_SUCCESS;
+}
+```
+
+The matching client, using `getaddrinfo` so it works over IPv4 or IPv6:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+
+static int send_all(int fd, const void *buf, size_t n)
+{
+    const char *p = buf;
+    while (n > 0) {
+        ssize_t w = send(fd, p, n, 0);
+        if (w < 0) { if (errno == EINTR) continue; return -1; }
+        p += w; n -= (size_t)w;
+    }
+    return 0;
+}
+
+static int recv_all(int fd, void *buf, size_t n)
+{
+    char *p = buf;
+    while (n > 0) {
+        ssize_t r = recv(fd, p, n, 0);
+        if (r < 0) { if (errno == EINTR) continue; return -1; }
+        if (r == 0) return 1;
+        p += r; n -= (size_t)r;
+    }
+    return 0;
+}
+
+/* Try every address getaddrinfo returned until one connects. This loop
+   is what makes a client work over both IPv4 and IPv6 without changes. */
+static int connect_to(const char *host, const char *service)
+{
+    struct addrinfo hints, *result, *rp;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family   = AF_UNSPEC;             /* IPv4 or IPv6, whichever works */
+    hints.ai_socktype = SOCK_STREAM;
+
+    int rc = getaddrinfo(host, service, &hints, &result);
+    if (rc != 0) { fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rc)); return -1; }
+
+    int fd = -1;
+    for (rp = result; rp; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;   /* success */
+        close(fd);
+        fd = -1;
+    }
+
+    freeaddrinfo(result);
+    return fd;
+}
+
+int main(int argc, char **argv)
+{
+    const char *host = argc > 1 ? argv[1] : "127.0.0.1";
+    const char *port = argc > 2 ? argv[2] : "18080";
+
+    int fd = connect_to(host, port);
+    if (fd < 0) { fprintf(stderr, "could not connect to %s:%s\n", host, port); return 1; }
+    printf("[client] connected to %s:%s\n", host, port);
+
+    const char *messages[] = { "hello", "framed messages", "goodbye" };
+
+    for (size_t i = 0; i < 3; i++) {
+        uint32_t len = (uint32_t)strlen(messages[i]);
+        uint32_t net = htonl(len);
+
+        if (send_all(fd, &net, sizeof net) < 0 ||
+            send_all(fd, messages[i], len) < 0) { perror("send"); break; }
+
+        /* Read the echoed reply, using the same framing. */
+        if (recv_all(fd, &net, sizeof net) != 0) break;
+        uint32_t rlen = ntohl(net);
+
+        char buf[1024];
+        if (rlen >= sizeof buf || recv_all(fd, buf, rlen) != 0) break;
+        buf[rlen] = '\0';
+        printf("[client] echo: \"%s\"\n", buf);
+    }
+
+    /* Half-close: send FIN but keep reading. With close() we could not
+       receive anything the server still had to send. */
+    shutdown(fd, SHUT_WR);
+    close(fd);
+    return 0;
+}
+```
+
+```text
+   WHY TCP NEEDS FRAMING
+
+   sender:   send("AAA")  send("BBBB")  send("CC")
+
+   the wire: TCP is a BYTE STREAM -- the boundaries are not transmitted
+
+   receiver may see ANY of these:
+        read -> "AAABBBBCC"           one read, everything coalesced
+        read -> "AAAB"  "BBBCC"       split at an arbitrary point
+        read -> "A" "A" "A" "B" ...   one byte at a time
+
+   ALL THREE ARE CORRECT TCP BEHAVIOR.
+
+   LENGTH-PREFIXED FRAMING FIXES IT
+        [ 00 00 00 03 ][ A A A ][ 00 00 00 04 ][ B B B B ]
+          4-byte length   payload   4-byte length  payload
+
+   Read exactly 4 bytes, decode n, then read exactly n bytes. Now the
+   receiver can reconstruct the messages regardless of how TCP split them.
+```
+
+**Key Takeaways**
+
+- TCP is a byte stream with no message boundaries — a single `write` may arrive as several `read`s and several writes may coalesce into one.
+- Every TCP protocol must define its own framing: a delimiter, a length prefix, or a fixed size.
+- `listen` does not block; it marks the socket as accepting and sets the backlog, while `accept` returns a new descriptor per connection.
+- `recv` returning `0` means the peer closed cleanly and is not an error; a peer that crashes is not detected at all without keepalives or heartbeats.
+- Ignore `SIGPIPE` and set `SO_REUSEADDR` on servers, and use `shutdown(fd, SHUT_WR)` to signal "done sending" while still reading the reply.
+
+> 🧪 Practice
+>
+> 1. Run the server and client, then modify the client to send one 5000-byte message and confirm the framing still reassembles it correctly.
+> 2. Change the server to fork a child per connection so it can serve several clients at once, reaping children with a `SIGCHLD` handler.
+> 3. Replace length-prefix framing with newline-delimited framing, and handle the case where a single `recv` contains one and a half lines.
+> 4. Interview-style: *"A client sends three 10-byte messages and the server's first `read` returns 30 bytes. Is the server broken?"* Hint: ask what guarantee TCP actually makes about boundaries.
+
 #### UDP Datagrams
+
+**Theory**
+
+TCP's reliability costs something: a three-way handshake before any data moves, acknowledgements, retransmission timers, and head-of-line blocking where one lost packet stalls everything behind it. **UDP** removes all of it. You send a datagram; it may arrive, may not, and may arrive after one you sent later.
+
+That sounds strictly worse until you consider what the guarantees cost. For a live voice call, a packet retransmitted 200 ms late is useless — you needed it then, and playing it now would be worse than the gap. For DNS, a single request and reply is faster with one round trip than with a handshake plus a request plus a teardown. For a game position update sent 60 times a second, a lost update is superseded by the next one before a retransmission could arrive.
+
+UDP's properties, stated precisely:
+
+| Property | TCP | UDP |
+|---|---|---|
+| Connection setup | 3-way handshake | none |
+| Delivery | guaranteed or the connection fails | best effort |
+| Ordering | guaranteed | none |
+| Duplicates | removed | possible |
+| Boundaries | none — a byte stream | **preserved** — one send, one receive |
+| Flow control | yes | none |
+| Congestion control | yes | none (you must implement it) |
+| Header overhead | 20 bytes | 8 bytes |
+| Broadcast/multicast | no | yes |
+
+The row that matters most in code is **message boundaries**. UDP is *datagram*-oriented: one `sendto` produces exactly one `recvfrom`, with the same byte count. All the framing work TCP requires simply disappears. The flip side is that a datagram is atomic — if your buffer is smaller than the arriving datagram, the excess is **silently discarded**, not saved for the next read.
+
+The API differs in that there is no connection, so every send and receive carries an address:
+
+- **`sendto(fd, buf, len, flags, dest_addr, addrlen)`** — the destination travels with the data.
+- **`recvfrom(fd, buf, len, flags, src_addr, addrlen)`** — fills in who sent it, which is how a server knows where to reply.
+
+There is no `listen` and no `accept`. A UDP server just `bind`s and starts receiving. One socket serves every client, which is why a UDP server is often simpler than a TCP one.
+
+You *can* call `connect` on a UDP socket. It does not send anything; it merely records a default peer, letting you use `send`/`recv` and causing the kernel to filter out datagrams from other sources. It also lets you receive ICMP errors such as "port unreachable", which an unconnected UDP socket cannot.
+
+On size: keep datagrams under roughly **1472 bytes** on typical Ethernet to avoid IP fragmentation, since a fragmented datagram is lost entirely if any fragment is lost. 508 bytes is the conservative figure guaranteed not to fragment anywhere.
+
+Applications needing some reliability over UDP add it themselves — sequence numbers, acknowledgements, and retransmission — which is exactly what QUIC does, and why "just use TCP" is usually the right answer unless you have measured a reason not to.
+
+**Examples**
+
+A UDP server and client in one program, using `fork` so both can run:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/time.h>
+
+#define PORT 19090
+
+/* ---------------- server: bind and receive; no listen, no accept -------- */
+static void udp_server(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);      /* SOCK_DGRAM, not STREAM */
+    if (fd < 0) { perror("socket"); _exit(1); }
+
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port        = htons(PORT);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+        perror("bind"); close(fd); _exit(1);
+    }
+    printf("[server] listening on UDP %d (no listen/accept needed)\n", PORT);
+
+    /* Don't hang forever if the client dies. */
+    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    for (int i = 0; i < 3; i++) {
+        char buf[1500];
+        struct sockaddr_in peer;
+        socklen_t peerlen = sizeof peer;
+
+        /* recvfrom fills in WHO sent it -- there is no connection to ask. */
+        ssize_t n = recvfrom(fd, buf, sizeof buf - 1, 0,
+                             (struct sockaddr *)&peer, &peerlen);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                printf("[server] timed out waiting\n"); break;
+            }
+            perror("recvfrom"); break;
+        }
+
+        buf[n] = '\0';
+        char text[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &peer.sin_addr, text, sizeof text);
+
+        /* ONE sendto produced exactly ONE recvfrom, with the same length.
+           No framing was needed: boundaries are preserved. */
+        printf("[server] datagram of %zd bytes from %s:%d: \"%s\"\n",
+               n, text, ntohs(peer.sin_port), buf);
+
+        /* Reply to the address recvfrom gave us. */
+        sendto(fd, buf, (size_t)n, 0, (struct sockaddr *)&peer, peerlen);
+    }
+
+    close(fd);
+    _exit(0);
+}
+
+/* ---------------- client: no connect required -------------------------- */
+static void udp_client(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) { perror("socket"); return; }
+
+    struct sockaddr_in server;
+    memset(&server, 0, sizeof server);
+    server.sin_family = AF_INET;
+    server.sin_port   = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server.sin_addr);
+
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    const char *messages[] = { "first", "second datagram", "third" };
+
+    for (int i = 0; i < 3; i++) {
+        /* No handshake, no connection: the address travels with the data. */
+        if (sendto(fd, messages[i], strlen(messages[i]), 0,
+                   (struct sockaddr *)&server, sizeof server) < 0) {
+            perror("sendto"); break;
+        }
+
+        char buf[1500];
+        struct sockaddr_in from;
+        socklen_t fromlen = sizeof from;
+
+        ssize_t n = recvfrom(fd, buf, sizeof buf - 1, 0,
+                             (struct sockaddr *)&from, &fromlen);
+        if (n < 0) {
+            /* A lost datagram is NORMAL for UDP -- there is no retransmission. */
+            printf("[client] no reply for \"%s\" (lost or timed out)\n", messages[i]);
+            continue;
+        }
+        buf[n] = '\0';
+        printf("[client] echo of %zd bytes: \"%s\"\n", n, buf);
+    }
+
+    close(fd);
+}
+
+int main(void)
+{
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); return EXIT_FAILURE; }
+    if (pid == 0) udp_server();
+
+    usleep(200000);                 /* let the server bind before we send */
+    udp_client();
+
+    waitpid(pid, NULL, 0);
+    return EXIT_SUCCESS;
+}
+```
+
+The truncation trap, which has no TCP equivalent:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+int main(void)
+{
+    int a = socket(AF_INET, SOCK_DGRAM, 0);
+    int b = socket(AF_INET, SOCK_DGRAM, 0);
+    if (a < 0 || b < 0) { perror("socket"); return 1; }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port   = 0;                        /* let the kernel pick */
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+    if (bind(b, (struct sockaddr *)&addr, sizeof addr) < 0) { perror("bind"); return 1; }
+
+    socklen_t len = sizeof addr;
+    getsockname(b, (struct sockaddr *)&addr, &len);   /* which port did we get? */
+
+    char big[1000];
+    memset(big, 'X', sizeof big);
+    sendto(a, big, sizeof big, 0, (struct sockaddr *)&addr, len);
+
+    /* Receive into a buffer far too small for the datagram. */
+    char small[100];
+    ssize_t n = recvfrom(b, small, sizeof small, 0, NULL, NULL);
+
+    printf("sent 1000 bytes, received %zd\n", n);
+    printf("The other 900 bytes are DISCARDED, not queued for the next read.\n");
+    printf("A datagram is atomic: TCP would have given them to you later.\n");
+
+    close(a); close(b);
+    return 0;
+}
+```
+
+**Key Takeaways**
+
+- UDP trades reliability, ordering, and flow control for lower latency and no connection setup — useful when late data is worthless.
+- Datagram boundaries are preserved: one `sendto` yields exactly one `recvfrom` of the same size, so UDP needs none of TCP's framing work.
+- A datagram larger than your receive buffer is truncated and the remainder is discarded permanently, unlike a TCP stream that keeps the rest.
+- There is no `listen` or `accept`; a server binds and serves every client through one socket, using the address `recvfrom` supplies to reply.
+- Keep datagrams under about 1472 bytes to avoid IP fragmentation, and implement your own sequencing and retransmission if you need any reliability.
+
+> 🧪 Practice
+>
+> 1. Write a UDP time server that replies with the current time to any datagram it receives, and a client that queries it.
+> 2. Demonstrate truncation by sending a 2000-byte datagram into a 500-byte buffer, and confirm the remainder is gone.
+> 3. Add sequence numbers and a retransmission timer to the client so it re-sends any datagram not acknowledged within 500 ms.
+> 4. Interview-style: *"Why does DNS use UDP rather than TCP?"* Hint: compare the number of round trips needed for one small question and one small answer.
 
 #### Byte Order Conversion
 
+**Theory**
+
+A 32-bit integer occupies four bytes, but machines disagree about the order to store them in. **Big-endian** puts the most significant byte first; **little-endian** puts the least significant byte first. Both are self-consistent, and neither is wrong.
+
+```text
+   The value 0x12345678 in memory
+
+   BIG-ENDIAN (network order, SPARC, older PowerPC)
+        address:  100  101  102  103
+        byte:     12   34   56   78        most significant FIRST
+
+   LITTLE-ENDIAN (x86, x86-64, most ARM)
+        address:  100  101  102  103
+        byte:     78   56   34   12        least significant FIRST
+```
+
+Within one machine this is invisible — writing 0x12345678 and reading it back gives 0x12345678 either way. It becomes visible the moment bytes cross a boundary: a network, a file, or a shared memory region between machines of different architectures. Send the four bytes from a little-endian machine, interpret them on a big-endian one, and 0x12345678 becomes 0x78563412.
+
+The internet protocols solved this by decree: **network byte order is big-endian**. Every multi-byte field in an IP, TCP, or UDP header is big-endian, regardless of the hosts involved. Your program must convert on the way out and on the way in.
+
+Four macros do this, named for the direction and the width:
+
+| Macro | Converts | Use for |
+|---|---|---|
+| `htons` | host to network, short (16-bit) | port numbers |
+| `htonl` | host to network, long (32-bit) | IPv4 addresses, 32-bit fields |
+| `ntohs` | network to host, short | ports read from the wire |
+| `ntohl` | network to host, long | 32-bit fields read from the wire |
+
+Read them as "h to n s" — the naming is systematic once you see it. On a big-endian machine they compile to nothing; on a little-endian one they become a byte-swap instruction. Either way, **using them is always correct**, which is why you apply them unconditionally rather than testing the platform.
+
+The rules that keep you out of trouble:
+
+- **Convert every multi-byte value crossing the wire**, including your own protocol's fields — not just the ones in `sockaddr_in`.
+- **Never convert single bytes.** A `char` or `uint8_t` has no order to get wrong.
+- **Convert exactly once in each direction.** Applying `htons` twice on a little-endian machine swaps back to the original, and this bug survives testing on a single architecture because both ends make the same mistake.
+- **There are no standard 64-bit macros.** POSIX does not define `htonll`; use `htobe64`/`be64toh` on Linux, or send two 32-bit halves.
+
+Floating-point numbers have no standard network representation at all. Sending a raw `double` assumes both machines use IEEE-754 with the same byte order. Portable protocols send floats as text, as a scaled integer, or in an explicitly specified binary format.
+
+The deeper lesson generalizes beyond networks: **any binary format shared between machines must specify its byte order**, which is why file formats state theirs and why writing a raw `struct` to disk is not portable.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <arpa/inet.h>     /* htons, htonl, ntohs, ntohl */
+
+/* Detect this machine's byte order by inspecting the bytes of a known value. */
+static const char *endianness(void)
+{
+    uint32_t probe = 0x12345678;
+    unsigned char first = *(unsigned char *)&probe;   /* the LOWEST address */
+    return first == 0x12 ? "big-endian" : "little-endian";
+}
+
+static void dump(const char *label, const void *p, size_t n)
+{
+    const unsigned char *b = p;
+    printf("%-22s", label);
+    for (size_t i = 0; i < n; i++) printf("%02X ", b[i]);
+    putchar('\n');
+}
+
+int main(void)
+{
+    printf("this machine is %s\n\n", endianness());
+
+    uint32_t host_value = 0x12345678;
+    uint32_t net_value  = htonl(host_value);          /* to NETWORK order */
+
+    dump("host 0x12345678:", &host_value, sizeof host_value);
+    dump("network order:",   &net_value,  sizeof net_value);
+    printf("as an integer, net_value reads as 0x%08X on this machine\n\n", net_value);
+
+    /* Ports are 16-bit: use the 's' variants. */
+    uint16_t port = 8080;
+    uint16_t net_port = htons(port);
+    printf("port %u -> network 0x%04X -> back to %u\n\n",
+           port, net_port, ntohs(net_port));
+
+    /* --- the double-conversion bug ------------------------------------ */
+    uint32_t once  = htonl(host_value);
+    uint32_t twice = htonl(once);                     /* WRONG: swapped back */
+    printf("htonl applied once:  0x%08X\n", once);
+    printf("htonl applied twice: 0x%08X  <- back to the original: a BUG\n",
+           twice);
+    printf("This survives testing when both ends make the same mistake.\n\n");
+
+    /* --- a protocol header: convert EVERY multi-byte field ------------ */
+    struct Header {
+        uint8_t  version;      /* single byte: NEVER convert */
+        uint8_t  type;         /* single byte: NEVER convert */
+        uint16_t flags;        /* convert */
+        uint32_t length;       /* convert */
+        uint32_t checksum;     /* convert */
+    };
+
+    struct Header out = { .version = 1, .type = 7,
+                          .flags = 0x00FF, .length = 4096, .checksum = 0xDEADBEEF };
+
+    /* Serialize into a byte buffer field by field. Writing the struct
+       directly would also bake in the compiler's PADDING. */
+    unsigned char wire[12];
+    size_t off = 0;
+    wire[off++] = out.version;                        /* 1 byte: as is */
+    wire[off++] = out.type;
+
+    uint16_t f = htons(out.flags);      memcpy(wire + off, &f, 2); off += 2;
+    uint32_t l = htonl(out.length);     memcpy(wire + off, &l, 4); off += 4;
+    uint32_t c = htonl(out.checksum);   memcpy(wire + off, &c, 4); off += 4;
+
+    dump("serialized header:", wire, off);
+
+    /* Deserialize: the exact mirror, with ntoh* in place of hton*. */
+    struct Header in;
+    off = 0;
+    in.version = wire[off++];
+    in.type    = wire[off++];
+    memcpy(&f, wire + off, 2); in.flags    = ntohs(f); off += 2;
+    memcpy(&l, wire + off, 4); in.length   = ntohl(l); off += 4;
+    memcpy(&c, wire + off, 4); in.checksum = ntohl(c); off += 4;
+
+    printf("round trip: version=%u type=%u flags=0x%04X length=%u checksum=0x%08X\n",
+           in.version, in.type, in.flags, in.length, in.checksum);
+
+    /* --- 64-bit: no standard macro exists ------------------------------ */
+    uint64_t big = 0x0123456789ABCDEFULL;
+    uint32_t hi = htonl((uint32_t)(big >> 32));       /* send as two halves */
+    uint32_t lo = htonl((uint32_t)(big & 0xFFFFFFFFu));
+    uint64_t back = ((uint64_t)ntohl(hi) << 32) | ntohl(lo);
+    printf("\n64-bit round trip: 0x%016llX -> 0x%016llX\n",
+           (unsigned long long)big, (unsigned long long)back);
+    return 0;
+}
+```
+
+**Key Takeaways**
+
+- Network byte order is big-endian by definition, so every multi-byte field crossing the wire must be converted regardless of the hosts involved.
+- Use `htons`/`htonl` when sending and `ntohs`/`ntohl` when receiving; they compile to nothing on big-endian machines, so applying them is always correct.
+- Never convert single bytes, and convert exactly once per direction — a double conversion cancels out and hides itself when both ends share the bug.
+- There are no standard 64-bit conversion macros; use platform functions such as `htobe64`, or send two 32-bit halves.
+- Serialize protocol structs field by field rather than writing them wholesale, which would also transmit the compiler's padding; floating-point has no standard wire format at all.
+
+> 🧪 Practice
+>
+> 1. Write a function that detects the machine's endianness at runtime and print the raw bytes of `0xAABBCCDD` before and after `htonl`.
+> 2. Serialize a struct containing a `uint8_t`, a `uint16_t`, and a `uint32_t` into a byte array and back, verifying the round trip is exact.
+> 3. Implement `my_htonll` and `my_ntohll` for 64-bit values and test them against known byte patterns.
+> 4. Interview-style: *"Two programs exchange binary structs and work perfectly in testing, then fail between a server and an embedded device. What is the likely cause?"* Hint: consider what both test machines had in common that the pair does not.
+
 #### Handling Partial Reads and Writes
+
+**Theory**
+
+This is the single most common source of bugs in network code, and it comes from a reasonable but wrong assumption: that asking to send 1000 bytes sends 1000 bytes.
+
+**`send` and `write` return the number of bytes actually transferred, which may be less than requested.** The kernel has a finite socket buffer; if it can only fit 300 bytes right now, it takes 300, returns 300, and expects you to deal with the rest. The same applies to `recv` and `read`: they return what is available *now*, not what you asked for.
+
+This is not an error condition and there is no flag to disable it. It is how the interface works.
+
+Why it survives testing is the insidious part. On loopback with small messages, buffers are almost never full, so `send` transfers everything every time. The bug appears in production — under load, on a slow link, with a busy receiver, or with larger messages — as truncated data or a protocol that mysteriously desynchronizes.
+
+The cure is to never call `send`, `recv`, `read`, or `write` directly on a socket. Write two helpers once and use them everywhere:
+
+- **`send_all`** loops until every byte is transferred, advancing the pointer and decrementing the count by the amount actually moved.
+- **`recv_all`** loops until the requested count is received, treating a `0` return as the peer closing.
+
+Both must also handle **`EINTR`**, which means a signal interrupted the call and it should be retried, not reported as a failure.
+
+The asymmetry between the two is worth understanding. For **writing**, you always want everything sent, so a loop is unconditionally correct. For **reading**, "read exactly N bytes" is only meaningful when you know N in advance — which is precisely what a length prefix gives you. With delimiter framing you instead read into a buffer, scan for the delimiter, and keep any leftover bytes for the next message. That leftover handling is mandatory: a single `recv` routinely contains the end of one message and the beginning of the next.
+
+A subtle trap: `recv_all` returning `0` bytes at the start of a message is an orderly close, but a `0` return partway through a message means the peer closed **mid-message** — a protocol error, not a clean shutdown. Distinguish them, or a truncated message gets processed as if it were complete.
+
+Finally, `MSG_WAITALL` on Linux asks `recv` to wait for the full count, but it is not universally available, still returns early on a signal or a closed connection, and does not remove the need for the loop. Write the loop.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <stdint.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>   /* htonl, ntohl */
+
+/* =====================================================================
+   The two functions that belong in every networked C program.
+   ===================================================================== */
+
+/* Send every byte. Returns 0 on success, -1 on error.
+   A short send is NORMAL: the kernel buffer had limited room. */
+int send_all(int fd, const void *buf, size_t len)
+{
+    const char *p = buf;
+    size_t remaining = len;
+
+    while (remaining > 0) {
+        ssize_t sent = send(fd, p, remaining, 0);
+
+        if (sent < 0) {
+            if (errno == EINTR) continue;          /* signal: retry */
+            return -1;                              /* real error */
+        }
+        /* Advance by what ACTUALLY went, not by what we requested. */
+        p         += sent;
+        remaining -= (size_t)sent;
+    }
+    return 0;
+}
+
+/* Receive exactly len bytes.
+   Returns  0 = complete
+            1 = peer closed cleanly BEFORE any byte of this read
+           -1 = error, or the peer closed MID-message (a protocol error) */
+int recv_all(int fd, void *buf, size_t len)
+{
+    char  *p = buf;
+    size_t remaining = len;
+
+    while (remaining > 0) {
+        ssize_t got = recv(fd, p, remaining, 0);
+
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (got == 0) {
+            /* A clean close at a message boundary is fine; halfway
+               through a message it means the peer died mid-send. */
+            return (remaining == len) ? 1 : -1;
+        }
+        p         += got;
+        remaining -= (size_t)got;
+    }
+    return 0;
+}
+
+/* --- length-prefixed messages, built on the two helpers --------------- */
+
+int send_message(int fd, const void *payload, uint32_t len)
+{
+    uint32_t net_len = htonl(len);
+    if (send_all(fd, &net_len, sizeof net_len) < 0) return -1;
+    return send_all(fd, payload, len);
+}
+
+int recv_message(int fd, void *buf, uint32_t cap, uint32_t *out_len)
+{
+    uint32_t net_len;
+
+    /* Step 1: read exactly the 4-byte length. */
+    int rc = recv_all(fd, &net_len, sizeof net_len);
+    if (rc != 0) return rc;
+
+    uint32_t len = ntohl(net_len);
+
+    /* Step 2: sanity-check it. A hostile or buggy peer can claim 4 GB,
+       and allocating on an untrusted length is a denial-of-service hole. */
+    if (len > cap) {
+        fprintf(stderr, "declared length %u exceeds capacity %u\n", len, cap);
+        return -1;
+    }
+
+    /* Step 3: read exactly that many bytes. */
+    rc = recv_all(fd, buf, len);
+    if (rc != 0) return -1;              /* a close here is MID-message */
+
+    *out_len = len;
+    return 0;
+}
+```
+
+Delimiter framing, where leftover bytes must be carried across reads:
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/socket.h>
+
+/* A line reader that keeps whatever it over-read for the next call.
+   Without this buffer, the tail of a recv that contained one and a half
+   lines would be silently lost. */
+typedef struct {
+    int    fd;
+    char   buf[4096];
+    size_t len;              /* valid bytes currently held */
+} LineReader;
+
+static void lr_init(LineReader *lr, int fd) { lr->fd = fd; lr->len = 0; }
+
+/* Returns the line length on success, 0 at EOF, -1 on error. */
+static ssize_t lr_next(LineReader *lr, char *out, size_t cap)
+{
+    for (;;) {
+        /* Is a complete line already buffered from a previous read? */
+        char *nl = memchr(lr->buf, '\n', lr->len);
+
+        if (nl) {
+            size_t line_len = (size_t)(nl - lr->buf);
+            if (line_len >= cap) return -1;               /* caller's buffer too small */
+
+            memcpy(out, lr->buf, line_len);
+            out[line_len] = '\0';
+
+            /* KEEP the bytes after the newline: they are the start of the
+               next line and must survive into the following call. */
+            size_t consumed = line_len + 1;
+            memmove(lr->buf, lr->buf + consumed, lr->len - consumed);
+            lr->len -= consumed;
+            return (ssize_t)line_len;
+        }
+
+        if (lr->len == sizeof lr->buf) return -1;         /* line too long */
+
+        /* No complete line yet: read more, appending to what we hold. */
+        ssize_t n = recv(lr->fd, lr->buf + lr->len, sizeof lr->buf - lr->len, 0);
+        if (n < 0) { if (errno == EINTR) continue; return -1; }
+        if (n == 0) return 0;                             /* EOF */
+        lr->len += (size_t)n;
+    }
+}
+```
+
+```text
+   WHY THE LOOP IS MANDATORY
+
+   send(fd, buf, 1000)   with only 300 bytes of kernel buffer free
+
+        returns 300            <- NOT an error, NOT a failure
+        700 bytes remain unsent
+
+   WITHOUT A LOOP:
+        the caller assumes 1000 went, moves on -> the peer receives a
+        truncated message and the protocol desynchronizes permanently
+
+   WITH send_all:
+        send(p,      1000) -> 300   p += 300, remaining = 700
+        send(p+300,   700) -> 700   p += 700, remaining = 0
+        done, all 1000 bytes sent
+
+   WHY IT PASSES TESTING
+        loopback + small messages = buffers never fill = always complete.
+        The bug waits for load, a slow link, or a bigger message.
+```
+
+| Return value | `send` / `write` | `recv` / `read` |
+|---|---|---|
+| `> 0` but less than requested | partial — loop for the rest | partial — loop if you need an exact count |
+| `== requested` | complete | complete |
+| `0` | nothing sent (retry) | **peer closed** / end of file |
+| `-1` with `EINTR` | interrupted — retry | interrupted — retry |
+| `-1` with `EAGAIN` | would block — wait for writability | would block — wait for readability |
+| `-1` other | real error | real error |
+
+**Key Takeaways**
+
+- `send`, `recv`, `read`, and `write` may transfer fewer bytes than requested; this is normal behavior, not an error, and cannot be turned off.
+- The bug hides in testing because loopback with small messages rarely fills a buffer — it appears under load, on slow links, or with larger payloads.
+- Write `send_all` and `recv_all` once, advancing by the amount actually transferred and retrying on `EINTR`, and never call the raw functions on a socket again.
+- A `recv` returning `0` at a message boundary is an orderly close; returning `0` partway through a message is a protocol error and must be distinguished.
+- With delimiter framing, always carry over the bytes read past the delimiter — a single `recv` routinely spans a message boundary — and validate any length prefix before trusting it.
+
+> 🧪 Practice
+>
+> 1. Write `send_all` and `recv_all` from scratch and test them by sending a 1 MB message through a socket with a deliberately small `SO_SNDBUF`.
+> 2. Instrument `send_all` to count iterations, then send messages of 100 bytes and 10 MB and compare the loop counts.
+> 3. Implement the `LineReader` and prove the leftover handling works by having the peer send `"a\nb\nc"` in a single write.
+> 4. Interview-style: *"Your file transfer works on localhost but corrupts data over the internet. What would you check first?"* Hint: ask what loopback almost never does that a real network does constantly.
 
 <a id="114-concurrency"></a>
 ### 11.4 Concurrency
 
+Threads let one process do several things at once by sharing its address space — which is exactly what makes them fast and exactly what makes them dangerous. This section covers creating and joining threads, the primitives that make sharing safe, the two classic failure modes, C11's standard alternative to POSIX threads, and what the compiler and CPU are allowed to reorder behind your back.
+
 #### POSIX Threads Creation and Joining
+
+**Theory**
+
+`fork` gives concurrency with isolation: the child has its own copy of everything, so nothing can be corrupted by a race. That isolation is also the limitation — sharing data between processes needs pipes, shared memory, or files, and each is slower and clumsier than a variable.
+
+A **thread** is a second flow of control inside the *same* process. All threads share the heap, globals, file descriptors, and the code itself. Only the stack and the registers are private. Creating a thread is far cheaper than a process, and threads communicate simply by touching the same memory.
+
+| | Process (`fork`) | Thread (`pthread_create`) |
+|---|---|---|
+| Address space | private copy | **shared** |
+| Globals and heap | private after copy-on-write | **shared** |
+| File descriptors | copied (independent afterwards) | **shared** |
+| Stack | private | private |
+| Creation cost | higher | lower |
+| Crash containment | one process dies | **the whole process dies** |
+| Communication | pipes, shared memory, sockets | ordinary variables |
+| Data races possible | no | **yes** — this is the whole difficulty |
+
+The last two rows are the trade. Threads make sharing free, so they also make *accidental* sharing free, and a crash in any thread takes down every thread.
+
+The API is small:
+
+```c
+int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                   void *(*start_routine)(void *), void *arg);
+int pthread_join(pthread_t thread, void **retval);
+int pthread_detach(pthread_t thread);
+```
+
+The thread function has a fixed signature — takes `void *`, returns `void *` — which is C's usual way of passing anything through a generic interface. To pass several values, pass a pointer to a struct.
+
+Three details cause most beginner bugs.
+
+**Pthreads functions return an error code directly; they do not set `errno`.** `if (pthread_create(...) != 0)` is the check, and the return value is what you pass to `strerror`. This differs from every other POSIX call in this chapter.
+
+**Each thread needs its own argument storage.** The classic mistake is passing `&i` from a loop: by the time the thread reads it, `i` has changed, so several threads see the same value or a value that no longer exists. Give each thread its own struct, or pass a pointer to a distinct array element.
+
+**Every thread must be either joined or detached.** `pthread_join` blocks until the thread finishes and collects its return value — the thread equivalent of `waitpid`. A thread that is neither joined nor detached leaks its stack and bookkeeping when it exits, which is the thread version of a zombie. `pthread_detach` says "clean up automatically, I will not collect a result".
+
+A thread returns a value by returning from its function or calling `pthread_exit`. **Never return a pointer to a local variable** — the stack is gone once the thread ends. Return heap memory or a pointer to something the caller owns.
+
+Note that `main` returning terminates the entire process, including still-running threads. Join them first, or the program ends unpredictably.
+
+Compile with `-pthread`, which sets the right preprocessor defines and links the library.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+#include <unistd.h>
+
+#define NTHREADS 4
+
+/* Each thread gets its OWN argument struct. Passing &i from the loop
+   would let the value change before the thread reads it. */
+typedef struct {
+    int    id;
+    int    start, end;
+    long   result;          /* the thread writes its answer here */
+} Work;
+
+static void *worker(void *arg)
+{
+    Work *w = arg;          /* the fixed signature means a cast on entry */
+
+    long sum = 0;
+    for (int i = w->start; i < w->end; i++) sum += i;
+    w->result = sum;        /* each thread writes to its OWN struct: no race */
+
+    printf("thread %d summed [%d, %d) = %ld\n", w->id, w->start, w->end, sum);
+
+    /* Returning a pointer to a LOCAL would be a dangling pointer -- this
+       thread's stack disappears the moment it returns. Point at the
+       caller-owned struct instead. */
+    return &w->result;
+}
+
+int main(void)
+{
+    pthread_t threads[NTHREADS];
+    Work      work[NTHREADS];       /* lives in main's frame: outlives the threads
+                                       only because we join before returning */
+    const int total = 1000000;
+    const int chunk = total / NTHREADS;
+
+    for (int i = 0; i < NTHREADS; i++) {
+        work[i].id     = i;
+        work[i].start  = i * chunk;
+        work[i].end    = (i == NTHREADS - 1) ? total : (i + 1) * chunk;
+        work[i].result = 0;
+
+        /* pthreads returns an ERROR CODE; it does NOT set errno. */
+        int rc = pthread_create(&threads[i], NULL, worker, &work[i]);
+        if (rc != 0) {
+            fprintf(stderr, "pthread_create: %s\n", strerror(rc));
+            return EXIT_FAILURE;
+        }
+    }
+
+    /* Join every thread: this both waits for it and releases its resources.
+       A thread that is neither joined nor detached leaks, like a zombie. */
+    long grand_total = 0;
+    for (int i = 0; i < NTHREADS; i++) {
+        void *retval;
+        int rc = pthread_join(threads[i], &retval);
+        if (rc != 0) { fprintf(stderr, "pthread_join: %s\n", strerror(rc)); continue; }
+
+        grand_total += *(long *)retval;         /* points into work[i] */
+    }
+
+    printf("total = %ld (expected %ld)\n",
+           grand_total, (long)total * (total - 1) / 2);
+    return EXIT_SUCCESS;
+}
+```
+
+The argument-lifetime bug, and detached threads:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+
+static void *print_id(void *arg)
+{
+    int id = *(int *)arg;             /* dereferences whatever it points at NOW */
+    usleep(1000);
+    printf("  got id %d\n", id);
+    return NULL;
+}
+
+static void *detached_worker(void *arg)
+{
+    (void)arg;
+    usleep(50000);
+    printf("  detached thread finished; its resources free themselves\n");
+    return NULL;
+}
+
+int main(void)
+{
+    pthread_t t[3];
+
+    /* --- WRONG: every thread receives the SAME address -------------- */
+    printf("passing &i (all threads share one variable):\n");
+    for (int i = 0; i < 3; i++)
+        pthread_create(&t[i], NULL, print_id, &i);   /* i changes underneath */
+    for (int i = 0; i < 3; i++) pthread_join(t[i], NULL);
+    /* Typically prints 3 3 3, or garbage once the loop variable dies. */
+
+    /* --- RIGHT: each thread gets a distinct object ------------------- */
+    printf("passing &ids[i] (each thread has its own):\n");
+    int ids[3] = { 10, 20, 30 };
+    for (int i = 0; i < 3; i++)
+        pthread_create(&t[i], NULL, print_id, &ids[i]);
+    for (int i = 0; i < 3; i++) pthread_join(t[i], NULL);
+
+    /* --- detached: fire and forget, never joined -------------------- */
+    pthread_t d;
+    if (pthread_create(&d, NULL, detached_worker, NULL) == 0) {
+        pthread_detach(d);            /* resources are reclaimed automatically */
+        usleep(150000);               /* main must not return before it runs:
+                                         returning from main kills every thread */
+    }
+
+    printf("main returning (this terminates ALL threads)\n");
+    return 0;
+}
+```
+
+```bash
+# -pthread sets the required defines AND links the library. Use it for
+# both compiling and linking; plain -lpthread is not equivalent.
+$ gcc -pthread -Wall program.c -o program
+
+# ThreadSanitizer is the single most valuable tool for threaded C:
+$ gcc -fsanitize=thread -g -pthread program.c -o program
+```
+
+**Key Takeaways**
+
+- Threads share the heap, globals, and file descriptors while keeping private stacks, making communication free and data races possible.
+- Pthreads functions return an error code directly and do not set `errno` — check the return value and pass it to `strerror`.
+- Give every thread its own argument storage; passing the address of a loop variable lets the value change before the thread reads it.
+- Join or detach every thread, and never return a pointer to a thread's local variable, whose stack disappears when it ends.
+- Returning from `main` terminates every thread, so join them first; compile and link with `-pthread`.
+
+> 🧪 Practice
+>
+> 1. Write a program that starts four threads, each printing its index, and demonstrate the difference between passing `&i` and passing `&ids[i]`.
+> 2. Parallelize summing a 10-million-element array across N threads and compare the timing against a single-threaded loop for N = 1, 2, 4, and 8.
+> 3. Create a detached thread and confirm with `valgrind` that no resources leak when it is never joined.
+> 4. Interview-style: *"When would you use `fork` rather than threads?"* Hint: think about what happens to the other workers when one of them segfaults.
 
 #### Mutexes and Condition Variables
 
+**Theory**
+
+Shared memory is a thread's advantage and its hazard. The moment two threads write the same variable, or one writes while another reads, you have a **data race** — and the result is not merely an unpredictable value, it is undefined behavior.
+
+The reason is that operations that look atomic in C are not. `counter++` compiles to roughly three steps:
+
+```text
+   load  counter -> register
+   add   1
+   store register -> counter
+```
+
+Two threads can interleave those steps so that both load 5, both compute 6, and both store 6. One increment vanished. With a million increments per thread this happens constantly, and the total is reliably wrong.
+
+A **mutex** (mutual exclusion lock) fixes this by ensuring that only one thread at a time executes the protected region. `pthread_mutex_lock` blocks until the lock is free, then takes it; `pthread_mutex_unlock` releases it. The region between them is a **critical section**.
+
+Three disciplines make mutexes work:
+
+- **Protect the data, not the code.** Decide which mutex guards which variables and document it. Every access to that data — reads included — must hold that mutex.
+- **Keep critical sections short.** A lock held during I/O serializes every thread behind it and destroys the benefit of threading.
+- **Always unlock on every path.** An early `return` or a `goto` that skips the unlock deadlocks the program permanently.
+
+A mutex answers "may I touch this now?" It does not answer "has something I am waiting for happened yet?". Consider a consumer waiting for a queue to become non-empty: it must not hold the lock while waiting, or the producer can never take the lock to add an item. Repeatedly locking, checking, and unlocking works but burns CPU.
+
+A **condition variable** solves exactly this. `pthread_cond_wait(&cond, &mutex)` performs three steps **atomically**: release the mutex, sleep until signalled, and re-acquire the mutex before returning. The atomicity is essential — a gap between releasing and sleeping would let a signal arrive unheard, and the thread would sleep forever.
+
+Two rules about condition variables are non-negotiable:
+
+**Always wait in a loop, never in an `if`.** `pthread_cond_wait` may return without any signal at all — a **spurious wakeup**, permitted by POSIX because it makes implementations faster on some platforms. And with several waiters, another thread may consume the item before you re-acquire the lock. The predicate must be re-checked after every wake:
+
+```c
+while (!condition_is_true)          /* while, NOT if */
+    pthread_cond_wait(&cond, &mutex);
+```
+
+**Signal while holding the mutex, or immediately after.** `pthread_cond_signal` wakes one waiter; `pthread_cond_broadcast` wakes all. Use `signal` when any one waiter can handle the event, and `broadcast` when the state change may satisfy several waiters or different predicates.
+
+Together, a mutex plus a condition variable plus a predicate is the standard toolkit, and a bounded producer-consumer queue is its canonical use.
+
+**Examples**
+
+The race, and its fix:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#define THREADS 4
+#define PER_THREAD 200000
+
+static long unsafe_counter = 0;
+static long safe_counter   = 0;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;   /* static init */
+
+static void *increment(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < PER_THREAD; i++) {
+        /* RACE: load, add, store is three steps. Two threads interleaving
+           them lose increments. This is undefined behavior, not merely
+           an unpredictable number. */
+        unsafe_counter++;
+
+        /* SAFE: only one thread executes the critical section at a time. */
+        pthread_mutex_lock(&lock);
+        safe_counter++;                  /* keep this region SHORT */
+        pthread_mutex_unlock(&lock);
+    }
+    return NULL;
+}
+
+int main(void)
+{
+    pthread_t t[THREADS];
+    for (int i = 0; i < THREADS; i++) pthread_create(&t[i], NULL, increment, NULL);
+    for (int i = 0; i < THREADS; i++) pthread_join(t[i], NULL);
+
+    long expected = (long)THREADS * PER_THREAD;
+    printf("expected: %ld\n", expected);
+    printf("unsafe:   %ld  (%ld increments lost)\n",
+           unsafe_counter, expected - unsafe_counter);
+    printf("safe:     %ld\n", safe_counter);
+
+    pthread_mutex_destroy(&lock);
+    return 0;
+}
+```
+
+A bounded producer-consumer queue — the canonical condition-variable structure:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+
+#define CAPACITY 4
+#define ITEMS    12
+
+typedef struct {
+    int             buf[CAPACITY];
+    size_t          head, tail, count;
+
+    pthread_mutex_t lock;
+    pthread_cond_t  not_empty;      /* consumers wait here when count == 0 */
+    pthread_cond_t  not_full;       /* producers wait here when count == CAPACITY */
+    int             closed;         /* no more items will ever arrive */
+} Queue;
+
+static void queue_init(Queue *q)
+{
+    q->head = q->tail = q->count = 0;
+    q->closed = 0;
+    pthread_mutex_init(&q->lock, NULL);
+    pthread_cond_init(&q->not_empty, NULL);
+    pthread_cond_init(&q->not_full, NULL);
+}
+
+static void queue_destroy(Queue *q)
+{
+    pthread_mutex_destroy(&q->lock);
+    pthread_cond_destroy(&q->not_empty);
+    pthread_cond_destroy(&q->not_full);
+}
+
+static void queue_push(Queue *q, int value)
+{
+    pthread_mutex_lock(&q->lock);
+
+    /* WHILE, not if: cond_wait can return spuriously, and another producer
+       may have refilled the queue before we re-acquired the lock. */
+    while (q->count == CAPACITY)
+        pthread_cond_wait(&q->not_full, &q->lock);   /* atomically:
+                                                        unlock, sleep, relock */
+    q->buf[q->tail] = value;
+    q->tail = (q->tail + 1) % CAPACITY;
+    q->count++;
+
+    /* Signal while still holding the lock: correct, and simplest to reason about. */
+    pthread_cond_signal(&q->not_empty);
+    pthread_mutex_unlock(&q->lock);
+}
+
+/* Returns 1 if an item was taken, 0 if the queue is closed and drained. */
+static int queue_pop(Queue *q, int *out)
+{
+    pthread_mutex_lock(&q->lock);
+
+    while (q->count == 0 && !q->closed)
+        pthread_cond_wait(&q->not_empty, &q->lock);
+
+    if (q->count == 0) {                  /* closed AND empty: nothing more */
+        pthread_mutex_unlock(&q->lock);
+        return 0;
+    }
+
+    *out = q->buf[q->head];
+    q->head = (q->head + 1) % CAPACITY;
+    q->count--;
+
+    pthread_cond_signal(&q->not_full);    /* a producer may now proceed */
+    pthread_mutex_unlock(&q->lock);
+    return 1;
+}
+
+static void queue_close(Queue *q)
+{
+    pthread_mutex_lock(&q->lock);
+    q->closed = 1;
+    /* BROADCAST, not signal: every waiting consumer must learn that no
+       more items are coming, not just one of them. */
+    pthread_cond_broadcast(&q->not_empty);
+    pthread_mutex_unlock(&q->lock);
+}
+
+static Queue queue;
+
+static void *producer(void *arg)
+{
+    (void)arg;
+    for (int i = 1; i <= ITEMS; i++) {
+        queue_push(&queue, i);
+        printf("produced %d\n", i);
+    }
+    queue_close(&queue);           /* tell consumers no more are coming */
+    return NULL;
+}
+
+static void *consumer(void *arg)
+{
+    long id = (long)arg;
+    int  value;
+    while (queue_pop(&queue, &value)) {
+        printf("  consumer %ld got %d\n", id, value);
+        usleep(20000);             /* simulate work OUTSIDE the lock */
+    }
+    printf("  consumer %ld exiting\n", id);
+    return NULL;
+}
+
+int main(void)
+{
+    queue_init(&queue);
+
+    pthread_t prod, cons[3];
+    pthread_create(&prod, NULL, producer, NULL);
+    for (long i = 0; i < 3; i++) pthread_create(&cons[i], NULL, consumer, (void *)i);
+
+    pthread_join(prod, NULL);
+    for (int i = 0; i < 3; i++) pthread_join(cons[i], NULL);
+
+    queue_destroy(&queue);
+    printf("all items produced and consumed\n");
+    return 0;
+}
+```
+
+```text
+   WHY cond_wait MUST BE ATOMIC
+
+   IF IT WERE  "unlock; then sleep"  AS TWO STEPS:
+
+     consumer                        producer
+     -----------------------------   -----------------------------
+     lock()
+     count == 0, so must wait
+     unlock()                    <-- lock is free HERE
+                                     lock()
+                                     push item
+                                     signal()   <-- NOBODY IS WAITING YET
+                                     unlock()
+     sleep()                     <-- sleeps forever: the signal is GONE
+
+   pthread_cond_wait performs unlock + sleep as ONE indivisible step, so
+   the signal cannot slip through the gap. This is the entire reason the
+   mutex is a parameter to cond_wait.
+
+   AND WHY THE WAIT MUST BE A LOOP:
+     - spurious wakeups are permitted by POSIX
+     - another waiter may consume the item before you re-acquire the lock
+     - a broadcast wakes everyone, but only one can have the item
+```
+
+| Primitive | Answers | Blocking |
+|---|---|---|
+| Mutex | "may I touch this data now?" | until the lock is free |
+| Condition variable | "has the state I need occurred?" | until signalled (plus spurious wakeups) |
+| `pthread_cond_signal` | wake one waiter | — |
+| `pthread_cond_broadcast` | wake every waiter | — |
+| Read-write lock | many readers or one writer | until compatible |
+| Semaphore | "are there resources available?" | until the count is positive |
+
+**Key Takeaways**
+
+- `counter++` is three machine steps, so unsynchronized concurrent access loses updates and is undefined behavior, not just an unpredictable number.
+- A mutex protects *data*, not code: document which mutex guards which variables, hold it for every access including reads, and keep critical sections short.
+- `pthread_cond_wait` atomically unlocks, sleeps, and re-locks — the atomicity is what prevents a signal from being lost in the gap.
+- Always wait in a `while` loop re-checking the predicate, because spurious wakeups are permitted and another thread may consume the event first.
+- Use `signal` when any one waiter suffices and `broadcast` when the state change may satisfy several waiters, such as closing a queue.
+
+> 🧪 Practice
+>
+> 1. Run the racing counter with 4 threads and 200,000 increments each, note how many increments are lost, then confirm the mutex version is always exact.
+> 2. Replace the `while` in `queue_pop` with an `if` and run under load until you observe a consumer proceeding with an empty queue.
+> 3. Add a `queue_pop_timeout` using `pthread_cond_timedwait` that gives up after 500 ms.
+> 4. Interview-style: *"Why does `pthread_cond_wait` take a mutex as a parameter?"* Hint: trace what a producer could do in the gap between unlocking and sleeping.
+
 #### Race Conditions and Deadlock
+
+**Theory**
+
+Concurrency has two signature failure modes. One produces wrong answers; the other produces no answer at all.
+
+A **race condition** exists when the result depends on the relative timing of threads. The subtype that matters most is the **data race**: two threads access the same memory location, at least one writes, and nothing orders the two accesses. C11 and POSIX both declare this **undefined behavior** — not "you get one of the two values", but genuinely undefined, because the compiler optimized on the assumption it could not happen.
+
+Races are hard to find precisely because they are timing-dependent. A race that needs a specific interleaving may appear once in ten million runs, never on your laptop and reliably in production. Adding a `printf` to debug it changes the timing and makes it disappear. This is why **ThreadSanitizer** matters so much: it detects races that did not actually occur in that run, by tracking the happens-before relationships between accesses.
+
+Not every race is a data race. **Check-then-act** is a race even when each individual step is protected:
+
+```c
+if (!map_contains(m, key))      /* thread B can insert HERE */
+    map_insert(m, key, value);  /* now we overwrite or duplicate */
+```
+
+The fix is to make the whole compound operation atomic — one lock spanning both steps — not to protect each step separately.
+
+**Deadlock** is the opposite failure: threads block forever, each waiting for a resource another holds. Four conditions must all hold, and breaking any one prevents it:
+
+1. **Mutual exclusion** — a resource is held exclusively.
+2. **Hold and wait** — a thread holds one resource while requesting another.
+3. **No preemption** — resources are released only voluntarily.
+4. **Circular wait** — a cycle of threads each waiting on the next.
+
+The practical cure is to break the fourth: **impose a global lock ordering**. If every thread that needs both `A` and `B` always takes `A` first, no cycle can form. Order by any consistent rule — address, ID, or a documented hierarchy.
+
+```text
+   DEADLOCK: a cycle forms
+
+   thread 1                    thread 2
+   lock(A)   ok                lock(B)   ok
+   lock(B)   blocked ------->  lock(A)   blocked
+      ^                            |
+      +----------------------------+
+              both wait forever
+
+   FIXED: a global ordering makes a cycle impossible
+
+   thread 1                    thread 2
+   lock(A)                     lock(A)   blocked until 1 releases
+   lock(B)                     ...
+   work; unlock both           then proceeds normally
+```
+
+Other alternatives: `pthread_mutex_trylock` with a back-off (release everything and retry), or simply using one coarser lock, which trades throughput for guaranteed safety.
+
+Two related hazards are worth naming. **Livelock** is when threads keep responding to each other and make no progress — two people stepping aside in a corridor forever. **Starvation** is when a thread is perpetually denied a resource because others keep winning the race for it.
+
+Self-deadlock deserves mention: locking a non-recursive mutex twice in the same thread blocks forever. It usually happens when a locked function calls another function that locks the same mutex. `PTHREAD_MUTEX_RECURSIVE` permits it, but the need for it usually signals confused ownership.
+
+**Examples**
+
+A deadlock, demonstrated and then fixed by ordering:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <errno.h>
+
+typedef struct {
+    int             id;
+    long            balance;
+    pthread_mutex_t lock;
+} Account;
+
+static Account acct_a = { 1, 1000, PTHREAD_MUTEX_INITIALIZER };
+static Account acct_b = { 2, 1000, PTHREAD_MUTEX_INITIALIZER };
+
+/* --- DEADLOCK-PRONE: locks in the order the arguments happen to be in --- */
+static void transfer_unsafe(Account *from, Account *to, long amount)
+{
+    pthread_mutex_lock(&from->lock);
+    usleep(1000);                       /* widen the window so it reproduces */
+    pthread_mutex_lock(&to->lock);      /* the other thread holds THIS one */
+
+    from->balance -= amount;
+    to->balance   += amount;
+
+    pthread_mutex_unlock(&to->lock);
+    pthread_mutex_unlock(&from->lock);
+}
+
+/* --- SAFE: a GLOBAL ORDERING makes a cycle impossible ------------------
+   Every thread takes the lower-id account's lock first, whatever the
+   direction of the transfer. No cycle can form, so no deadlock. */
+static void transfer_safe(Account *from, Account *to, long amount)
+{
+    Account *first  = (from->id < to->id) ? from : to;
+    Account *second = (from->id < to->id) ? to   : from;
+
+    pthread_mutex_lock(&first->lock);       /* always the lower id first */
+    pthread_mutex_lock(&second->lock);
+
+    from->balance -= amount;
+    to->balance   += amount;
+
+    pthread_mutex_unlock(&second->lock);
+    pthread_mutex_unlock(&first->lock);
+}
+
+/* --- ALTERNATIVE: trylock with back-off, when ordering is impractical --- */
+static int transfer_trylock(Account *from, Account *to, long amount)
+{
+    for (int attempt = 0; attempt < 100; attempt++) {
+        pthread_mutex_lock(&from->lock);
+
+        if (pthread_mutex_trylock(&to->lock) == 0) {     /* got both */
+            from->balance -= amount;
+            to->balance   += amount;
+            pthread_mutex_unlock(&to->lock);
+            pthread_mutex_unlock(&from->lock);
+            return 0;
+        }
+
+        /* Could not get the second lock: RELEASE THE FIRST and retry,
+           rather than holding it and waiting (which is "hold and wait"). */
+        pthread_mutex_unlock(&from->lock);
+        usleep(100 + attempt * 10);          /* back off before retrying */
+    }
+    return -1;
+}
+
+static void *safe_a_to_b(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 200; i++) transfer_safe(&acct_a, &acct_b, 1);
+    return NULL;
+}
+
+static void *safe_b_to_a(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 200; i++) transfer_safe(&acct_b, &acct_a, 1);
+    return NULL;
+}
+
+int main(void)
+{
+    printf("The unsafe version would deadlock: thread 1 holds A and wants B\n"
+           "while thread 2 holds B and wants A. Running the SAFE version.\n");
+    (void)transfer_unsafe;                   /* shown above, deliberately unused */
+
+    pthread_t t1, t2;
+    pthread_create(&t1, NULL, safe_a_to_b, NULL);
+    pthread_create(&t2, NULL, safe_b_to_a, NULL);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    printf("A = %ld, B = %ld, total = %ld (conserved)\n",
+           acct_a.balance, acct_b.balance, acct_a.balance + acct_b.balance);
+
+    if (transfer_trylock(&acct_a, &acct_b, 50) == 0)
+        printf("trylock transfer succeeded: A = %ld, B = %ld\n",
+               acct_a.balance, acct_b.balance);
+    return 0;
+}
+```
+
+Check-then-act, where locking each step is not enough:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#define SLOTS 100
+
+static int  registry[SLOTS];
+static int  used = 0;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Each step is individually protected -- and it is still a race, because
+   the state can change between the two locked regions. */
+static int reserve_broken(int value)
+{
+    pthread_mutex_lock(&lock);
+    int full = (used == SLOTS);
+    pthread_mutex_unlock(&lock);            /* <-- another thread runs HERE */
+
+    if (full) return -1;
+
+    pthread_mutex_lock(&lock);
+    registry[used++] = value;               /* 'used' may have changed:
+                                               this can overflow the array */
+    pthread_mutex_unlock(&lock);
+    return 0;
+}
+
+/* Correct: the CHECK and the ACT are inside ONE critical section, so no
+   other thread can change the state between them. */
+static int reserve_correct(int value)
+{
+    pthread_mutex_lock(&lock);
+
+    int rc = -1;
+    if (used < SLOTS) {                     /* check */
+        registry[used++] = value;           /* and act, atomically together */
+        rc = 0;
+    }
+
+    pthread_mutex_unlock(&lock);
+    return rc;
+}
+
+static void *filler(void *arg)
+{
+    long id = (long)arg;
+    for (int i = 0; i < 60; i++) reserve_correct((int)(id * 1000 + i));
+    return NULL;
+}
+
+int main(void)
+{
+    (void)reserve_broken;                   /* shown for contrast */
+
+    pthread_t t[4];
+    for (long i = 0; i < 4; i++) pthread_create(&t[i], NULL, filler, (void *)i);
+    for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
+
+    printf("used = %d (capacity %d) -- never exceeded\n", used, SLOTS);
+    printf("240 reservations attempted, %d accepted, rest correctly refused\n", used);
+    return 0;
+}
+```
+
+```bash
+# ThreadSanitizer finds races that did NOT happen in this particular run,
+# by tracking the ordering relationships between memory accesses.
+$ gcc -fsanitize=thread -g -pthread race.c -o race && ./race
+WARNING: ThreadSanitizer: data race (pid=12345)
+  Write of size 8 at 0x0000006010a0 by thread T2:
+    #0 increment race.c:15
+  Previous write of size 8 at 0x0000006010a0 by thread T1:
+    #0 increment race.c:15
+
+# Helgrind (part of Valgrind) also detects lock-ordering problems:
+$ valgrind --tool=helgrind ./deadlock_prone
+```
+
+| Failure | Symptom | Cause | Cure |
+|---|---|---|---|
+| Data race | wrong or corrupted values | unsynchronized concurrent access | mutex, or atomics |
+| Check-then-act | rare invariant violation | state changes between locked steps | one lock spanning both |
+| Deadlock | total freeze | circular wait on locks | global lock ordering, or `trylock` |
+| Livelock | busy but no progress | threads endlessly reacting | randomized back-off |
+| Starvation | one thread never proceeds | unfair scheduling or lock handoff | fair locks, priorities |
+
+**Key Takeaways**
+
+- A data race — two concurrent accesses, at least one a write, with no ordering — is undefined behavior, not merely an unpredictable value.
+- Check-then-act is a race even when each step is individually locked; the compound operation must be inside a single critical section.
+- Deadlock needs all four of mutual exclusion, hold-and-wait, no preemption, and circular wait — breaking the cycle with a global lock ordering is the standard fix.
+- `pthread_mutex_trylock` with release-and-back-off is the alternative when a consistent ordering is impractical.
+- Races are timing-dependent and often invisible in testing, so use ThreadSanitizer and Helgrind rather than relying on runs that happened to pass.
+
+> 🧪 Practice
+>
+> 1. Write the two-account transfer with the unsafe ordering, run it with two threads transferring in opposite directions, and observe the deadlock. Then apply the ordering fix.
+> 2. Build a check-then-act race on a shared counter and detect it with `-fsanitize=thread`.
+> 3. Implement a bank transfer using `trylock` with exponential back-off and count how many retries occur under contention.
+> 4. Interview-style: *"Two threads deadlock intermittently in production but never in testing. How would you find the cause?"* Hint: name a tool that detects the *possibility* of a lock cycle rather than waiting for one.
 
 #### C11 Threads and Atomics
 
+**Theory**
+
+Until 2011, C had no threading in the language itself. Threads were a POSIX feature on Unix and a completely different API on Windows, and the C standard did not even define what concurrent access to a variable *meant*. C11 changed both.
+
+**`<threads.h>`** provides a standard threading API — `thrd_create`, `mtx_lock`, `cnd_wait` — that mirrors pthreads closely. Its adoption has been poor: glibc only gained it in 2018, and MSVC still lacks it. In practice pthreads remains the portable choice on Unix, and C11 threads are worth recognizing more than adopting. Both are optional for an implementation, guarded by `__STDC_NO_THREADS__`.
+
+**`<stdatomic.h>`** is the part that genuinely changed how C is written, because it introduced something the language previously could not express: **an operation on shared data that cannot be interrupted or torn**.
+
+Recall that `counter++` is load, add, store. An **atomic** type makes it a single indivisible operation that no other thread can observe halfway through:
+
+```c
+_Atomic int counter = 0;
+counter++;                  /* now atomic: no lock, no lost updates */
+```
+
+The gain over a mutex is real. An atomic increment compiles to one instruction with a `lock` prefix on x86 — no system call, no blocking, no context switch. For a shared counter or flag, it is several times faster than locking and unlocking.
+
+The limits are equally important:
+
+- **Atomics protect one variable, not an invariant across several.** Making `head` and `count` both atomic does not make "push an item" atomic. Multi-variable invariants need a mutex.
+- **Compound operations still need care.** `if (atomic_load(&x) == 0) atomic_store(&x, 1);` is a check-then-act race. The atomic version is `atomic_compare_exchange`, which does both in one step.
+- **Only lock-free types are truly cheap.** `atomic_is_lock_free` tells you whether the compiler implements a type with real instructions or with a hidden lock; large structs get the lock.
+
+The essential operations:
+
+| Operation | Meaning |
+|---|---|
+| `atomic_load` / `atomic_store` | read / write indivisibly |
+| `atomic_fetch_add` / `_sub` | read-modify-write, returning the old value |
+| `atomic_exchange` | store and return the previous value |
+| `atomic_compare_exchange_strong` | if the value equals expected, replace it — the primitive behind all lock-free algorithms |
+| `atomic_flag_test_and_set` | the one type guaranteed lock-free everywhere |
+
+**Compare-and-swap** deserves emphasis: it is the building block of every lock-free data structure. The idiom is to read the current value, compute the new one, and swap only if nothing changed in the meantime — retrying if it did.
+
+A crucial clarification: **`volatile` is not `_Atomic` and never was.** `volatile` prevents the *compiler* from caching or eliding an access, which is what memory-mapped hardware and signal handlers need. It provides no atomicity and no ordering between threads. Using `volatile` for thread synchronization is a longstanding, still-common bug.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <pthread.h>
+
+#define THREADS 4
+#define PER_THREAD 250000
+
+static _Atomic long   atomic_counter = 0;
+static long           plain_counter  = 0;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static long           mutex_counter  = 0;
+
+static void *worker(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < PER_THREAD; i++) {
+        plain_counter++;                       /* RACE: undefined behavior */
+
+        atomic_counter++;                      /* atomic: one indivisible op */
+
+        pthread_mutex_lock(&lock);             /* correct, but heavier */
+        mutex_counter++;
+        pthread_mutex_unlock(&lock);
+    }
+    return NULL;
+}
+
+int main(void)
+{
+    /* Is this type implemented with real instructions, or a hidden lock? */
+    printf("atomic long is lock-free: %s\n",
+           atomic_is_lock_free(&atomic_counter) ? "yes" : "no");
+
+    pthread_t t[THREADS];
+    for (int i = 0; i < THREADS; i++) pthread_create(&t[i], NULL, worker, NULL);
+    for (int i = 0; i < THREADS; i++) pthread_join(t[i], NULL);
+
+    long expected = (long)THREADS * PER_THREAD;
+    printf("expected: %ld\n", expected);
+    printf("plain:    %ld  (lost %ld)\n", plain_counter, expected - plain_counter);
+    printf("atomic:   %ld\n", atomic_load(&atomic_counter));
+    printf("mutex:    %ld\n", mutex_counter);
+
+    /* --- the explicit operations --------------------------------------- */
+    _Atomic int v = 10;
+
+    int old = atomic_fetch_add(&v, 5);         /* returns the OLD value */
+    printf("\nfetch_add: old=%d new=%d\n", old, atomic_load(&v));
+
+    old = atomic_exchange(&v, 99);             /* store, return the previous */
+    printf("exchange:  old=%d new=%d\n", old, atomic_load(&v));
+
+    /* --- compare-and-swap: the primitive behind lock-free algorithms ---- */
+    int expected_val = 99;
+    bool swapped = atomic_compare_exchange_strong(&v, &expected_val, 123);
+    printf("CAS(99 -> 123): %s, v = %d\n", swapped ? "succeeded" : "failed",
+           atomic_load(&v));
+
+    expected_val = 99;                          /* v is 123 now, so this fails */
+    swapped = atomic_compare_exchange_strong(&v, &expected_val, 456);
+    /* On failure, expected_val is UPDATED to the actual current value --
+       which is what makes the retry loop below work. */
+    printf("CAS(99 -> 456): %s, expected updated to %d\n",
+           swapped ? "succeeded" : "failed", expected_val);
+
+    pthread_mutex_destroy(&lock);
+    return 0;
+}
+```
+
+A lock-free maximum, showing the compare-and-swap retry loop:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <pthread.h>
+
+static _Atomic long high_water = 0;
+
+/* Atomically raise high_water to 'candidate' if it is larger. There is no
+   single "atomic max" instruction, so this is built from compare-and-swap:
+   read, decide, swap-if-unchanged, and retry if another thread won. */
+static void record_max(long candidate)
+{
+    long current = atomic_load(&high_water);
+
+    while (candidate > current) {
+        /* If high_water is still 'current', set it to 'candidate'.
+           If not, compare_exchange writes the NEW actual value into
+           'current' and returns false, so the loop re-evaluates. */
+        if (atomic_compare_exchange_weak(&high_water, &current, candidate))
+            return;                     /* we won the race */
+        /* 'current' now holds the up-to-date value -- loop and try again. */
+    }
+}
+
+static void *producer(void *arg)
+{
+    long seed = (long)arg;
+    for (long i = 0; i < 100000; i++)
+        record_max((seed * 7919 + i * 31) % 1000003);
+    return NULL;
+}
+
+int main(void)
+{
+    pthread_t t[4];
+    for (long i = 1; i <= 4; i++) pthread_create(&t[i-1], NULL, producer, (void *)i);
+    for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
+
+    printf("lock-free maximum found: %ld\n", atomic_load(&high_water));
+
+    /* atomic_flag is the ONLY type guaranteed lock-free on every platform.
+       It is the primitive from which a spinlock is built. */
+    atomic_flag spin = ATOMIC_FLAG_INIT;
+
+    /* Acquire: spin until we are the one that flipped it from clear to set. */
+    while (atomic_flag_test_and_set(&spin)) { /* spin */ }
+    printf("spinlock acquired\n");
+    atomic_flag_clear(&spin);                  /* release */
+    printf("spinlock released\n");
+    return 0;
+}
+```
+
+C11 threads, for recognition:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+/* Implementations may omit threads entirely; this is the required guard. */
+#ifdef __STDC_NO_THREADS__
+int main(void)
+{
+    printf("this implementation does not provide <threads.h>\n");
+    printf("use POSIX pthreads instead -- far more widely available\n");
+    return 0;
+}
+#else
+#include <threads.h>
+
+static int worker(void *arg)          /* note: returns int, not void* */
+{
+    int id = *(int *)arg;
+    printf("C11 thread %d running\n", id);
+    return id * 10;                   /* an ordinary int result */
+}
+
+int main(void)
+{
+    thrd_t t[3];
+    int    ids[3] = { 1, 2, 3 };
+
+    for (int i = 0; i < 3; i++)
+        /* thrd_success, not 0, is the success value -- another difference. */
+        if (thrd_create(&t[i], worker, &ids[i]) != thrd_success) {
+            fprintf(stderr, "thrd_create failed\n");
+            return EXIT_FAILURE;
+        }
+
+    for (int i = 0; i < 3; i++) {
+        int result;
+        thrd_join(t[i], &result);     /* the result is an int, not void** */
+        printf("thread %d returned %d\n", ids[i], result);
+    }
+    return 0;
+}
+#endif
+```
+
+| | Plain variable | `volatile` | `_Atomic` | Mutex |
+|---|---|---|---|---|
+| Safe for concurrent access | no | **no** | yes | yes |
+| Prevents compiler caching | no | yes | yes | yes |
+| Indivisible read-modify-write | no | no | yes | yes |
+| Orders other memory accesses | no | no | yes (per memory order) | yes |
+| Protects a multi-variable invariant | no | no | **no** | yes |
+| Cost | free | free | one instruction | syscall when contended |
+| Correct use | single-threaded | hardware registers, signal flags | counters, flags, lock-free code | anything with an invariant |
+
+**Key Takeaways**
+
+- C11 added `<threads.h>` and `<stdatomic.h>`; the threads API is poorly adopted, but atomics genuinely changed what C can express.
+- An atomic operation is indivisible and needs no lock, making it several times cheaper than a mutex for a single counter or flag.
+- Atomics protect one variable — an invariant spanning several variables still requires a mutex, and compound check-then-act still needs compare-and-swap.
+- `atomic_compare_exchange` is the primitive behind every lock-free algorithm, and it updates your expected value on failure so a retry loop converges.
+- `volatile` is not a synchronization primitive: it stops compiler caching but provides no atomicity and no inter-thread ordering.
+
+> 🧪 Practice
+>
+> 1. Benchmark 10 million increments of a shared counter using a plain variable, an atomic, and a mutex, and explain the ranking and the plain version's wrong answer.
+> 2. Implement a lock-free stack push using `atomic_compare_exchange_weak` in a retry loop.
+> 3. Use `atomic_flag` to build a spinlock, then measure how it compares with a mutex under low and high contention.
+> 4. Interview-style: *"Is `volatile int counter` enough to make `counter++` thread-safe?"* Hint: separate "the compiler must re-read it" from "no other thread can interleave".
+
 #### Memory Ordering Basics
 
+**Theory**
+
+Here is the fact that makes concurrent programming genuinely hard: **neither the compiler nor the CPU executes your program in the order you wrote it.**
+
+Both reorder aggressively, and both are permitted to. The compiler hoists loads out of loops and reorders independent stores. The CPU executes instructions out of order, buffers stores, and speculates past branches. Every one of these transformations preserves the behavior of a *single-threaded* program — that is the only guarantee either one makes.
+
+Another thread watching your memory can therefore see your writes happen in a different order than your source lists them. This is not a bug in the hardware; it is the contract.
+
+The classic demonstration:
+
+```c
+/* Thread A                  Thread B                    */
+data  = 42;                  while (!ready) { }
+ready = 1;                   printf("%d\n", data);   /* may print 0 */
+```
+
+Thread A writes `data` then `ready`. Thread B waits for `ready` and reads `data`. Intuitively `data` must be 42 — but nothing orders those two writes, so B can observe `ready == 1` while `data` is still 0. On x86 this is rare; on ARM and POWER, with weaker memory models, it happens routinely.
+
+**Memory ordering** is how you tell the compiler and CPU which reorderings are forbidden. C11 provides these levels, from weakest to strongest:
+
+| Order | Guarantee | Typical use |
+|---|---|---|
+| `memory_order_relaxed` | atomicity only, no ordering | statistics counters |
+| `memory_order_acquire` | no later access moves before this **load** | acquiring a lock, reading a flag |
+| `memory_order_release` | no earlier access moves after this **store** | releasing a lock, setting a flag |
+| `memory_order_acq_rel` | both, for read-modify-write | compare-and-swap in a lock |
+| `memory_order_seq_cst` | one total order all threads agree on | the default; use unless profiling says otherwise |
+
+The workhorse is the **acquire/release pair**, and the intuition is a one-way barrier:
+
+- A **release** store is a *publish*: everything written before it is guaranteed visible to anyone who acquires.
+- An **acquire** load is a *subscribe*: everything the releasing thread wrote before its release becomes visible to you.
+
+Together they create a **happens-before** relationship between the two threads. Correcting the example above is exactly this:
+
+```c
+atomic_store_explicit(&ready, 1, memory_order_release);        /* publish */
+while (!atomic_load_explicit(&ready, memory_order_acquire)) {} /* subscribe */
+```
+
+Now `data = 42` cannot be reordered after the release, and the read of `data` cannot be hoisted before the acquire.
+
+`memory_order_seq_cst` is the default because it is the easiest to reason about: all sequentially consistent operations appear in one global order every thread agrees on. It is also the most expensive, requiring full barriers on some architectures. **Start with the default.** Weaker orderings buy a few percent and cost enormous reasoning effort; they belong in hot paths of libraries written by people who benchmark them.
+
+Two practical notes. `relaxed` is genuinely useful for counters where you only need the final total and no ordering with other data. And x86 is a *strong* memory model that gives acquire/release semantics for free on ordinary loads and stores, which is exactly why code that is subtly wrong on ordering can pass every test on a laptop and fail on an ARM server.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include <pthread.h>
+#include <unistd.h>
+
+/* --- the message-passing pattern, done correctly --------------------- */
+
+static int          payload = 0;         /* ordinary, non-atomic data */
+static _Atomic int  ready   = 0;         /* the flag that publishes it */
+
+static void *producer(void *arg)
+{
+    (void)arg;
+
+    /* These plain writes must become visible BEFORE the flag. */
+    payload = 42;
+
+    /* RELEASE: a publish barrier. Nothing written above may be reordered
+       below this store. Any thread that ACQUIRES this flag sees payload. */
+    atomic_store_explicit(&ready, 1, memory_order_release);
+    return NULL;
+}
+
+static void *consumer(void *arg)
+{
+    (void)arg;
+
+    /* ACQUIRE: a subscribe barrier. Nothing below may be hoisted above it,
+       and everything the producer wrote before its release is now visible. */
+    while (atomic_load_explicit(&ready, memory_order_acquire) == 0)
+        ;                                 /* spin until published */
+
+    /* Guaranteed 42. Without the acquire/release pair this could read 0,
+       and on ARM or POWER it actually would. */
+    printf("consumer sees payload = %d\n", payload);
+    return NULL;
+}
+
+int main(void)
+{
+    pthread_t p, c;
+    pthread_create(&c, NULL, consumer, NULL);
+    usleep(1000);
+    pthread_create(&p, NULL, producer, NULL);
+    pthread_join(p, NULL);
+    pthread_join(c, NULL);
+
+    /* --- relaxed: atomicity WITHOUT ordering --------------------------- */
+    _Atomic long hits = 0;
+
+    /* Correct for a pure statistics counter: we need every increment to
+       count, but we do not care when other threads observe it, and it
+       orders nothing else. This is the cheapest atomic operation. */
+    atomic_fetch_add_explicit(&hits, 1, memory_order_relaxed);
+    printf("relaxed counter = %ld\n",
+           atomic_load_explicit(&hits, memory_order_relaxed));
+
+    /* --- seq_cst: the default, and the one to start with -------------- */
+    _Atomic int x = 0;
+    atomic_store(&x, 7);                  /* implicitly seq_cst */
+    printf("seq_cst load = %d\n", atomic_load(&x));
+
+    /* An explicit standalone barrier, rarely needed directly. */
+    atomic_thread_fence(memory_order_seq_cst);
+    return 0;
+}
+```
+
+A spinlock built from acquire/release — the pattern in miniature:
+
+```c
+#include <stdio.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <pthread.h>
+
+typedef struct { _Atomic bool held; } SpinLock;
+
+static void spin_lock(SpinLock *l)
+{
+    for (;;) {
+        bool expected = false;
+        /* ACQUIRE on success: everything the previous holder wrote before
+           its release becomes visible to us once we take the lock. */
+        if (atomic_compare_exchange_weak_explicit(
+                &l->held, &expected, true,
+                memory_order_acquire,        /* ordering on success */
+                memory_order_relaxed))       /* ordering on failure: none needed */
+            return;
+        expected = false;                    /* CAS overwrote it; reset */
+    }
+}
+
+static void spin_unlock(SpinLock *l)
+{
+    /* RELEASE: everything we wrote inside the critical section is
+       guaranteed visible to the next thread that acquires this lock. */
+    atomic_store_explicit(&l->held, false, memory_order_release);
+}
+
+static SpinLock lock = { false };
+static long     shared_total = 0;          /* plain: the lock orders it */
+
+static void *worker(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 100000; i++) {
+        spin_lock(&lock);
+        shared_total++;                     /* protected by acquire/release */
+        spin_unlock(&lock);
+    }
+    return NULL;
+}
+
+int main(void)
+{
+    pthread_t t[4];
+    for (int i = 0; i < 4; i++) pthread_create(&t[i], NULL, worker, NULL);
+    for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
+
+    printf("total = %ld (expected 400000)\n", shared_total);
+    return 0;
+}
+```
+
+```text
+   WHAT REORDERING LOOKS LIKE
+
+   YOU WROTE                 THE CPU MAY EXECUTE
+   -----------------------   -----------------------
+   data  = 42;               ready = 1;        <-- store buffer drained first
+   ready = 1;                data  = 42;
+
+   Both orders are legal for a SINGLE thread: nothing in that thread can
+   tell the difference. Another thread absolutely can.
+
+   ACQUIRE / RELEASE ARE ONE-WAY BARRIERS
+
+        thread A                          thread B
+
+        data = 42;      |                       |   read ready (ACQUIRE)
+                        | cannot sink below     |   ------------------------
+        store ready     v  (RELEASE)            v   cannot rise above
+        ---------------------                       read data -> 42
+
+   Everything before the release is visible to everything after the
+   acquire. That relationship is called HAPPENS-BEFORE.
+
+   x86 gives acquire/release almost for free on ordinary loads and stores.
+   ARM and POWER do NOT -- which is why ordering bugs pass on a laptop
+   and fail on a server.
+```
+
+**Key Takeaways**
+
+- Compilers and CPUs reorder memory operations freely, preserving only single-threaded behavior — another thread can observe your writes in a different order.
+- Acquire and release are one-way barriers forming a publish/subscribe pair: a release store makes prior writes visible to any thread that acquires the same variable.
+- `memory_order_seq_cst` is the default and the easiest to reason about; use it unless profiling proves a weaker ordering is needed.
+- `memory_order_relaxed` gives atomicity with no ordering, which is correct for pure statistics counters and wrong for anything that publishes data.
+- x86's strong memory model hides many ordering bugs, so code that passes there can still fail on ARM or POWER — reason from the standard, not from your laptop.
+
+> 🧪 Practice
+>
+> 1. Write the flag-and-payload example with plain non-atomic variables and run it in a loop; then add acquire/release and explain what changed.
+> 2. Benchmark `memory_order_relaxed` against `memory_order_seq_cst` for 10 million atomic increments and report the difference.
+> 3. Implement the spinlock with `memory_order_relaxed` everywhere and explain, referring to happens-before, why the protected data is no longer safe.
+> 4. Interview-style: *"Why might correct-looking threaded code work on x86 but fail on ARM?"* Hint: compare how much reordering each architecture permits without explicit barriers.
+
 #### Thread-Local Storage
+
+**Theory**
+
+Threads share globals, which is usually what you want and sometimes exactly what you do not. Consider a global `errno`: if all threads shared one, a failed call in one thread would overwrite the error another thread was about to read. The same applies to a per-thread scratch buffer, a random-number generator state, or a cached connection.
+
+**Thread-local storage** gives each thread its own private instance of a variable that is nonetheless declared and used like a global. Same name, same scope, different storage per thread. `errno` is in fact implemented exactly this way on every modern system — which is why it works correctly in threaded programs despite looking like a global.
+
+C11 provides the `_Thread_local` storage-class specifier, with `thread_local` as a friendlier spelling from `<threads.h>`:
+
+```c
+_Thread_local int counter = 0;      /* one 'counter' per thread */
+```
+
+Each thread gets its own copy, initialized when the thread starts. There is no synchronization needed, because there is no sharing — which makes thread-local variables both fast and immune to data races.
+
+The initializer must be a **constant expression**, since it is applied at thread creation without running arbitrary code. For anything needing dynamic setup, use the POSIX API — `pthread_key_create`, `pthread_setspecific`, `pthread_getspecific` — which is clumsier but adds a capability `_Thread_local` lacks: a **destructor** called automatically when each thread exits. That is the correct way to manage per-thread heap allocations, because otherwise every thread leaks its buffer.
+
+Thread-local storage is the standard cure for the family of **non-reentrant library functions** that return a pointer to a static buffer: `strtok`, `asctime`, `localtime`, `inet_ntoa`. In a threaded program, two threads calling `localtime` corrupt each other's result. The fixes, in order of preference, are the `_r` variants that write into a caller-supplied buffer (`localtime_r`, `strtok_r`), then thread-local storage, then a mutex.
+
+Two caveats are worth knowing. Thread-local access is slightly slower than a plain global — typically an extra indirection through a per-thread base register — so it is not free in a hot loop. And a `_Thread_local` variable in a dynamically loaded library can add setup cost per thread.
+
+The design lesson generalizes: when you find yourself protecting a global with a mutex purely because each thread wants its own value, the mutex is the wrong tool. Give each thread its own copy and the contention disappears entirely.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+#include <unistd.h>
+
+#define NTHREADS 3
+
+/* SHARED: one instance for the whole process. Every thread sees the same
+   variable, so unsynchronized updates race. */
+static int shared_counter = 0;
+
+/* THREAD-LOCAL: one instance PER THREAD. Same name, private storage.
+   The initializer must be a constant expression. */
+static _Thread_local int local_counter = 0;
+static _Thread_local char scratch[64];
+
+static void *worker(void *arg)
+{
+    long id = (long)arg;
+
+    for (int i = 0; i < 1000; i++) {
+        shared_counter++;      /* RACE: all threads hit the same memory */
+        local_counter++;       /* safe: each thread has its own -- no lock */
+    }
+
+    /* A private scratch buffer needs no synchronization at all. */
+    snprintf(scratch, sizeof scratch, "thread %ld private buffer", id);
+
+    printf("thread %ld: local_counter=%d scratch=\"%s\"\n",
+           id, local_counter, scratch);
+    return NULL;
+}
+
+int main(void)
+{
+    pthread_t t[NTHREADS];
+    for (long i = 0; i < NTHREADS; i++) pthread_create(&t[i], NULL, worker, (void *)i);
+    for (int i = 0; i < NTHREADS; i++) pthread_join(t[i], NULL);
+
+    printf("\nshared_counter = %d (expected %d, but races lost some)\n",
+           shared_counter, NTHREADS * 1000);
+    printf("main's local_counter = %d (main has its OWN copy, never touched)\n",
+           local_counter);
+    return 0;
+}
+```
+
+Dynamic per-thread data with a destructor, which `_Thread_local` cannot provide:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+
+static pthread_key_t buffer_key;
+static pthread_once_t key_once = PTHREAD_ONCE_INIT;
+
+/* Called automatically when a thread that set this key EXITS. This is the
+   capability _Thread_local lacks, and the reason to use the POSIX API. */
+static void free_buffer(void *buf)
+{
+    printf("  destructor freeing buffer at %p\n", buf);
+    free(buf);
+}
+
+/* pthread_once guarantees this runs exactly once across all threads,
+   however many race to call it. */
+static void make_key(void)
+{
+    if (pthread_key_create(&buffer_key, free_buffer) != 0) {
+        fprintf(stderr, "pthread_key_create failed\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
+/* Lazily allocate a per-thread buffer on first use. */
+static char *get_buffer(void)
+{
+    pthread_once(&key_once, make_key);
+
+    char *buf = pthread_getspecific(buffer_key);
+    if (buf == NULL) {                       /* first call in THIS thread */
+        buf = malloc(128);
+        if (!buf) return NULL;
+        pthread_setspecific(buffer_key, buf);   /* the destructor frees it */
+    }
+    return buf;
+}
+
+static void *worker(void *arg)
+{
+    long id = (long)arg;
+
+    char *buf = get_buffer();
+    if (!buf) return NULL;
+
+    snprintf(buf, 128, "data owned solely by thread %ld", id);
+    printf("thread %ld: buffer=%p \"%s\"\n", id, (void *)buf, buf);
+
+    /* A second call returns the SAME buffer for this thread. */
+    printf("thread %ld: second call returns %s pointer\n",
+           id, get_buffer() == buf ? "the same" : "a DIFFERENT");
+    return NULL;                              /* destructor runs here */
+}
+
+int main(void)
+{
+    pthread_t t[3];
+    for (long i = 0; i < 3; i++) pthread_create(&t[i], NULL, worker, (void *)i);
+    for (int i = 0; i < 3; i++) pthread_join(t[i], NULL);
+
+    printf("all per-thread buffers freed automatically\n");
+    pthread_key_delete(buffer_key);
+    return 0;
+}
+```
+
+The non-reentrant function problem, and the three fixes:
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <pthread.h>
+
+/* strtok keeps hidden static state, so two threads tokenizing at once
+   corrupt each other. strtok_r takes the state as a parameter instead. */
+static void *tokenize(void *arg)
+{
+    char  input[64];
+    char *saveptr;                   /* THIS thread's parser state */
+
+    snprintf(input, sizeof input, "%s", (const char *)arg);
+
+    /* strtok_r: reentrant, because the state is ours, not global. */
+    for (char *tok = strtok_r(input, ",", &saveptr); tok;
+         tok = strtok_r(NULL, ",", &saveptr))
+        printf("  token: %s\n", tok);
+
+    /* localtime returns a pointer to a SHARED static struct tm.
+       localtime_r writes into a buffer we supply. */
+    time_t    now = time(NULL);
+    struct tm tm_buf;
+    char      text[64];
+
+    localtime_r(&now, &tm_buf);      /* the _r form: no shared buffer */
+    strftime(text, sizeof text, "%H:%M:%S", &tm_buf);
+    printf("  time: %s\n", text);
+    return NULL;
+}
+
+int main(void)
+{
+    pthread_t a, b;
+    pthread_create(&a, NULL, tokenize, (void *)"one,two,three");
+    pthread_create(&b, NULL, tokenize, (void *)"alpha,beta,gamma");
+    pthread_join(a, NULL);
+    pthread_join(b, NULL);
+
+    printf("both threads tokenized independently -- no interference\n");
+    return 0;
+}
+```
+
+| Approach | Per-thread | Destructor on exit | Dynamic init | Cost |
+|---|---|---|---|---|
+| Plain global | no — shared | n/a | yes | free, needs locking |
+| Global + mutex | no — shared | n/a | yes | lock per access |
+| `_Thread_local` | yes | no | **no** — constant only | one indirection |
+| `pthread_key_*` | yes | **yes** | yes | function call |
+| Caller-supplied buffer (`_r`) | yes, by construction | n/a | yes | free |
+
+**Key Takeaways**
+
+- Thread-local storage gives each thread a private instance of a variable that is written like a global, eliminating both the race and the need for a lock.
+- `_Thread_local` is the C11 specifier, but its initializer must be a constant expression and it provides no cleanup when a thread exits.
+- `pthread_key_create` with a destructor is the way to manage per-thread heap allocations, paired with `pthread_once` to create the key exactly once.
+- Functions returning pointers to static buffers — `strtok`, `localtime`, `inet_ntoa` — are unsafe in threaded programs; prefer their `_r` variants.
+- If you are locking a global only because each thread wants its own value, thread-local storage removes the contention entirely.
+
+> 🧪 Practice
+>
+> 1. Declare a `_Thread_local` counter and a shared counter, increment both from four threads, and compare the final values.
+> 2. Use `pthread_key_create` with a destructor to give each thread a lazily allocated buffer, and confirm with valgrind that nothing leaks.
+> 3. Write two threads that both call `strtok` on separate strings and observe the corruption, then fix it with `strtok_r`.
+> 4. Interview-style: *"How can `errno` be a global and still work correctly with threads?"* Hint: consider what the macro actually expands to on a modern system.
 
 ---
 
 ## 12. Low-Level and Advanced Topics
 
+This chapter is about the places where C stops being a portable abstraction and starts being a description of a machine: individual bits, the exact rules the standard leaves undefined, the binary interface your functions actually obey, and the hardware registers an embedded program writes to directly. It is also where the most dangerous C lives, because the optimizer assumes you never break the rules and rewrites your program accordingly. Understanding what the standard guarantees — and what it deliberately does not — is what separates code that survives a compiler upgrade from code that does not.
+
 <a id="121-bit-manipulation"></a>
 ### 12.1 Bit Manipulation
 
+Below the level of integers and structs, memory is just bits, and a large amount of real C exists to set, clear, count, and rearrange them. This section covers the standard idioms, the traps that come from C's integer promotion rules, and how to move structured data in and out of a byte stream.
+
 #### Masking, Setting, and Clearing Bits
+
+**Theory**
+
+Sometimes a variable is not a number but a **collection of independent yes/no facts**. A file's permissions, a CPU's status register, a set of enabled features, a hardware peripheral's configuration — each is a group of single-bit answers packed into one integer. Manipulating them means operating on individual bits rather than on the value as a whole.
+
+C gives six operators for this, and each has one job:
+
+| Operator | Name | Effect on each bit pair |
+|---|---|---|
+| `&` | AND | 1 only if both are 1 |
+| `\|` | OR | 1 if either is 1 |
+| `^` | XOR | 1 if they differ |
+| `~` | NOT | flips every bit |
+| `<<` | left shift | moves bits toward the high end, filling with 0 |
+| `>>` | right shift | moves bits toward the low end |
+
+From these, four idioms cover almost everything. The key tool is a **mask**: a value with 1s exactly where you want to act. `1u << n` builds a mask for bit `n`, since shifting a single 1 left by `n` places puts it in position `n`.
+
+| Goal | Idiom | Why it works |
+|---|---|---|
+| Set bit `n` | `x \|= (1u << n)` | OR with 1 forces a bit to 1; OR with 0 leaves it alone |
+| Clear bit `n` | `x &= ~(1u << n)` | `~mask` is 0 at `n` and 1 elsewhere; AND with 0 forces 0 |
+| Toggle bit `n` | `x ^= (1u << n)` | XOR with 1 flips; XOR with 0 preserves |
+| Test bit `n` | `(x >> n) & 1u` | shift the bit down to position 0, then isolate it |
+
+Notice that each idiom leaves every other bit untouched — that is the entire point of a mask.
+
+Three hazards deserve real attention, because they produce bugs that look like magic.
+
+**Shifting by too much is undefined behavior.** Shifting an `int` by 32 or more is not "zero"; it is UB, and on x86 the hardware actually shifts by `count % 32`, so `x << 32` returns `x` unchanged. There is no diagnostic.
+
+**Prefer unsigned types.** Right-shifting a *negative* signed value is implementation-defined: it may shift in zeros or copies of the sign bit. And left-shifting into the sign bit is undefined. Bit manipulation belongs on `unsigned` types, which have fully defined wrapping and shifting behavior.
+
+**Integer promotion silently widens your operands.** Any type narrower than `int` is promoted to `int` before an operation. So for `uint8_t x`, the expression `~x` produces an `int` with 24 extra 1 bits at the top. Assigning it back to a `uint8_t` truncates and hides the problem — but comparing it, or shifting it, does not. When working with narrow types, cast back explicitly.
+
+Operator precedence is a further trap: `&`, `|`, and `^` bind *looser* than `==`, so `if (flags & MASK == 0)` parses as `flags & (MASK == 0)`, which is almost never what you meant. Parenthesize bitwise expressions.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <inttypes.h>
+
+/* Print the bits of a value, most significant first. */
+static void print_bits(const char *label, uint32_t v, int width)
+{
+    printf("%-14s", label);
+    for (int i = width - 1; i >= 0; i--) {
+        putchar((v >> i) & 1u ? '1' : '0');
+        if (i % 4 == 0 && i) putchar(' ');       /* group into nibbles */
+    }
+    printf("   (0x%0*X)\n", width / 4, v);
+}
+
+/* The four core idioms, as named helpers. */
+static uint32_t bit_set   (uint32_t x, int n) { return x |  (1u << n); }
+static uint32_t bit_clear (uint32_t x, int n) { return x & ~(1u << n); }
+static uint32_t bit_toggle(uint32_t x, int n) { return x ^  (1u << n); }
+static int      bit_test  (uint32_t x, int n) { return (x >> n) & 1u; }
+
+int main(void)
+{
+    uint32_t x = 0;
+    print_bits("start:", x, 16);
+
+    x = bit_set(x, 3);         print_bits("set bit 3:",    x, 16);
+    x = bit_set(x, 7);         print_bits("set bit 7:",    x, 16);
+    x = bit_toggle(x, 3);      print_bits("toggle bit 3:", x, 16);
+    x = bit_set(x, 12);        print_bits("set bit 12:",   x, 16);
+    x = bit_clear(x, 7);       print_bits("clear bit 7:",  x, 16);
+
+    printf("bit 12 is %s, bit 7 is %s\n",
+           bit_test(x, 12) ? "set" : "clear",
+           bit_test(x, 7)  ? "set" : "clear");
+
+    /* --- multi-bit masks: extracting a FIELD ------------------------- */
+    uint32_t packed = 0xABCD1234u;
+
+    /* Extract bits 8..15: shift the field down, then mask off the rest.
+       0xFF is eight 1s, so it keeps exactly eight bits. */
+    uint32_t byte1 = (packed >> 8) & 0xFFu;
+    printf("\nbyte 1 of 0x%08X = 0x%02X\n", packed, byte1);
+
+    /* Replace that field without disturbing anything else:
+       clear it first, then OR the new value in. */
+    uint32_t new_field = 0x99u;
+    packed = (packed & ~(0xFFu << 8)) | (new_field << 8);
+    printf("after replacing:  0x%08X\n", packed);
+
+    /* --- the promotion trap ------------------------------------------- */
+    uint8_t small = 0x0Fu;
+
+    /* ~small promotes to int FIRST, giving 0xFFFFFFF0, not 0xF0. */
+    printf("\n~small as int:      0x%08X\n", (unsigned)~small);
+    printf("~small cast back:   0x%02X\n", (uint8_t)~small);
+
+    /* This is why a comparison can surprise you: */
+    printf("(~small == 0xF0) is %s -- because ~small is 0xFFFFFFF0\n",
+           (~small == 0xF0) ? "true" : "FALSE");
+
+    /* --- precedence: bitwise binds LOOSER than comparison ------------- */
+    uint32_t flags = 0x04u, MASK = 0x04u;
+
+    /* if (flags & MASK == 0) would parse as flags & (MASK == 0)
+       which is flags & 0 == 0 -- always false. Parenthesize. */
+    if ((flags & MASK) != 0) printf("\nmask bit is set (correctly parenthesized)\n");
+    printf("flags & MASK == 0  evaluates to %u  <- the wrong parse\n",
+           flags & (MASK == 0));
+
+    /* --- shift limits: UB, not zero ----------------------------------- */
+    printf("\nshifting a 32-bit value by >= 32 is UNDEFINED BEHAVIOR.\n");
+    printf("On x86 the hardware masks the count, so x << 32 == x.\n");
+    return 0;
+}
+```
+
+```text
+   HOW EACH IDIOM WORKS ON ONE BYTE
+
+   start          0 0 1 0   1 1 0 0        0x2C
+
+   SET bit 4:     mask = 1u << 4 =  0001 0000
+                  0010 1100
+               OR 0001 0000
+                  ---------
+                  0011 1100                OR with 1 forces 1
+
+   CLEAR bit 3:   mask = ~(1u << 3) = 1111 0111
+                  0011 1100
+              AND 1111 0111
+                  ---------
+                  0011 0100                AND with 0 forces 0
+
+   TOGGLE bit 2:  mask = 1u << 2 =  0000 0100
+                  0011 0100
+              XOR 0000 0100
+                  ---------
+                  0011 0000                XOR with 1 flips
+
+   TEST bit 5:    (x >> 5) & 1  ->  shift it to position 0, isolate it
+```
+
+**Key Takeaways**
+
+- Build a mask with `1u << n`, then set with `|=`, clear with `&= ~`, toggle with `^=`, and test with `(x >> n) & 1` — each leaves every other bit untouched.
+- Do bit manipulation on `unsigned` types: signed right shift is implementation-defined and shifting into the sign bit is undefined.
+- Shifting by the width of the type or more is undefined behavior, not zero — on x86 the count is silently masked, hiding the bug.
+- Types narrower than `int` are promoted before the operation, so `~x` on a `uint8_t` yields an `int` with high bits set; cast back explicitly.
+- Bitwise operators bind looser than comparisons, so `flags & MASK == 0` parses wrongly — always parenthesize.
+
+> 🧪 Practice
+>
+> 1. Write `set_bits(uint32_t x, int lo, int hi)` that sets every bit in the inclusive range and leaves the rest alone.
+> 2. Implement `extract_field(uint32_t x, int offset, int width)` and `insert_field(uint32_t x, int offset, int width, uint32_t value)`, and verify they round-trip.
+> 3. Swap two integers using only XOR, then explain why the trick breaks when both arguments alias the same variable.
+> 4. Interview-style: *"What does `x & (x - 1)` compute, and what is it used for?"* Hint: write out the binary of a value and its predecessor, and look at the lowest set bit.
 
 #### Bit Counting and Scanning Idioms
 
+**Theory**
+
+Beyond setting individual bits, a family of classic operations asks questions *about* a word's bits: how many are set, which is the lowest set bit, is this a power of two, what is the next power of two. These appear constantly in allocators, hash tables, schedulers, compression, and cryptography, and each has a well-known idiom worth recognizing on sight.
+
+The foundational trick is **`x & (x - 1)` clears the lowest set bit.** Subtracting 1 flips the lowest set bit to 0 and turns every zero below it into 1; ANDing with the original keeps only the bits above:
+
+```text
+   x           = 0101 1000
+   x - 1       = 0101 0111      lowest set bit flipped, zeros below became 1s
+   x & (x-1)   = 0101 0000      the lowest set bit is gone
+```
+
+From this single identity, several results follow immediately:
+
+| Idiom | Computes |
+|---|---|
+| `x & (x - 1)` | `x` with its lowest set bit cleared |
+| `x & -x` | only the lowest set bit (everything else cleared) |
+| `x & (x - 1)) == 0` | `x` is zero or a power of two |
+| loop `x &= x - 1` | **population count** — iterations equal the number of set bits |
+
+The population-count loop (Kernighan's algorithm) runs once per *set* bit rather than once per bit, so counting the bits of a sparse word is fast.
+
+`x & -x` deserves a note. On two's-complement machines, `-x` is `~x + 1`, which makes every bit above the lowest set bit the complement of `x`'s — so ANDing isolates exactly that bit. It relies on unsigned arithmetic or two's complement, which C23 now mandates and every real machine has always used.
+
+**Checking for a power of two** is `x && !(x & (x - 1))` — the `x &&` part matters, because zero has no set bits and would otherwise pass. Powers of two matter constantly: hash table sizes, alignment, ring buffer capacities, and page sizes are all powers of two so that `% n` becomes `& (n - 1)`.
+
+Modern practice is to **use the compiler's builtins rather than hand-rolling these**. GCC and Clang provide:
+
+| Builtin | Returns | Note |
+|---|---|---|
+| `__builtin_popcount(x)` | number of set bits | one instruction on modern CPUs |
+| `__builtin_clz(x)` | count of leading zeros | **undefined for x == 0** |
+| `__builtin_ctz(x)` | count of trailing zeros | **undefined for x == 0** |
+| `__builtin_ffs(x)` | index of lowest set bit, 1-based | 0 when x is 0 |
+
+They compile to single instructions (`POPCNT`, `LZCNT`, `TZCNT`) where the hardware supports it. The `clz`/`ctz` undefined-at-zero caveat is real and catches people — always guard the zero case.
+
+`__builtin_clz` also gives `floor(log2(x))` as `31 - __builtin_clz(x)`, which is how you compute an integer logarithm or round up to the next power of two without a loop.
+
+C23 finally standardizes all of this in `<stdbit.h>` (`stdc_count_ones`, `stdc_leading_zeros`, and so on), which will eventually make the builtins unnecessary.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+/* --- Kernighan's population count: one iteration per SET bit ---------- */
+static int popcount_loop(uint32_t x)
+{
+    int count = 0;
+    while (x) {
+        x &= x - 1;              /* clear the lowest set bit */
+        count++;                 /* so the loop runs exactly popcount times */
+    }
+    return count;
+}
+
+/* --- the naive version, for contrast: always 32 iterations ------------ */
+static int popcount_naive(uint32_t x)
+{
+    int count = 0;
+    for (int i = 0; i < 32; i++) count += (x >> i) & 1u;
+    return count;
+}
+
+/* --- power of two: zero must be excluded explicitly ------------------- */
+static bool is_power_of_two(uint32_t x)
+{
+    return x != 0 && (x & (x - 1)) == 0;   /* x != 0 matters: 0 & -1 == 0 */
+}
+
+/* --- round up to the next power of two (bit-smearing) ----------------- */
+static uint32_t next_power_of_two(uint32_t x)
+{
+    if (x == 0) return 1;
+    x--;                         /* so an exact power of two stays itself */
+    x |= x >> 1;                 /* smear the highest set bit downward... */
+    x |= x >> 2;
+    x |= x >> 4;
+    x |= x >> 8;
+    x |= x >> 16;                /* ...until every bit below it is 1 */
+    return x + 1;                /* one more gives the next power of two */
+}
+
+/* --- integer log2, via leading zeros ---------------------------------- */
+static int floor_log2(uint32_t x)
+{
+    if (x == 0) return -1;                   /* clz is UNDEFINED at zero */
+    return 31 - __builtin_clz(x);
+}
+
+int main(void)
+{
+    uint32_t values[] = { 0, 1, 7, 8, 255, 256, 0xF0F0F0F0u, 0x80000000u };
+
+    printf("%-12s %-6s %-6s %-8s %-6s %-6s\n",
+           "value", "pop", "pow2", "next2", "clz", "ctz");
+
+    for (size_t i = 0; i < sizeof values / sizeof *values; i++) {
+        uint32_t v = values[i];
+
+        printf("0x%08X %-6d %-6s %-8u ",
+               v, popcount_loop(v),
+               is_power_of_two(v) ? "yes" : "no",
+               next_power_of_two(v));
+
+        /* clz and ctz are UNDEFINED for zero -- guard every call. */
+        if (v == 0) printf("%-6s %-6s\n", "UB", "UB");
+        else        printf("%-6d %-6d\n", __builtin_clz(v), __builtin_ctz(v));
+    }
+
+    /* Cross-check the hand-written version against the builtin. */
+    printf("\nverifying popcount against __builtin_popcount:\n");
+    bool ok = true;
+    for (uint32_t v = 0; v < 100000u; v++)
+        if (popcount_loop(v) != __builtin_popcount(v) ||
+            popcount_naive(v) != __builtin_popcount(v)) { ok = false; break; }
+    printf("  %s\n", ok ? "all agree" : "MISMATCH");
+
+    /* --- isolating the lowest set bit --------------------------------- */
+    uint32_t x = 0b01011000u;
+    printf("\nx            = 0x%02X\n", x);
+    printf("x & (x - 1)  = 0x%02X   (lowest set bit CLEARED)\n", x & (x - 1));
+    printf("x & -x       = 0x%02X   (ONLY the lowest set bit)\n", x & (uint32_t)(-x));
+    printf("ffs(x)       = %d      (1-based index, 0 if x is 0)\n",
+           __builtin_ffs((int)x));
+
+    /* --- why powers of two matter: modulo becomes masking -------------- */
+    uint32_t cap = 16;                        /* a power of two */
+    printf("\n37 %% 16      = %u\n", 37u % cap);
+    printf("37 & (16-1)  = %u   (identical, and far cheaper)\n", 37u & (cap - 1));
+    printf("floor_log2(1024) = %d\n", floor_log2(1024));
+    return 0;
+}
+```
+
+```text
+   WHY  x & (x - 1)  CLEARS THE LOWEST SET BIT
+
+        x     = 0 1 0 1 1 0 0 0
+                          ^ lowest set bit
+
+        x - 1 = 0 1 0 1 0 1 1 1
+                          ^ it flipped to 0, and every 0 below became 1
+
+        AND   = 0 1 0 1 0 0 0 0
+                          ^ gone; every higher bit survived
+
+   COUNTING WITH IT
+        0101 1000  ->  0101 0000  ->  0100 0000  ->  0000 0000
+             (1)           (2)            (3)         loop ends
+        three iterations = three set bits
+
+   WHY  x & -x  ISOLATES IT (two's complement)
+
+        x     = 0 1 0 1 1 0 0 0
+        -x    = 1 0 1 0 1 0 0 0     (~x + 1)
+        AND   = 0 0 0 0 1 0 0 0     only the lowest set bit survives
+```
+
+**Key Takeaways**
+
+- `x & (x - 1)` clears the lowest set bit and `x & -x` isolates it; nearly every counting and scanning idiom is built from these two.
+- Kernighan's loop `while (x) { x &= x - 1; count++; }` counts set bits in as many iterations as there are set bits, not the full word width.
+- Test for a power of two with `x != 0 && (x & (x - 1)) == 0` — omitting the zero check wrongly accepts zero.
+- Prefer `__builtin_popcount`, `__builtin_clz`, and `__builtin_ctz`, which compile to single instructions, but remember `clz` and `ctz` are undefined for zero.
+- Powers of two turn `% n` into `& (n - 1)`, which is why hash tables, ring buffers, and allocators size themselves that way.
+
+> 🧪 Practice
+>
+> 1. Implement `popcount` three ways — naive loop, Kernighan, and the builtin — and benchmark them on ten million random values.
+> 2. Write `reverse_bits(uint32_t x)` that reverses the bit order, and verify that applying it twice restores the original.
+> 3. Implement `next_power_of_two` for 64-bit values and confirm the behavior at 0, 1, and exact powers of two.
+> 4. Interview-style: *"How would you check whether two integers have opposite signs without using comparison operators?"* Hint: consider what XOR does to the sign bit.
+
 #### Flags and Bit Sets
+
+**Theory**
+
+A single bit stores a boolean, so an `unsigned int` can store 32 of them. That is the idea behind two closely related techniques: **flag words**, where each bit is a named option, and **bit sets**, where each bit records membership of an element in a set.
+
+**Flags** are how C APIs express "any combination of these options" in one argument. `open(path, O_RDONLY | O_CREAT | O_CLOEXEC)` passes three independent choices in a single `int`. The convention is fixed and worth following exactly:
+
+- Each flag is a **distinct power of two**, so no two overlap: `1, 2, 4, 8, ...`, usually written `1u << 0`, `1u << 1`, and so on.
+- Combine with `|`, test with `&`, remove with `&= ~`.
+- Reserve `0` for "no flags", so a plain `0` argument is meaningful.
+
+Writing the values as shifts rather than as literals matters — `1u << 5` is obviously bit 5, while `32` requires the reader to count. A common mistake is defining a flag as a non-power-of-two (say `3`), which silently overlaps two others.
+
+Compared with a struct of `bool` fields, a flag word is far more compact (32 options in 4 bytes rather than 32), can be passed and returned by value trivially, and supports set operations — union, intersection, difference — as single instructions. What it gives up is type safety and readability: nothing stops you passing a file-mode flag where a color flag is expected, and a debugger shows `0x2C` rather than named fields.
+
+**Bit sets** apply the same idea to arbitrary-sized sets. To track membership of `n` elements, allocate `n / bits_per_word` words and let bit `i` mean "element `i` is present". Element `i` lives in word `i / 64` at bit position `i % 64` — and since 64 is a power of two, those become `i >> 6` and `i & 63`.
+
+The payoff is dramatic: a set of one million elements costs 125 KB as a bit set versus 1 MB as an array of `bool` (which is one byte each) or 8 MB as an array of pointers. And because operations work a whole word at a time, intersecting two million-element sets is about 15,000 AND instructions rather than a million comparisons. This is why bit sets underpin sieve algorithms, database index intersection, and garbage collector mark phases.
+
+The cost is that a bit set only works for elements that map to small dense integers. A set of arbitrary strings needs a hash table.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+/* ===================== flag words ===================== */
+
+/* Each flag is a DISTINCT power of two. Writing them as shifts makes the
+   bit position obvious and makes overlaps impossible to introduce. */
+typedef enum {
+    PERM_NONE    = 0,           /* 0 means "no flags" -- always reserve it */
+    PERM_READ    = 1u << 0,     /* 0x01 */
+    PERM_WRITE   = 1u << 1,     /* 0x02 */
+    PERM_EXEC    = 1u << 2,     /* 0x04 */
+    PERM_DELETE  = 1u << 3,     /* 0x08 */
+    PERM_ADMIN   = 1u << 4,     /* 0x10 */
+
+    /* Composites are fine, as long as the PRIMITIVES stay powers of two. */
+    PERM_RW      = PERM_READ | PERM_WRITE,
+    PERM_ALL     = PERM_READ | PERM_WRITE | PERM_EXEC | PERM_DELETE | PERM_ADMIN
+} Permission;
+
+static void describe(const char *label, unsigned flags)
+{
+    printf("%-12s 0x%02X  ", label, flags);
+    if (flags == PERM_NONE) { printf("(none)\n"); return; }
+
+    if (flags & PERM_READ)   printf("read ");
+    if (flags & PERM_WRITE)  printf("write ");
+    if (flags & PERM_EXEC)   printf("exec ");
+    if (flags & PERM_DELETE) printf("delete ");
+    if (flags & PERM_ADMIN)  printf("admin ");
+    putchar('\n');
+}
+
+/* ===================== bit sets ===================== */
+
+#define BITS_PER_WORD 64
+
+typedef struct {
+    uint64_t *words;
+    size_t    nbits;
+    size_t    nwords;
+} BitSet;
+
+static bool bitset_init(BitSet *s, size_t nbits)
+{
+    /* Round UP so a partial final word is still allocated. */
+    s->nwords = (nbits + BITS_PER_WORD - 1) / BITS_PER_WORD;
+    s->words  = calloc(s->nwords, sizeof *s->words);   /* calloc: all clear */
+    s->nbits  = nbits;
+    return s->words != NULL;
+}
+
+static void bitset_free(BitSet *s) { free(s->words); s->words = NULL; }
+
+/* Element i lives in word i/64 at bit i%64. Both are powers of two, so
+   the compiler turns them into a shift and a mask. */
+static void bitset_add(BitSet *s, size_t i)
+{
+    if (i < s->nbits) s->words[i / BITS_PER_WORD] |= 1ULL << (i % BITS_PER_WORD);
+}
+
+static void bitset_remove(BitSet *s, size_t i)
+{
+    if (i < s->nbits) s->words[i / BITS_PER_WORD] &= ~(1ULL << (i % BITS_PER_WORD));
+}
+
+static bool bitset_contains(const BitSet *s, size_t i)
+{
+    return i < s->nbits &&
+           (s->words[i / BITS_PER_WORD] >> (i % BITS_PER_WORD)) & 1ULL;
+}
+
+/* Set operations act on a whole WORD at a time -- 64 elements per instruction. */
+static void bitset_intersect(BitSet *dst, const BitSet *other)
+{
+    size_t n = dst->nwords < other->nwords ? dst->nwords : other->nwords;
+    for (size_t i = 0; i < n; i++) dst->words[i] &= other->words[i];
+    for (size_t i = n; i < dst->nwords; i++) dst->words[i] = 0;
+}
+
+static void bitset_union(BitSet *dst, const BitSet *other)
+{
+    size_t n = dst->nwords < other->nwords ? dst->nwords : other->nwords;
+    for (size_t i = 0; i < n; i++) dst->words[i] |= other->words[i];
+}
+
+static size_t bitset_count(const BitSet *s)
+{
+    size_t total = 0;
+    for (size_t i = 0; i < s->nwords; i++)
+        total += (size_t)__builtin_popcountll(s->words[i]);   /* per word */
+    return total;
+}
+
+int main(void)
+{
+    /* ---------------- flags ---------------- */
+    unsigned perms = PERM_READ | PERM_WRITE;        /* combine with OR */
+    describe("initial:", perms);
+
+    perms |= PERM_EXEC;                             /* add a flag */
+    describe("+exec:", perms);
+
+    perms &= ~PERM_WRITE;                           /* remove a flag */
+    describe("-write:", perms);
+
+    perms ^= PERM_ADMIN;                            /* toggle a flag */
+    describe("^admin:", perms);
+
+    /* Testing several at once: & gives the intersection. */
+    printf("has read?        %s\n", (perms & PERM_READ) ? "yes" : "no");
+    printf("has ALL of RW?   %s\n",
+           (perms & PERM_RW) == PERM_RW ? "yes" : "no");     /* note: == mask */
+    printf("has ANY of RW?   %s\n", (perms & PERM_RW) ? "yes" : "no");
+
+    /* ---------------- bit set: the Sieve of Eratosthenes ------------- */
+    const size_t N = 1000;
+    BitSet composite;
+    if (!bitset_init(&composite, N + 1)) return 1;
+
+    for (size_t i = 2; i * i <= N; i++)
+        if (!bitset_contains(&composite, i))
+            for (size_t j = i * i; j <= N; j += i)
+                bitset_add(&composite, j);          /* mark multiples */
+
+    size_t primes = 0;
+    for (size_t i = 2; i <= N; i++) if (!bitset_contains(&composite, i)) primes++;
+    printf("\nprimes below %zu: %zu\n", N, primes);          /* 168 */
+
+    printf("memory: %zu bytes as a bit set vs %zu as bool[]\n",
+           composite.nwords * sizeof(uint64_t), N + 1);
+
+    /* ---------------- set algebra ---------------- */
+    BitSet a, b;
+    bitset_init(&a, 256);
+    bitset_init(&b, 256);
+
+    for (size_t i = 0; i < 256; i += 2)  bitset_add(&a, i);   /* evens */
+    for (size_t i = 0; i < 256; i += 3)  bitset_add(&b, i);   /* multiples of 3 */
+
+    printf("\n|A| = %zu, |B| = %zu\n", bitset_count(&a), bitset_count(&b));
+
+    BitSet both;
+    bitset_init(&both, 256);
+    memcpy(both.words, a.words, a.nwords * sizeof *a.words);
+    bitset_intersect(&both, &b);              /* multiples of 6 */
+    printf("|A and B| = %zu (multiples of 6)\n", bitset_count(&both));
+
+    bitset_union(&a, &b);
+    printf("|A or B|  = %zu\n", bitset_count(&a));
+
+    bitset_free(&a); bitset_free(&b); bitset_free(&both);
+    bitset_free(&composite);
+    return 0;
+}
+```
+
+| | Flag word | Struct of `bool` | Bit set |
+|---|---|---|---|
+| Storage for 32 options | 4 bytes | 32 bytes | 4 bytes |
+| Type safety | none | full | none |
+| Debugger readability | a hex number | named fields | a hex dump |
+| Combine / test | `\|` and `&` | field access | `\|` and `&` |
+| Set algebra | one instruction | loop | one instruction per 64 elements |
+| Suits | API options | configuration structs | dense integer sets |
+
+**Key Takeaways**
+
+- Define each flag as a distinct power of two written as `1u << n`; combine with `|`, test with `&`, and clear with `&= ~`, reserving `0` for "none".
+- Testing for *all* of several flags is `(x & MASK) == MASK`, while testing for *any* is `(x & MASK) != 0` — the two are easy to confuse.
+- A bit set stores element `i` in word `i / 64` at bit `i % 64`, using 1 bit per element instead of a byte or a pointer.
+- Set operations on bit sets process 64 elements per instruction, which is why sieves, index intersection, and GC mark phases use them.
+- Flag words trade type safety and debuggability for compactness and cheap set algebra; a struct of `bool` is clearer when neither matters.
+
+> 🧪 Practice
+>
+> 1. Define a flag enum for a text editor (bold, italic, underline, strikethrough), and write functions to add, remove, and describe a combination.
+> 2. Add `bitset_difference` and `bitset_is_subset` to the `BitSet` implementation and test them on known sets.
+> 3. Implement the Sieve of Eratosthenes for 10 million with both a `bool` array and a bit set, comparing memory use and runtime.
+> 4. Interview-style: *"When would you choose a bit set over a hash set?"* Hint: think about what a bit set requires of the element type, and what it gets in return.
 
 #### Endianness
 
+**Theory**
+
+A byte has one unambiguous value. A four-byte integer does not — it depends on which order the four bytes are stored in, and machines disagree.
+
+**Big-endian** stores the most significant byte at the lowest address, the way we write numbers. **Little-endian** stores the least significant byte first. Neither is more correct; x86 and most ARM are little-endian, while network protocols and some older architectures are big-endian.
+
+```text
+   The 32-bit value 0x12345678 stored at address 100
+
+   BIG-ENDIAN                        LITTLE-ENDIAN
+   addr:  100  101  102  103         addr:  100  101  102  103
+   byte:   12   34   56   78         byte:   78   56   34   12
+           ^ most significant first          ^ least significant first
+```
+
+Within one program on one machine, this is completely invisible: write `0x12345678`, read it back, get `0x12345678`. Endianness only becomes observable when you look at the *bytes* rather than the value — which happens in exactly four situations:
+
+1. **Network transmission** (covered in the previous chapter — network byte order is big-endian).
+2. **Binary file formats** read or written on different machines.
+3. **Casting a pointer** to a different type to inspect the representation.
+4. **Shared memory or device registers** between components of differing endianness.
+
+The practical rule that keeps you safe is simple: **arithmetic is always portable, byte access never is.** `x >> 8` extracts the same bits on every machine, because shifting is defined on the *value*. Reading `((unsigned char *)&x)[1]` gives different results depending on endianness, because it reads the *representation*.
+
+That distinction gives the correct way to write portable serialization: **use shifts and masks, not `memcpy` of the whole value.** Building a byte array with `buf[0] = (x >> 24) & 0xFF;` produces the same bytes on every machine, because it never touches the in-memory layout.
+
+Little-endian has one genuinely useful property: the address of a multi-byte value is also the address of its least significant byte, so a pointer to a `uint32_t` can be read as a `uint8_t` to get the low byte. Big-endian has the property that a byte-wise memory dump reads in the natural order, which makes hex dumps easier to interpret.
+
+Detecting endianness at runtime is a three-line function: store a known value, look at its first byte. C23 finally standardizes compile-time detection with `__STDC_ENDIAN_NATIVE__` in `<stdbit.h>`; before that, compilers offer `__BYTE_ORDER__` and `__ORDER_LITTLE_ENDIAN__`.
+
+There is a third form, **mixed or middle-endian**, which some historical architectures used for 32-bit values. It is extinct in practice but explains why careful code checks rather than assumes.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdbool.h>
+
+/* --- runtime detection: store a known value, inspect its first byte --- */
+static bool is_little_endian(void)
+{
+    uint32_t probe = 0x01020304u;
+    unsigned char first = *(const unsigned char *)&probe;   /* LOWEST address */
+    return first == 0x04;                                   /* LSB first */
+}
+
+/* --- compile-time detection, where the compiler offers it ------------- */
+static const char *compile_time_order(void)
+{
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
+#  if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    return "little-endian (known at compile time)";
+#  elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return "big-endian (known at compile time)";
+#  else
+    return "unusual byte order";
+#  endif
+#else
+    return "unknown at compile time";
+#endif
+}
+
+static void dump(const char *label, const void *p, size_t n)
+{
+    const unsigned char *b = p;
+    printf("%-26s", label);
+    for (size_t i = 0; i < n; i++) printf("%02X ", b[i]);
+    putchar('\n');
+}
+
+/* --- PORTABLE serialization: shifts operate on the VALUE, not the bytes -- */
+static void store_be32(unsigned char *out, uint32_t v)
+{
+    out[0] = (unsigned char)(v >> 24);      /* most significant first */
+    out[1] = (unsigned char)(v >> 16);
+    out[2] = (unsigned char)(v >>  8);
+    out[3] = (unsigned char)(v      );
+    /* Identical output on every machine: no in-memory layout was read. */
+}
+
+static uint32_t load_be32(const unsigned char *in)
+{
+    return ((uint32_t)in[0] << 24) | ((uint32_t)in[1] << 16)
+         | ((uint32_t)in[2] <<  8) |  (uint32_t)in[3];
+}
+
+static void store_le32(unsigned char *out, uint32_t v)
+{
+    out[0] = (unsigned char)(v      );      /* least significant first */
+    out[1] = (unsigned char)(v >>  8);
+    out[2] = (unsigned char)(v >> 16);
+    out[3] = (unsigned char)(v >> 24);
+}
+
+static uint32_t load_le32(const unsigned char *in)
+{
+    return  (uint32_t)in[0]        | ((uint32_t)in[1] <<  8)
+         | ((uint32_t)in[2] << 16) | ((uint32_t)in[3] << 24);
+}
+
+/* --- byte swapping, when you must convert in place -------------------- */
+static uint32_t bswap32(uint32_t v)
+{
+    return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) <<  8)
+         | ((v & 0x00FF0000u) >>  8) | ((v & 0xFF000000u) >> 24);
+}
+
+int main(void)
+{
+    printf("runtime:      %s\n", is_little_endian() ? "little-endian" : "big-endian");
+    printf("compile time: %s\n\n", compile_time_order());
+
+    uint32_t value = 0x12345678u;
+
+    /* The VALUE is the same everywhere; the REPRESENTATION is not. */
+    printf("value          = 0x%08X\n", value);
+    dump("in-memory bytes:", &value, sizeof value);
+
+    /* Arithmetic is portable: these produce the same result on any machine. */
+    printf("\nPORTABLE (arithmetic on the value):\n");
+    printf("  (value >> 24) & 0xFF = 0x%02X   <- always the MSB\n",
+           (value >> 24) & 0xFFu);
+    printf("  value & 0xFF         = 0x%02X   <- always the LSB\n",
+           value & 0xFFu);
+
+    /* Byte access is NOT portable: this depends on the machine. */
+    printf("\nNON-PORTABLE (reading the representation):\n");
+    printf("  ((unsigned char*)&value)[0] = 0x%02X  <- differs by endianness\n",
+           ((const unsigned char *)&value)[0]);
+
+    /* --- serialization round trip ------------------------------------- */
+    unsigned char be[4], le[4];
+    store_be32(be, value);
+    store_le32(le, value);
+
+    printf("\n");
+    dump("serialized big-endian:",    be, 4);
+    dump("serialized little-endian:", le, 4);
+
+    printf("load_be32 -> 0x%08X   load_le32 -> 0x%08X   (both exact)\n",
+           load_be32(be), load_le32(le));
+
+    /* --- byte swapping ------------------------------------------------ */
+    printf("\nbswap32(0x%08X) = 0x%08X\n", value, bswap32(value));
+    printf("__builtin_bswap32     = 0x%08X   (one instruction)\n",
+           __builtin_bswap32(value));
+
+    /* --- the classic union trick: legal in C, unlike in C++ ------------ */
+    union { uint32_t u; unsigned char b[4]; } probe = { .u = 0x0A0B0C0Du };
+    printf("\nunion view of 0x0A0B0C0D: ");
+    for (int i = 0; i < 4; i++) printf("%02X ", probe.b[i]);
+    printf("\n(reading a different union member is defined in C -- "
+           "it is type punning, and C explicitly allows it)\n");
+    return 0;
+}
+```
+
+| Operation | Portable? | Why |
+|---|---|---|
+| `x >> 8`, `x & 0xFF` | yes | defined on the value |
+| `x * 2`, `x + 1` | yes | arithmetic |
+| `((unsigned char *)&x)[0]` | **no** | reads the representation |
+| `memcpy(buf, &x, 4)` then transmit | **no** | copies the layout |
+| `buf[0] = x >> 24; ...` | yes | builds bytes from the value |
+| `fwrite(&struct, sizeof, 1, f)` | **no** | layout plus padding |
+
+**Key Takeaways**
+
+- Endianness is the order of bytes within a multi-byte value; it is invisible until you inspect the representation rather than the value.
+- Arithmetic and shifts are portable because they operate on the value; casting to `unsigned char *` or `memcpy`ing the object reads the layout and is not.
+- Serialize with explicit shifts and masks so the byte order is chosen by your code, not by the machine.
+- Detect endianness at runtime by inspecting the first byte of a known value, or at compile time with `__BYTE_ORDER__`; C23 adds `<stdbit.h>`.
+- Use `__builtin_bswap32`/`64` for in-place conversion, and remember that reading a different union member is defined type punning in C.
+
+> 🧪 Practice
+>
+> 1. Write a hex-dump function and use it to display the bytes of a `uint16_t`, `uint32_t`, and `double` on your machine.
+> 2. Implement `store_be64`/`load_be64` and verify a round trip for `0x0123456789ABCDEF`.
+> 3. Write a binary file with an explicit little-endian header, then read it back with code that works regardless of the host's endianness.
+> 4. Interview-style: *"Why does `x >> 8` work identically on every machine while `((char*)&x)[1]` does not?"* Hint: one operates on the number, the other on how the number is stored.
+
 #### Packing and Unpacking Binary Data
+
+**Theory**
+
+Sooner or later a C program must read or write a **binary format**: a network packet, a file header, a device protocol, a saved game. The format specifies exactly which bytes mean what, and your job is to convert between that byte layout and your program's structures.
+
+The tempting approach is to define a matching `struct` and `fwrite` it. **This is wrong**, and it is wrong for three independent reasons, any one of which is fatal:
+
+1. **Padding.** The compiler inserts unnamed bytes between members so each is properly aligned. `struct { char c; int i; }` is typically 8 bytes, not 5, and the 3 padding bytes hold garbage. Your file now contains uninitialized memory — a correctness bug and an information leak.
+2. **Endianness.** The multi-byte members are written in the host's byte order, so the file is unreadable on a machine with the opposite order.
+3. **Type sizes.** `long` is 8 bytes on Linux and 4 on Windows; `int` could in principle be 2. The layout changes with the platform.
+
+Add that `#pragma pack` — which removes the padding — is non-standard, may generate slower code, and on some architectures makes unaligned access crash. It solves only the first of the three problems.
+
+The correct approach is **explicit serialization**: write and read one field at a time, with a fixed-width type and a chosen byte order for each. It is more code, and it is code that behaves identically on every platform, forever.
+
+The discipline has a few components:
+
+- **Use fixed-width types** from `<stdint.h>` — `uint16_t`, `int32_t` — never `int` or `long`, in any structure describing a wire or file format.
+- **Choose a byte order and apply it explicitly** with shifts, exactly as in the previous topic.
+- **Track an offset** as you write and read, so the two directions cannot drift apart.
+- **Validate everything on input.** A length field from an untrusted source can claim four gigabytes; a magic number can be wrong; a version can be one you do not support. Checking these is the difference between a parser and a vulnerability.
+
+**Bit fields** are worth mentioning and mostly avoiding. C lets you declare `unsigned flags : 3;` inside a struct, which looks perfect for packed formats. But the standard leaves the allocation order, the straddling of storage units, and the signedness of plain `int` bit fields all implementation-defined. They are fine for internal memory savings and unusable for a defined external format — use explicit shifts and masks instead.
+
+For reading, the safest pattern is a small set of `load_be16`/`load_be32` helpers plus bounds checks, and for writing the mirror set. Once those exist, a parser for even a complex format is short and obviously correct.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stddef.h>     /* offsetof */
+
+/* =====================================================================
+   Why writing a struct directly does not work.
+   ===================================================================== */
+struct Naive {
+    uint8_t  type;      /* offset 0                       */
+                        /* 3 bytes of PADDING here        */
+    uint32_t length;    /* offset 4 (must be 4-aligned)   */
+    uint16_t flags;     /* offset 8                       */
+                        /* 2 more bytes of padding        */
+};                      /* sizeof == 12, not 7            */
+
+/* =====================================================================
+   Explicit serialization helpers. Written once, used everywhere.
+   ===================================================================== */
+
+static void put_u8 (unsigned char *b, size_t *off, uint8_t v)
+{
+    b[(*off)++] = v;
+}
+
+static void put_be16(unsigned char *b, size_t *off, uint16_t v)
+{
+    b[(*off)++] = (unsigned char)(v >> 8);      /* shifts: portable */
+    b[(*off)++] = (unsigned char)(v     );
+}
+
+static void put_be32(unsigned char *b, size_t *off, uint32_t v)
+{
+    b[(*off)++] = (unsigned char)(v >> 24);
+    b[(*off)++] = (unsigned char)(v >> 16);
+    b[(*off)++] = (unsigned char)(v >>  8);
+    b[(*off)++] = (unsigned char)(v      );
+}
+
+/* Every read is bounds-checked against the buffer size. */
+static bool get_u8(const unsigned char *b, size_t len, size_t *off, uint8_t *out)
+{
+    if (*off + 1 > len) return false;
+    *out = b[(*off)++];
+    return true;
+}
+
+static bool get_be16(const unsigned char *b, size_t len, size_t *off, uint16_t *out)
+{
+    if (*off + 2 > len) return false;
+    *out = (uint16_t)((uint32_t)b[*off] << 8 | b[*off + 1]);
+    *off += 2;
+    return true;
+}
+
+static bool get_be32(const unsigned char *b, size_t len, size_t *off, uint32_t *out)
+{
+    if (*off + 4 > len) return false;
+    *out = (uint32_t)b[*off]     << 24 | (uint32_t)b[*off + 1] << 16
+         | (uint32_t)b[*off + 2] <<  8 | (uint32_t)b[*off + 3];
+    *off += 4;
+    return true;
+}
+
+/* =====================================================================
+   A concrete format:
+     magic    4 bytes  "PKT1"
+     version  1 byte
+     type     1 byte
+     flags    2 bytes  big-endian
+     length   4 bytes  big-endian, payload size
+     payload  'length' bytes
+   Total header: 12 bytes, with NO padding and NO host dependence.
+   ===================================================================== */
+#define HEADER_SIZE   12
+#define MAGIC         "PKT1"
+#define VERSION       1
+#define MAX_PAYLOAD   4096
+
+typedef struct {                 /* the IN-MEMORY form; layout is irrelevant */
+    uint8_t  version, type;
+    uint16_t flags;
+    uint32_t length;
+    unsigned char payload[MAX_PAYLOAD];
+} Packet;
+
+static size_t pack(const Packet *p, unsigned char *out, size_t cap)
+{
+    if (p->length > MAX_PAYLOAD) return 0;
+    if (cap < HEADER_SIZE + p->length) return 0;
+
+    size_t off = 0;
+    memcpy(out + off, MAGIC, 4); off += 4;      /* bytes: no conversion */
+    put_u8  (out, &off, p->version);
+    put_u8  (out, &off, p->type);
+    put_be16(out, &off, p->flags);
+    put_be32(out, &off, p->length);
+
+    memcpy(out + off, p->payload, p->length);
+    off += p->length;
+    return off;                                  /* total bytes written */
+}
+
+static bool unpack(const unsigned char *in, size_t len, Packet *p)
+{
+    size_t off = 0;
+
+    /* 1. Magic: refuse anything that is not our format. */
+    if (len < 4 || memcmp(in, MAGIC, 4) != 0) {
+        fprintf(stderr, "bad magic\n"); return false;
+    }
+    off = 4;
+
+    /* 2. Every field is bounds-checked as it is read. */
+    if (!get_u8  (in, len, &off, &p->version) ||
+        !get_u8  (in, len, &off, &p->type)    ||
+        !get_be16(in, len, &off, &p->flags)   ||
+        !get_be32(in, len, &off, &p->length)) {
+        fprintf(stderr, "truncated header\n"); return false;
+    }
+
+    /* 3. Validate the version BEFORE trusting anything that follows. */
+    if (p->version != VERSION) {
+        fprintf(stderr, "unsupported version %u\n", p->version); return false;
+    }
+
+    /* 4. NEVER trust a length from the wire. This single check is the
+          difference between a parser and a remote buffer overflow. */
+    if (p->length > MAX_PAYLOAD) {
+        fprintf(stderr, "declared length %u exceeds maximum\n", p->length);
+        return false;
+    }
+    if (off + p->length > len) {
+        fprintf(stderr, "declared length %u exceeds the %zu bytes available\n",
+                p->length, len - off);
+        return false;
+    }
+
+    memcpy(p->payload, in + off, p->length);
+    return true;
+}
+
+static void dump(const char *label, const unsigned char *b, size_t n)
+{
+    printf("%s (%zu bytes)\n  ", label, n);
+    for (size_t i = 0; i < n; i++) {
+        printf("%02X ", b[i]);
+        if ((i + 1) % 12 == 0 && i + 1 < n) printf("\n  ");
+    }
+    putchar('\n');
+}
+
+int main(void)
+{
+    /* Show why the naive approach fails. */
+    printf("struct Naive: 7 bytes of data, sizeof == %zu\n", sizeof(struct Naive));
+    printf("  offsets: type=0 length=%zu flags=%zu  <- gaps are PADDING\n\n",
+           offsetof(struct Naive, length), offsetof(struct Naive, flags));
+
+    /* Build and serialize a packet. */
+    Packet out = { .version = VERSION, .type = 7, .flags = 0x00FF };
+    const char *body = "hello, binary world";
+    out.length = (uint32_t)strlen(body);
+    memcpy(out.payload, body, out.length);
+
+    unsigned char wire[512];
+    size_t n = pack(&out, wire, sizeof wire);
+    if (n == 0) { fprintf(stderr, "pack failed\n"); return 1; }
+
+    dump("serialized packet", wire, n);
+    printf("  header is exactly %d bytes on EVERY platform\n\n", HEADER_SIZE);
+
+    /* Round trip. */
+    Packet in;
+    if (unpack(wire, n, &in)) {
+        printf("unpacked: version=%u type=%u flags=0x%04X length=%u\n",
+               in.version, in.type, in.flags, in.length);
+        printf("payload:  \"%.*s\"\n\n", (int)in.length, in.payload);
+    }
+
+    /* --- hostile input: each check earns its place ------------------- */
+    printf("rejecting malformed input:\n");
+
+    unsigned char bad[HEADER_SIZE];
+    memcpy(bad, wire, HEADER_SIZE);
+
+    bad[4] = 99;                                  /* wrong version */
+    printf("  version 99:      "); unpack(bad, sizeof bad, &in);
+
+    memcpy(bad, wire, HEADER_SIZE);
+    bad[8] = 0xFF; bad[9] = 0xFF;                 /* enormous length */
+    bad[10] = 0xFF; bad[11] = 0xFF;
+    printf("  length 4 GB:     "); unpack(bad, sizeof bad, &in);
+
+    printf("  truncated input: "); unpack(wire, 6, &in);
+
+    memcpy(bad, wire, HEADER_SIZE); bad[0] = 'X';
+    printf("  wrong magic:     "); unpack(bad, sizeof bad, &in);
+    return 0;
+}
+```
+
+```text
+   WHY fwrite(&struct, ...) IS NOT A FILE FORMAT
+
+   struct { uint8_t type; uint32_t length; uint16_t flags; };
+
+   IN MEMORY (x86-64)                    WHAT THE FORMAT SPECIFIES
+   +----+----+----+----+                 +----+
+   |type| ?? | ?? | ?? |  <- padding     |type|
+   +----+----+----+----+                 +----+----+----+----+
+   |     length (LE)   |  <- host order  |   length (big-end)|
+   +----+----+----+----+                 +----+----+----+----+
+   | flags   | ?? | ?? |  <- padding     | flags   |
+   +----+----+----+----+                 +----+----+
+   12 bytes, 5 of them garbage,          7 bytes, fully specified,
+   byte order depends on the CPU         identical everywhere
+
+   THE THREE INDEPENDENT PROBLEMS
+     padding      -> uninitialized bytes in your file (and an info leak)
+     endianness   -> unreadable on the other kind of machine
+     type sizes   -> 'long' is 8 bytes here, 4 bytes there
+```
+
+**Key Takeaways**
+
+- Never `fwrite` a struct as a binary format: padding writes uninitialized bytes, the byte order follows the host, and type sizes vary by platform.
+- Serialize field by field using fixed-width `<stdint.h>` types and explicit shifts, tracking an offset so writing and reading stay in step.
+- `#pragma pack` is non-standard, can slow access or fault on strict-alignment CPUs, and fixes only the padding problem.
+- Bit fields have implementation-defined ordering and straddling, so they are unusable for an externally defined format.
+- Validate every field from an untrusted source — magic, version, and especially any length — before allocating or copying based on it.
+
+> 🧪 Practice
+>
+> 1. Print `sizeof` and `offsetof` for a struct mixing `char`, `int`, and `double`, and account for every padding byte.
+> 2. Extend the packet format with a 64-bit timestamp field, updating `pack`, `unpack`, and the header size consistently.
+> 3. Write a parser for the first 20 bytes of a PNG file (8-byte signature, then a big-endian length and chunk type) and print the values.
+> 4. Interview-style: *"A colleague writes structs to a file with `fwrite` and reads them back with `fread`. It works on their machine. What will break?"* Hint: name three independent problems, not just one.
 
 <a id="122-undefined-and-unspecified-behavior"></a>
 ### 12.2 Undefined and Unspecified Behavior
 
+C's speed comes from a bargain: the standard declines to define what happens in certain situations, and the compiler is free to assume those situations never arise. This section covers the categories of unspecified behavior, the constructs that trigger them, and — most importantly — how modern optimizers turn a small violation into code that behaves nothing like what you wrote.
+
 #### Categories of Non-Portable Behavior
+
+**Theory**
+
+Not every question the C standard leaves open is equally dangerous. The standard defines four distinct categories, and confusing them leads people to either panic about harmless things or shrug at genuinely fatal ones.
+
+**Implementation-defined behavior.** The standard requires the implementation to *choose* a behavior and *document* it. The result varies between compilers but is knowable and stable for yours.
+
+Examples: the size of `int`, whether plain `char` is signed, the result of right-shifting a negative number, how a value is converted when it does not fit the target signed type.
+
+This is safe to rely on *if* you accept the portability limit and document it. Code that assumes `int` is 32 bits is fine for a project that only targets 32- and 64-bit platforms — as long as someone wrote that down.
+
+**Unspecified behavior.** The standard offers two or more possibilities and requires no choice, no documentation, and no consistency. The implementation may do something different each time.
+
+Examples: the order in which function arguments are evaluated, the order of evaluation of subexpressions, whether identical string literals share storage, the amount of padding in a struct.
+
+This is more dangerous than implementation-defined, because testing cannot reveal it — your compiler may evaluate arguments left to right today and right to left at `-O2` tomorrow.
+
+**Undefined behavior (UB).** The standard imposes **no requirements whatsoever**. The program may crash, produce wrong results, appear to work, or — crucially — cause the compiler to generate code that makes no sense at all, including in parts of the program far from the violation.
+
+Examples: signed integer overflow, dereferencing `NULL`, reading uninitialized memory, out-of-bounds array access, use after free, violating strict aliasing, shifting by more than the type's width, modifying an object twice without an intervening sequence point.
+
+The critical insight is that **UB is not "an unpredictable result"** — it is a licence the compiler uses for optimization. Since the standard says a correct program never has UB, the compiler assumes UB does not occur and optimizes on that basis. A null check *after* a dereference can be deleted, because the dereference proves the pointer was not null. This is covered in depth later in this section.
+
+**Locale-specific behavior.** Behavior that depends on the current locale, such as which characters `isalpha` accepts or the decimal separator `printf` produces.
+
+| Category | Standard requires | Documented | Consistent | Risk |
+|---|---|---|---|---|
+| Implementation-defined | a documented choice | yes | yes | portability only |
+| Unspecified | one of several options | no | **no** | silent behavior change |
+| Undefined | nothing at all | no | no | **anything, anywhere** |
+| Locale-specific | depends on locale | partly | per locale | surprising input handling |
+
+The practical response differs by category. Implementation-defined behavior calls for a documented assumption and ideally a `static_assert`. Unspecified behavior calls for rewriting the expression so the order stops mattering. Undefined behavior calls for eliminating it entirely — there is no safe way to rely on it.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <limits.h>
+#include <float.h>
+#include <string.h>
+#include <assert.h>
+
+static int trace(const char *name, int value)
+{
+    printf("    evaluating %s\n", name);
+    return value;
+}
+
+int main(void)
+{
+    /* ================= IMPLEMENTATION-DEFINED ==================
+       Documented by your compiler; varies between platforms.     */
+    printf("IMPLEMENTATION-DEFINED (documented, stable for this compiler)\n");
+    printf("  sizeof(int)  = %zu bytes\n", sizeof(int));
+    printf("  sizeof(long) = %zu bytes  (8 on Linux, 4 on Windows)\n", sizeof(long));
+    printf("  plain char is %s\n", CHAR_MIN < 0 ? "SIGNED" : "unsigned");
+
+    /* Right-shifting a negative value: arithmetic (sign-extending) or
+       logical? The standard permits either; every mainstream compiler
+       chooses arithmetic, but the standard does not require it. */
+    int negative = -16;
+    printf("  -16 >> 2     = %d  (arithmetic shift here)\n", negative >> 2);
+
+    /* Guard the assumptions you rely on, so a new platform fails to BUILD
+       rather than failing at run time. */
+    static_assert(sizeof(int) >= 4, "this code assumes a 32-bit int");
+    static_assert(CHAR_BIT == 8,    "this code assumes 8-bit bytes");
+
+    /* ==================== UNSPECIFIED ==========================
+       Several options allowed, no documentation, no consistency.  */
+    printf("\nUNSPECIFIED (may differ between compilers or optimization levels)\n");
+
+    /* Argument evaluation order. GCC on x86-64 typically evaluates
+       right-to-left; other compilers go left-to-right. Both conform. */
+    printf("  argument evaluation order:\n");
+    int sum = trace("first", 1) + trace("second", 2);
+    printf("    sum = %d (the VALUE is well defined; the ORDER is not)\n", sum);
+
+    /* Whether identical string literals share storage. */
+    const char *a = "shared?";
+    const char *b = "shared?";
+    printf("  identical literals share storage: %s (unspecified)\n",
+           a == b ? "yes" : "no");
+
+    /* Struct padding amount and placement. */
+    struct S { char c; int i; };
+    printf("  sizeof(struct{char;int;}) = %zu (padding amount is unspecified)\n",
+           sizeof(struct S));
+
+    /* ==================== UNDEFINED ============================
+       No requirements at all. These are shown as DESCRIPTIONS,
+       deliberately not executed.                                 */
+    printf("\nUNDEFINED (the compiler assumes these never happen)\n");
+    printf("  signed overflow:      INT_MAX + 1\n");
+    printf("  null dereference:     *(int *)0\n");
+    printf("  out of bounds:        arr[10] on int arr[10]\n");
+    printf("  use after free:       *p after free(p)\n");
+    printf("  uninitialized read:   int x; return x;\n");
+    printf("  oversized shift:      1 << 32 on a 32-bit int\n");
+    printf("  double modification:  i = i++;\n");
+
+    /* Demonstrating the boundary safely: check BEFORE, never after. */
+    int x = INT_MAX;
+    if (x > INT_MAX - 1)                      /* the correct guard */
+        printf("\n  x + 1 would overflow -- detected without causing UB\n");
+
+    /* ================= LOCALE-SPECIFIC ========================= */
+    printf("\nLOCALE-SPECIFIC\n");
+    printf("  which characters isalpha() accepts depends on LC_CTYPE\n");
+    printf("  the decimal separator printf uses depends on LC_NUMERIC\n");
+    return 0;
+}
+```
+
+```bash
+# UndefinedBehaviorSanitizer catches most UB at run time, with a clear
+# message naming the file, line, and rule violated. Use it in every
+# debug build and in CI.
+$ gcc -fsanitize=undefined -fno-sanitize-recover=all -g prog.c -o prog
+
+# Combine with AddressSanitizer for memory errors:
+$ gcc -fsanitize=address,undefined -g prog.c -o prog
+
+# -Wall -Wextra catches some cases statically:
+$ gcc -Wall -Wextra -Wpedantic prog.c
+prog.c:12:14: warning: operation on 'i' may be undefined [-Wsequence-point]
+```
+
+**Key Takeaways**
+
+- Implementation-defined behavior is documented and stable for your compiler — safe to rely on if you record the assumption, ideally with a `static_assert`.
+- Unspecified behavior offers several legal options with no documentation and no consistency, so it can change between optimization levels; rewrite the code so the choice stops mattering.
+- Undefined behavior imposes no requirements at all and licenses the compiler to assume it never happens, which can corrupt code far from the violation.
+- The four categories carry very different risk: only UB can make unrelated parts of your program misbehave.
+- Build with `-fsanitize=undefined,address` and `-Wall -Wextra` so violations surface during development rather than after a compiler upgrade.
+
+> 🧪 Practice
+>
+> 1. Write a program printing `sizeof` for every fundamental type, the signedness of `char`, and the result of `-1 >> 1`. Compare against `gcc -m32`.
+> 2. Write an expression whose result depends on argument evaluation order, compile at `-O0` and `-O2`, and see whether the output changes.
+> 3. Classify each of these: `INT_MAX + 1`, `sizeof(long)`, the order of `f() + g()`, and `arr[-1]`. Justify each.
+> 4. Interview-style: *"What is the difference between unspecified and undefined behavior?"* Hint: one bounds the possible outcomes, the other bounds nothing.
 
 #### Common Sources of UB
 
+**Theory**
+
+Undefined behavior is not exotic. A handful of ordinary-looking constructs cause the large majority of real cases, and recognizing them on sight is the practical skill.
+
+**Signed integer overflow.** `INT_MAX + 1` is undefined. Unsigned overflow, by contrast, is fully defined and wraps modulo 2^N. This asymmetry surprises people constantly and is the reason `for (int i = 0; i <= n; i++)` with `n == INT_MAX` is an infinite loop the compiler may optimize into something stranger. Always check *before* the operation: `if (a > INT_MAX - b)`.
+
+**Out-of-bounds access.** Reading or writing outside an array is undefined even if the memory happens to be mapped. Note that computing `arr + n` (one past the end) is legal and *dereferencing* it is not, while computing `arr - 1` is undefined even without dereferencing.
+
+**Use after free and dangling pointers.** Using memory after `free`, or returning a pointer to a local variable, is undefined. It very often appears to work, because the memory is still mapped and briefly unchanged — which is exactly what makes it dangerous.
+
+**Reading uninitialized variables.** An uninitialized automatic variable has an indeterminate value, and reading it is undefined. Modern compilers exploit this: since the value is undefined, the compiler may assume any branch on it goes whichever way is convenient.
+
+**Null pointer dereference.** Undefined, including a "harmless" read. It usually faults, but the more damaging effect is that the compiler infers non-nullness and deletes your later checks.
+
+**Invalid shifts.** Shifting by negative amounts, or by the width of the type or more, is undefined. So is left-shifting a signed value into the sign bit.
+
+**Modifying an object twice between sequence points.** `i = i++` and `arr[i] = i++` are undefined — covered in detail shortly.
+
+**Strict aliasing violations.** Accessing an object through a pointer of an incompatible type — the next topic.
+
+**Division by zero.** Undefined for integers, including `INT_MIN / -1`, which overflows because the result is not representable.
+
+**Library misuse.** Passing `NULL` to `strlen`, overlapping regions to `memcpy`, or a non-null-terminated array to a `str*` function is all undefined even though nothing looks unusual.
+
+The unifying lesson is that **"it worked when I tested it" is not evidence of correctness in C.** UB frequently produces the expected behavior at `-O0` and something else at `-O2`, or on a different compiler, or after an unrelated edit changes register allocation. The sanitizers exist because human review reliably misses these.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <stdbool.h>
+
+/* ===================== 1. SIGNED OVERFLOW ===================== */
+
+/* WRONG: the check itself relies on the overflow having happened, which
+   is UB -- so the compiler may delete the check entirely. */
+static bool add_broken(int a, int b, int *out)
+{
+    int sum = a + b;                 /* UB when it overflows */
+    if (sum < a) return false;       /* the compiler may prove this is
+                                        unreachable and remove it */
+    *out = sum;
+    return true;
+}
+
+/* RIGHT: test the OPERANDS before performing the operation. */
+static bool add_safe(int a, int b, int *out)
+{
+    if (b > 0 && a > INT_MAX - b) return false;
+    if (b < 0 && a < INT_MIN - b) return false;
+    *out = a + b;
+    return true;
+}
+
+/* ===================== 2. BOUNDS ===================== */
+static void bounds_rules(void)
+{
+    int arr[10];
+
+    int *end = arr + 10;         /* LEGAL: one past the end may be COMPUTED */
+    /* int bad = *end;              UNDEFINED: it may not be dereferenced   */
+    /* int *before = arr - 1;       UNDEFINED even without dereferencing    */
+
+    printf("  arr+10 computed legally (%p); dereferencing it is not\n",
+           (void *)end);
+
+    for (int *p = arr; p != end; p++) *p = 0;    /* the correct idiom */
+    printf("  the p != end loop stays inside the object\n");
+}
+
+/* ===================== 3. DANGLING POINTERS ===================== */
+
+/* WRONG: the array lives on this function's stack, which is gone on return. */
+static const char *dangling(void)
+{
+    char local[] = "on the stack";
+    return local;                    /* UB for the caller to read */
+}
+
+/* RIGHT: return storage that outlives the call. */
+static char *owned(void)
+{
+    char *heap = malloc(32);
+    if (heap) snprintf(heap, 32, "on the heap");
+    return heap;                     /* the caller frees it */
+}
+
+/* ===================== 4. INVALID SHIFTS ===================== */
+static void shift_rules(void)
+{
+    unsigned x = 1;
+    printf("  1u << 31 = 0x%08X   (legal: 31 < 32)\n", x << 31);
+    printf("  1u << 32 is UNDEFINED. On x86 the CPU masks the count to\n");
+    printf("  32 %% 32 == 0, so it silently returns the original value.\n");
+    /* Guard when the count is not a constant: */
+    unsigned count = 40;
+    if (count < sizeof(unsigned) * CHAR_BIT)
+        printf("  shifted\n");
+    else
+        printf("  count %u rejected before shifting\n", count);
+}
+
+/* ===================== 5. LIBRARY MISUSE ===================== */
+static void library_rules(void)
+{
+    char buf[8];
+
+    /* strncpy does NOT terminate when the source fills the buffer, so a
+       following strlen runs off the end -- undefined. */
+    strncpy(buf, "abcdefghij", sizeof buf);
+    buf[sizeof buf - 1] = '\0';      /* terminate it ourselves */
+    printf("  after strncpy + manual terminator: \"%s\"\n", buf);
+
+    /* memcpy with overlapping regions is UB even though it often works. */
+    char over[] = "ABCDEFGH";
+    memmove(over + 1, over, 7);      /* memmove handles overlap; memcpy does not */
+    printf("  memmove for overlap: \"%s\"\n", over);
+}
+
+int main(void)
+{
+    int result;
+
+    printf("SIGNED OVERFLOW\n");
+    printf("  add_safe(INT_MAX, 1)  -> %s\n",
+           add_safe(INT_MAX, 1, &result) ? "ok" : "refused (correct)");
+
+    /* Call FIRST, then print. Passing 'result' as an argument to the same
+       printf that also calls add_safe would read it unsequenced with the
+       write -- exactly the evaluation-order trap described earlier. */
+    bool ok = add_safe(2, 3, &result);
+    printf("  add_safe(2, 3)        -> %s (%d)\n", ok ? "ok" : "refused", result);
+    printf("  add_broken relies on UB and may be optimized away\n");
+    (void)add_broken;
+
+    /* Unsigned overflow is DEFINED: it wraps. This is not UB. */
+    unsigned u = UINT_MAX;
+    printf("  UINT_MAX + 1 = %u  (unsigned wrapping is DEFINED)\n", u + 1u);
+
+    printf("\nBOUNDS\n");        bounds_rules();
+    printf("\nDANGLING POINTERS\n");
+    (void)dangling;              /* calling it and reading the result is UB */
+    printf("  returning a pointer to a local is UB for the caller\n");
+    char *h = owned();
+    if (h) { printf("  heap version works: \"%s\"\n", h); free(h); }
+
+    printf("\nSHIFTS\n");        shift_rules();
+    printf("\nLIBRARY MISUSE\n");library_rules();
+
+    printf("\nDIVISION\n");
+    int d = 0;
+    if (d != 0) printf("  %d\n", 10 / d);
+    else        printf("  guarded: 10 / 0 is undefined, as is INT_MIN / -1\n");
+
+    printf("\nUNINITIALIZED\n");
+    int initialized = 0;         /* always initialize */
+    printf("  reading an uninitialized variable is UB; this one is %d\n",
+           initialized);
+    return 0;
+}
+```
+
+| UB source | Looks like | Correct form |
+|---|---|---|
+| Signed overflow | `if (a + b < a)` | check `a > INT_MAX - b` first |
+| Out of bounds | `arr[n]` with `n == len` | `n < len` before indexing |
+| Dangling pointer | returning `&local` | return heap or caller-supplied storage |
+| Use after free | `*p` after `free(p)` | set `p = NULL` after freeing |
+| Uninitialized read | `int x; use(x);` | initialize at declaration |
+| Oversized shift | `x << n` with `n >= width` | check `n < width * CHAR_BIT` |
+| Overlapping copy | `memcpy` on overlap | `memmove` |
+| Unterminated string | `strncpy` then `strlen` | `snprintf`, or terminate manually |
+| `INT_MIN / -1` | ordinary division | guard both operands |
+
+**Key Takeaways**
+
+- Signed overflow is undefined while unsigned overflow wraps predictably — never detect signed overflow by inspecting the result afterwards.
+- Computing a pointer one past the end of an array is legal, but dereferencing it, or computing one before the start, is not.
+- Use after free and returning a pointer to a local frequently appear to work, which is precisely what makes them dangerous.
+- Shifting by the type's width or more is undefined and silently masked on x86; guard any non-constant shift count.
+- Ordinary library calls carry UB too — `memcpy` on overlapping regions, `strlen` on an unterminated buffer, `INT_MIN / -1` — so "it ran fine" proves nothing.
+
+> 🧪 Practice
+>
+> 1. Write `safe_mul(int a, int b, int *out)` that detects overflow before multiplying, and test it at `INT_MAX`, `INT_MIN`, `0`, and `-1`.
+> 2. Compile a program containing signed overflow at `-O0` and `-O2` under `-fsanitize=undefined`, and compare the diagnostics with the unsanitized output.
+> 3. Write a function returning a pointer to a local, call it, and observe the behavior at both optimization levels. Then fix it two different ways.
+> 4. Interview-style: *"Why is unsigned overflow well defined while signed overflow is not?"* Hint: consider how many representations of signed integers the standard historically had to accommodate.
+
 #### Strict Aliasing Rule
+
+**Theory**
+
+To generate fast code, a compiler must know when two pointers can refer to the same memory. If `int *a` and `float *b` might alias, then after writing through `b` the compiler must reload `*a` from memory, because it could have changed. If it knows they cannot alias, it can keep `*a` in a register across the write.
+
+The **strict aliasing rule** is what gives the compiler that knowledge. In essence:
+
+> An object may only be accessed through an lvalue of a type compatible with the object's own type.
+
+The permitted exceptions are important and few:
+
+- The object's own type, or a signed/unsigned or `const`/`volatile`-qualified version of it.
+- A struct or union type containing the object as a member.
+- **A character type** — `char`, `signed char`, or `unsigned char`. This exception is what makes `memcpy` and byte-wise inspection legal.
+
+The consequence is that the classic "reinterpret these bytes" cast is undefined:
+
+```c
+float f = 1.0f;
+uint32_t bits = *(uint32_t *)&f;      /* UB: reading a float as a uint32_t */
+```
+
+This looks harmless and often works — until the optimizer reorders a store and a load it believes cannot interact, and the result is silently wrong.
+
+C offers three legal ways to reinterpret an object's bytes:
+
+**`memcpy`.** Copying through `unsigned char` is explicitly permitted, and every modern compiler recognizes a fixed-size `memcpy` and compiles it to the same single instruction the illegal cast would have produced. There is no performance cost.
+
+**A union.** Unlike C++, **C explicitly permits reading a union member other than the one last written** — this is defined type punning, and the standard says the bytes are reinterpreted. It is idiomatic and safe in C.
+
+**A character-type pointer.** Accessing any object through `unsigned char *` is always allowed, which is how you write a hex dumper or a hash of an arbitrary object.
+
+Two related notes. `-fno-strict-aliasing` disables the optimization and makes the punning cast work — the Linux kernel builds with it — but relying on a compiler flag means the code is not C, and a different compiler will break it. And `restrict` is the opposite promise: it tells the compiler two pointers *definitely* do not alias, enabling optimizations it could not otherwise make. Lying with `restrict` is undefined behavior.
+
+The rule is easy to follow once known: **to reinterpret bytes, use `memcpy` or a union — never a pointer cast between unrelated types.**
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <inttypes.h>
+
+/* ===================== the illegal form ===================== */
+
+/* UB: 'f' is a float object, accessed through a uint32_t lvalue.
+   Often works; may be miscompiled at -O2 with -Wstrict-aliasing. */
+static uint32_t bits_illegal(float f)
+{
+    return *(uint32_t *)&f;                 /* strict aliasing violation */
+}
+
+/* ===================== legal form 1: memcpy ===================== */
+
+/* Copying through character types is explicitly permitted. Compilers
+   recognize a fixed-size memcpy and emit the SAME single instruction
+   the illegal cast would have -- zero cost, fully defined. */
+static uint32_t bits_memcpy(float f)
+{
+    uint32_t out;
+    memcpy(&out, &f, sizeof out);
+    return out;
+}
+
+static float from_bits_memcpy(uint32_t bits)
+{
+    float out;
+    memcpy(&out, &bits, sizeof out);
+    return out;
+}
+
+/* ===================== legal form 2: a union ===================== */
+
+/* C (unlike C++) explicitly allows reading a member other than the one
+   last written: the bytes are reinterpreted. This is DEFINED punning. */
+union FloatBits { float f; uint32_t u; };
+
+static uint32_t bits_union(float f)
+{
+    union FloatBits fb;
+    fb.f = f;
+    return fb.u;                            /* defined in C */
+}
+
+/* ===================== legal form 3: character pointers ============ */
+
+/* Any object may be inspected through unsigned char* -- this is the
+   exception that makes hex dumps and generic hashing possible. */
+static void dump_object(const char *label, const void *p, size_t n)
+{
+    const unsigned char *b = p;             /* always allowed */
+    printf("%-22s", label);
+    for (size_t i = 0; i < n; i++) printf("%02X ", b[i]);
+    putchar('\n');
+}
+
+static uint64_t hash_object(const void *p, size_t n)
+{
+    const unsigned char *b = p;
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+/* ===================== why the compiler cares ====================== */
+
+/* The compiler knows an int and a float cannot alias, so it may keep
+   *a in a register across the write to *b. If they DO alias, the
+   result is wrong -- which is why the aliasing cast is undefined. */
+static int assumes_no_alias(int *a, float *b)
+{
+    *a = 1;
+    *b = 2.0f;          /* cannot touch *a, as far as the compiler knows */
+    return *a;          /* may be folded to a constant 1, without reloading */
+}
+
+int main(void)
+{
+    float f = 1.0f;
+
+    printf("float 1.0f bit patterns:\n");
+    printf("  illegal cast:  0x%08" PRIX32 "  <- UB, may be miscompiled\n",
+           bits_illegal(f));
+    printf("  memcpy:        0x%08" PRIX32 "  <- legal, same instruction\n",
+           bits_memcpy(f));
+    printf("  union:         0x%08" PRIX32 "  <- legal in C\n", bits_union(f));
+
+    /* 1.0f is 0x3F800000: sign 0, exponent 127, mantissa 0. */
+    uint32_t bits = bits_memcpy(f);
+    printf("\ndecoding 0x%08" PRIX32 ":\n", bits);
+    printf("  sign     = %" PRIu32 "\n", bits >> 31);
+    printf("  exponent = %" PRIu32 " (biased; unbiased %" PRId32 ")\n",
+           (bits >> 23) & 0xFFu, (int32_t)((bits >> 23) & 0xFFu) - 127);
+    printf("  mantissa = 0x%06" PRIX32 "\n", bits & 0x7FFFFFu);
+
+    printf("\nround trip: %f\n", (double)from_bits_memcpy(bits));
+
+    /* Character-pointer access: always legal, for any object. */
+    printf("\n");
+    dump_object("float 1.0f bytes:", &f, sizeof f);
+
+    struct Point { int x, y; double z; } pt = { 3, 4, 5.5 };
+    dump_object("struct Point bytes:", &pt, sizeof pt);
+    printf("hash of the struct: 0x%016" PRIX64 "\n", hash_object(&pt, sizeof pt));
+    printf("(note: this hashes PADDING too -- see the struct topics)\n");
+
+    int i = 0;
+    float g = 0.0f;
+    printf("\nassumes_no_alias returns %d (the compiler may fold this to 1)\n",
+           assumes_no_alias(&i, &g));
+    return 0;
+}
+```
+
+```bash
+# The warning that catches most violations:
+$ gcc -O2 -Wall -Wstrict-aliasing=2 prog.c
+prog.c:14:12: warning: dereferencing type-punned pointer will break
+              strict-aliasing rules [-Wstrict-aliasing]
+
+# The escape hatch. It works, and it means your code is no longer
+# portable C -- another compiler with no such flag will miscompile it.
+$ gcc -O2 -fno-strict-aliasing prog.c
+
+# Verify that memcpy costs nothing: both forms emit one instruction.
+$ gcc -O2 -S -o - prog.c | grep -A3 bits_memcpy
+```
+
+```text
+   WHY THE RULE EXISTS
+
+   int   *a
+   float *b        can these point at the same bytes?
+
+   IF THE COMPILER MUST ASSUME YES        IF IT MAY ASSUME NO
+     *a = 1;                                *a = 1;
+     *b = 2.0f;                             *b = 2.0f;
+     return *a;   -> must RELOAD *a         return *a;   -> folds to 1
+
+   Strict aliasing licenses the second. That is the optimization the rule
+   buys, and the reason violating it silently produces wrong answers.
+
+   LEGAL WAYS TO REINTERPRET BYTES
+     memcpy(&dst, &src, n)        always; compiles to one instruction
+     union { float f; uint32_t u; }   defined in C (not in C++)
+     const unsigned char *p = obj     character types may alias anything
+```
+
+**Key Takeaways**
+
+- Strict aliasing lets the compiler assume pointers of incompatible types never refer to the same object, which is what allows values to stay in registers across stores.
+- Casting a `float *` to a `uint32_t *` and dereferencing it is undefined behavior, even though it usually appears to work.
+- `memcpy` is the portable way to reinterpret bytes and costs nothing — compilers turn a fixed-size copy into the same single instruction.
+- C explicitly permits reading a union member other than the one last written, so union type punning is defined in C (unlike C++).
+- Character types may alias any object, which is what makes byte-wise inspection legal; `-fno-strict-aliasing` works but makes your code compiler-specific.
+
+> 🧪 Practice
+>
+> 1. Implement `float_to_bits` and `bits_to_float` with `memcpy`, and verify the round trip for `0.0f`, `1.0f`, `-1.5f`, and infinity.
+> 2. Compile the illegal cast version at `-O2 -Wstrict-aliasing=2` and record the warning, then compare the generated assembly with the `memcpy` version.
+> 3. Write a generic `hexdump(const void *, size_t)` using `unsigned char *` and use it on an `int`, a `double`, and a struct.
+> 4. Interview-style: *"Why is `*(int*)&my_float` undefined behavior when it clearly reads the right bytes?"* Hint: the question is not what it reads, but what the compiler is allowed to assume about the surrounding code.
 
 #### Sequence Points and Evaluation Order
 
+**Theory**
+
+C gives the compiler wide freedom to reorder evaluation, which is part of why it optimizes well. The limits of that freedom are defined by **sequence points** (C89/C99 terminology) or the **sequenced-before** relation (C11 onward, which is more precise but describes the same idea).
+
+A sequence point is a moment at which all side effects of preceding evaluations are complete and none of the following have started. The main ones:
+
+- The end of a full expression — usually the `;`.
+- The `&&`, `||`, `?:`, and comma operators, between their left and right operands.
+- Immediately before a function is called, after its arguments are evaluated.
+
+Between two sequence points, the compiler may evaluate subexpressions in any order it likes, and may interleave them.
+
+Two rules follow, and violating either is **undefined behavior**:
+
+1. **An object's stored value may be modified at most once** between sequence points.
+2. **A prior value may only be read to determine the value to be stored.**
+
+This makes the classic puzzles undefined rather than merely surprising:
+
+| Expression | Why it is undefined |
+|---|---|
+| `i = i++` | `i` modified twice (by `=` and by `++`) |
+| `i = ++i + i++` | modified twice, read for other purposes |
+| `arr[i] = i++` | `i` read to index, and modified, unsequenced |
+| `f(i++, i++)` | two unsequenced modifications of `i` |
+| `printf("%d %d", i++, i++)` | same |
+
+These are not "compiler-dependent results" — they are UB, and the compiler may do anything, including producing a value neither ordering would give.
+
+Separately, and importantly, **function argument evaluation order is unspecified** even when there is no UB. `f(g(), h())` may call `h` first, and GCC on x86-64 typically does. This is legal, silent, and changes with the platform. Any argument expression with a side effect that the other argument depends on is a latent bug.
+
+The short-circuit operators are the exception worth remembering clearly. `&&`, `||`, `?:`, and the comma operator **do** sequence their operands left to right, and `&&`/`||` do not evaluate the right operand at all when the left settles the answer. That guarantee is what makes the idiom `if (p != NULL && p->field)` safe, and it is the one place ordering can be relied upon.
+
+C11 replaced "sequence point" with *sequenced before*, *unsequenced*, and *indeterminately sequenced*. The last is worth knowing: two function calls in one expression are indeterminately sequenced, meaning one completes entirely before the other starts — they do not interleave — but which goes first is unspecified.
+
+The practical rule is simple: **one side effect per statement.** If an expression modifies something and also reads it for another purpose, split it into two statements. The clarity costs nothing and the compiler generates identical code.
+
+**Examples**
+
+```c
+#include <stdio.h>
+
+static int calls = 0;
+
+static int side_effect(const char *name, int value)
+{
+    printf("    call %d: %s\n", ++calls, name);
+    return value;
+}
+
+int main(void)
+{
+    /* ============ GUARANTEED ORDERING: && || ?: and comma ============ */
+    printf("SEQUENCED left to right (safe to depend on):\n");
+
+    int *p = NULL;
+
+    /* && evaluates the left operand FIRST and skips the right entirely
+       when the left is false. This is what makes the null check safe. */
+    if (p != NULL && *p > 0)                 /* *p is never evaluated */
+        printf("  unreachable\n");
+    printf("  p != NULL && *p  did not dereference NULL\n");
+
+    /* || short-circuits the other way. */
+    int denom = 0;
+    if (denom == 0 || 100 / denom > 1)       /* the division is skipped */
+        printf("  denom == 0 || 100/denom  did not divide by zero\n");
+
+    /* ?: evaluates the condition, then exactly one branch. */
+    int n = 5;
+    printf("  ?: chose the %s branch\n", n > 0 ? "positive" : "negative");
+
+    /* The comma operator sequences left, discards it, yields the right. */
+    int comma = (side_effect("comma-left", 1), side_effect("comma-right", 2));
+    printf("  comma yielded %d (left evaluated first, then discarded)\n", comma);
+
+    /* ============ UNSPECIFIED: function argument order ============ */
+    printf("\nUNSPECIFIED order (legal, but do not depend on it):\n");
+    calls = 0;
+    int sum = side_effect("first-written", 10) + side_effect("second-written", 20);
+    printf("  sum = %d -- the VALUE is defined, the ORDER is not\n", sum);
+
+    calls = 0;
+    printf("  two arguments to one printf:\n");
+    printf("    got %d and %d\n",
+           side_effect("arg-a", 1), side_effect("arg-b", 2));
+
+    /* ============ UNDEFINED: multiple unsequenced modifications ====== */
+    printf("\nUNDEFINED (shown as descriptions, not executed):\n");
+    printf("  i = i++;              i modified twice\n");
+    printf("  i = ++i + i++;        modified twice, also read otherwise\n");
+    printf("  arr[i] = i++;         i indexes AND is modified, unsequenced\n");
+    printf("  f(i++, i++);          two unsequenced modifications\n");
+    printf("  printf(\"%%d %%d\", i++, i++);   same problem\n");
+
+    /* THE FIX: one side effect per statement. Identical machine code,
+       and the meaning is now unambiguous. */
+    printf("\nThe fix -- split into separate statements:\n");
+    int i = 5;
+    int arr[10] = {0};
+
+    arr[i] = i;      /* was: arr[i] = i++;  */
+    i++;             /* the intent is now explicit */
+    printf("  arr[5] = %d, i = %d\n", arr[5], i);
+
+    int a = i;       /* was: a = i++ + i++;  */
+    i++;
+    a += i;
+    i++;
+    printf("  a = %d, i = %d\n", a, i);
+
+    /* A loop increment is fine: the ; is a sequence point. */
+    int total = 0;
+    for (int k = 0; k < 3; k++) total += k;   /* well defined */
+    printf("  for-loop total = %d (k++ is sequenced by the loop)\n", total);
+    return 0;
+}
+```
+
+```bash
+# GCC and Clang detect many of these statically:
+$ gcc -Wall -Wsequence-point prog.c
+prog.c:12:7: warning: operation on 'i' may be undefined [-Wsequence-point]
+
+# UBSan catches the rest at run time:
+$ clang -fsanitize=undefined -g prog.c -o prog && ./prog
+prog.c:12:8: runtime error: unsequenced modification and access to 'i'
+```
+
+```text
+   WHERE THE SEQUENCE POINTS ARE
+
+       a = f() + g() ;
+                     ^ full expression ends: all side effects complete
+       ^ f and g are INDETERMINATELY SEQUENCED: one finishes before the
+         other starts, but which one goes first is UNSPECIFIED
+
+       p != NULL && p->x
+                 ^ SEQUENCE POINT: the left operand is fully evaluated,
+                   and the right is skipped entirely if the left is false
+
+       i = i++
+           ^ TWO modifications of i with nothing between them
+             -> UNDEFINED BEHAVIOR, not "some order"
+
+   THE RULE THAT AVOIDS ALL OF IT
+       one side effect per statement
+```
+
+| Construct | Ordering | Safe to depend on |
+|---|---|---|
+| `a && b` | left, then right (right skipped if left false) | **yes** |
+| `a \|\| b` | left, then right (right skipped if left true) | **yes** |
+| `c ? a : b` | condition, then exactly one branch | **yes** |
+| `a , b` | left, then right | **yes** |
+| `f(a, b)` | unspecified | no |
+| `a + b` | unspecified | no |
+| `i = i++` | undefined behavior | no — it is a bug |
+
+**Key Takeaways**
+
+- Between sequence points the compiler may evaluate subexpressions in any order, so modifying an object twice, or reading it for an unrelated purpose while modifying it, is undefined.
+- `i = i++`, `arr[i] = i++`, and `f(i++, i++)` are undefined behavior, not merely implementation-dependent orderings.
+- Function argument evaluation order is unspecified even without UB, and GCC on x86-64 commonly evaluates right to left.
+- `&&`, `||`, `?:`, and the comma operator do guarantee left-to-right sequencing and short-circuiting — this is what makes `p && p->field` safe.
+- Write one side effect per statement; the generated code is identical and the meaning becomes unambiguous.
+
+> 🧪 Practice
+>
+> 1. Compile `int i = 5; i = i++;` with `-Wall -Wsequence-point` at `-O0` and `-O2`, and compare the warnings and the results.
+> 2. Write `f(g(), h())` where both `g` and `h` print, and determine your compiler's evaluation order. Then explain why relying on it is wrong.
+> 3. Rewrite `arr[i] = i++;` and `a = b++ + b++;` as unambiguous multi-statement sequences, and confirm the assembly is unchanged.
+> 4. Interview-style: *"Why is `printf(\"%d %d\", i++, i++)` undefined rather than just printing in some order?"* Hint: count the modifications of `i` and the sequence points between them.
+
 #### How Optimizers Exploit UB
+
+**Theory**
+
+This is the topic that changes how people write C, because it explains why undefined behavior is not a local problem.
+
+The compiler reasons as follows: the standard says a conforming program never exhibits undefined behavior. Therefore, when analyzing your code, it may **assume UB does not occur** and use that assumption to deduce facts. Those deductions then drive optimizations that can delete code you wrote, in places that look entirely unrelated to the violation.
+
+The canonical example is the **null check deleted after a dereference**:
+
+```c
+void f(int *p) {
+    int x = *p;          /* if p were NULL this would be UB */
+    if (p == NULL)       /* therefore p is not NULL here */
+        return;          /* therefore this branch is dead */
+    use(x, p);
+}
+```
+
+The dereference on line 2 is undefined if `p` is null. The compiler concludes `p` is non-null, proves the `if` is always false, and deletes it. This is exactly the reasoning that produced CVE-2009-1897 in the Linux kernel, where a removed null check became an exploitable vulnerability.
+
+Signed overflow enables similar deductions. Because `i + 1 > i` cannot be false without overflow, and overflow is UB, the compiler may simplify it to `true` — turning a bounds check into an infinite loop. Similarly, `x * 2 / 2` folds to `x`, and `for (int i = 0; i <= n; i++)` may be assumed to terminate because signed `i` cannot wrap.
+
+Two further consequences are worth internalizing:
+
+**UB can affect code that runs *before* it.** The compiler may reorder or hoist based on the assumption, so a violation late in a function can change behavior earlier. There is no "the program was fine until it hit the bad line".
+
+**UB can make an entire path unreachable.** If every route into a block contains UB, the compiler may conclude the block is never entered and remove it — or, in extreme cases, remove the check that would have prevented entry.
+
+This is why the phrase "it works on my machine" carries so little weight in C. The same source, compiled at a different optimization level or with a newer compiler, may behave completely differently — not because the compiler broke, but because your program never had a defined meaning.
+
+The defensive posture is straightforward and effective:
+
+- **Sanitizers in every debug build and in CI.** UBSan and ASan catch the large majority of real violations at the point they occur, with the file and line.
+- **Warnings as errors.** `-Wall -Wextra` catches many cases statically.
+- **Never "fix" UB by lowering the optimization level.** If a bug disappears at `-O0`, the bug is still there.
+- **Check preconditions before the operation**, not after — the check-after pattern is precisely what gets deleted.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <limits.h>
+#include <stdbool.h>
+
+/* =====================================================================
+   1. A null check deleted because an earlier dereference implied it
+      cannot be null. This is the shape of CVE-2009-1897.
+   ===================================================================== */
+static int deref_then_check(int *p)
+{
+    int value = *p;          /* UB if p is NULL -> the compiler assumes it is not */
+
+    if (p == NULL)           /* provably false given the line above */
+        return -1;           /* -O2 may DELETE this branch entirely */
+
+    return value;
+}
+
+/* The fix: check FIRST. Now the compiler can deduce nothing improper. */
+static int check_then_deref(int *p)
+{
+    if (p == NULL) return -1;    /* the check happens before any use */
+    return *p;
+}
+
+/* =====================================================================
+   2. Signed overflow makes a comparison provably true.
+   ===================================================================== */
+static bool always_true_to_the_compiler(int x)
+{
+    /* x + 1 > x is false ONLY on overflow, which is UB, so the compiler
+       may fold this whole expression to 'true'. */
+    return x + 1 > x;
+}
+
+/* Unsigned wrapping is DEFINED, so no such deduction is permitted. */
+static bool honest_unsigned(unsigned x)
+{
+    return x + 1u > x;           /* genuinely false when x == UINT_MAX */
+}
+
+/* =====================================================================
+   3. A loop the compiler may assume terminates.
+   ===================================================================== */
+static long count_up_signed(int limit)
+{
+    long iterations = 0;
+    /* With a signed counter the compiler may assume i never wraps, and
+       therefore that the loop terminates -- even when limit == INT_MAX,
+       where it actually would not. */
+    for (int i = 0; i < limit; i++) iterations++;
+    return iterations;
+}
+
+/* =====================================================================
+   4. The correct patterns.
+   ===================================================================== */
+static bool add_checked(int a, int b, int *out)
+{
+    if (b > 0 && a > INT_MAX - b) return false;   /* test the OPERANDS */
+    if (b < 0 && a < INT_MIN - b) return false;
+    *out = a + b;
+    return true;
+}
+
+static bool add_builtin(int a, int b, int *out)
+{
+    /* GCC/Clang: one instruction plus a flag test, and no UB anywhere. */
+    return !__builtin_add_overflow(a, b, out);
+}
+
+int main(void)
+{
+    int value = 42;
+
+    printf("check_then_deref(&value) = %d\n", check_then_deref(&value));
+    printf("check_then_deref(NULL)   = %d  <- the check survives\n",
+           check_then_deref(NULL));
+    printf("deref_then_check is compiled with its NULL branch removed at -O2\n");
+    (void)deref_then_check;
+
+    printf("\nsigned:   x + 1 > x  may be folded to TRUE (overflow is UB)\n");
+    printf("  at x = INT_MAX it returns %s\n",
+           always_true_to_the_compiler(INT_MAX) ? "true" : "false");
+
+    printf("unsigned: x + 1 > x  must be evaluated honestly (wrapping is defined)\n");
+    printf("  at x = UINT_MAX it returns %s\n",
+           honest_unsigned(UINT_MAX) ? "true" : "false");
+
+    printf("\nloop with a small limit: %ld iterations\n", count_up_signed(1000));
+
+    int result;
+    printf("\nsafe addition:\n");
+    printf("  add_checked(INT_MAX, 1) -> %s\n",
+           add_checked(INT_MAX, 1, &result) ? "ok" : "refused");
+    printf("  add_builtin(INT_MAX, 1) -> %s\n",
+           add_builtin(INT_MAX, 1, &result) ? "ok" : "refused");
+
+    /* Sequence the call before the read: 'result' must not be an argument
+       to the same call that writes it. */
+    bool ok = add_builtin(20, 22, &result);
+    printf("  add_builtin(20, 22)     -> %s (%d)\n", ok ? "ok" : "refused", result);
+    return 0;
+}
+```
+
+```bash
+# See the deletion for yourself: compare the two optimization levels.
+$ gcc -O0 -S -o - prog.c | grep -A20 deref_then_check   # the check is present
+$ gcc -O2 -S -o - prog.c | grep -A20 deref_then_check   # it is gone
+
+# The warning that names this specific transformation:
+$ gcc -O2 -Wall -Wnull-dereference prog.c
+prog.c:12:9: warning: comparison of a pointer that is already
+             dereferenced will always evaluate to false
+
+# The defensive build every project should use in CI:
+$ gcc -O1 -g -Wall -Wextra -Werror \
+      -fsanitize=address,undefined -fno-sanitize-recover=all prog.c
+```
+
+```text
+   HOW ONE VIOLATION PROPAGATES
+
+   YOU WROTE                        WHAT THE COMPILER DEDUCES
+
+   int x = *p;                      "a conforming program never
+   if (p == NULL) return -1;          dereferences NULL, so p != NULL"
+   use(x, p);                                |
+                                             v
+                                    "then (p == NULL) is always false"
+                                             |
+                                             v
+                                    "then the return is unreachable"
+                                             |
+                                             v
+   WHAT ACTUALLY RUNS               the branch is DELETED
+
+   int x = *p;
+   use(x, p);                       a NULL p now reaches use()
+
+   THE POINT: the deleted code is not the code that had UB.
+   A violation on one line removed a safety check on another.
+
+   THE FIX IS ALWAYS THE SAME: make the check happen BEFORE the
+   operation that would be undefined, never after it.
+```
+
+**Key Takeaways**
+
+- The compiler assumes undefined behavior never occurs and derives facts from that assumption, so a violation can delete code elsewhere in the function.
+- A null check placed *after* a dereference is provably dead and may be removed — the pattern behind real kernel vulnerabilities.
+- Signed overflow being undefined lets the compiler fold `x + 1 > x` to true and assume signed loop counters never wrap; unsigned arithmetic gets no such treatment.
+- UB can affect code that executes before the offending line, because the assumption drives reordering and hoisting.
+- Check preconditions before the risky operation, build with `-fsanitize=address,undefined` and `-Wall -Wextra`, and never treat "it works at `-O0`" as a fix.
+
+> 🧪 Practice
+>
+> 1. Compile `deref_then_check` at `-O0` and `-O2`, compare the assembly with `gcc -S`, and identify the removed instructions.
+> 2. Write a loop with a signed counter that relies on wrapping, run it at `-O0` and `-O2`, and explain the difference.
+> 3. Add `-fsanitize=undefined -fno-sanitize-recover=all` to a small project and fix every violation it reports.
+> 4. Interview-style: *"A bug disappears when you compile with `-O0`. Is it fixed?"* Hint: ask what changed — the program's meaning, or only the compiler's use of an assumption.
 
 <a id="123-interfacing-and-portability"></a>
 ### 12.3 Interfacing and Portability
 
+C is the lingua franca of systems software: almost every language can call it, and almost every platform provides it. This section covers the binary contract that makes that possible, how to drop to assembly when you must, how to package code as a library, and what actually breaks when you move C between platforms.
+
 #### Calling Conventions and the ABI
+
+**Theory**
+
+A function prototype tells the *compiler* how to type-check a call. It says nothing about how the call happens at the machine level: which register holds the first argument, who cleans up the stack, where the return value appears. Those decisions are the **calling convention**, and they are part of the larger **ABI** (Application Binary Interface).
+
+The distinction between API and ABI is worth stating clearly:
+
+| | API | ABI |
+|---|---|---|
+| Level | source code | machine code |
+| Governs | function names, types, semantics | registers, stack layout, struct offsets, name mangling |
+| Compatible means | the code compiles | the binaries link and run |
+| Broken by | renaming a function, changing a signature | reordering struct members, changing a type's size |
+
+The second row of "broken by" is the subtle one. Adding a field to a struct in a shared library keeps the API identical — everything still compiles — while silently breaking the ABI, because existing binaries were compiled with the old size and offsets. This is why mature libraries hide struct definitions behind opaque handles.
+
+On **x86-64 System V** (Linux, macOS, BSD), the essentials are:
+
+- Integer and pointer arguments go in `RDI, RSI, RDX, RCX, R8, R9`, in that order; further arguments go on the stack.
+- Floating-point arguments go in `XMM0`–`XMM7`.
+- The return value comes back in `RAX` (or `XMM0` for floating point).
+- `RBX, RBP, R12–R15` are **callee-saved**: a function must preserve them. Everything else is caller-saved.
+- The stack must be 16-byte aligned at the point of a `call`.
+- There is a 128-byte **red zone** below `RSP` that leaf functions may use without adjusting the stack pointer.
+
+Windows x64 differs — four register arguments (`RCX, RDX, R8, R9`), a 32-byte shadow space, and a different callee-saved set — which is exactly why an object file from one platform cannot link against the other.
+
+Three practical consequences:
+
+**Variadic functions need the argument count communicated somehow**, because the callee cannot know how many registers were used. That is what the format string does for `printf`, and on x86-64 `AL` additionally carries the number of vector registers used.
+
+**Struct passing depends on size.** Small structs are passed in registers, decomposed field by field; larger ones are passed by hidden pointer. The threshold is ABI-specific, which is one reason passing large structs by value is discouraged.
+
+**`extern "C"` exists because C++ mangles names.** A C++ compiler encodes the parameter types into the symbol to support overloading, so `int add(int, int)` becomes something like `_Z3addii`. A C compiler emits plain `add`. Linking the two requires telling C++ to use C linkage.
+
+You rarely write to the ABI directly, but you must respect it whenever binaries meet: linking libraries, writing inline assembly, or calling C from another language.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+
+/* Six integer arguments fit in registers on x86-64 System V:
+   RDI, RSI, RDX, RCX, R8, R9 -- in declaration order. */
+long six_in_registers(long a, long b, long c, long d, long e, long f)
+{
+    return a + b + c + d + e + f;
+}
+
+/* The seventh and beyond are passed on the STACK. */
+long seven_arguments(long a, long b, long c, long d, long e, long f, long g)
+{
+    return a + b + c + d + e + f + g;     /* g comes from the stack */
+}
+
+/* Floating point uses a separate register file: XMM0-XMM7. */
+double mixed_arguments(int i, double d, int j, double e)
+{
+    /* i -> RDI, j -> RSI (integer registers, in order)
+       d -> XMM0, e -> XMM1 (vector registers, independently in order) */
+    return i + d + j + e;
+}
+
+/* A small struct is decomposed and passed in registers... */
+typedef struct { int x, y; } Small;        /* 8 bytes: fits in one register */
+int sum_small(Small s) { return s.x + s.y; }
+
+/* ...while a large one is passed by a hidden pointer to a copy. */
+typedef struct { double v[8]; } Large;     /* 64 bytes: too big for registers */
+double sum_large(Large l)
+{
+    double total = 0;
+    for (int i = 0; i < 8; i++) total += l.v[i];
+    return total;
+}
+
+int main(void)
+{
+    printf("six in registers: %ld\n", six_in_registers(1, 2, 3, 4, 5, 6));
+    printf("seven (one on the stack): %ld\n",
+           seven_arguments(1, 2, 3, 4, 5, 6, 7));
+    printf("mixed int/double: %.1f\n", mixed_arguments(1, 2.5, 3, 4.5));
+
+    Small s = { 10, 20 };
+    printf("small struct (in registers): %d\n", sum_small(s));
+
+    Large l = { { 1, 2, 3, 4, 5, 6, 7, 8 } };
+    printf("large struct (by hidden pointer): %.1f\n", sum_large(l));
+
+    printf("\nsizeof(Small) = %zu (register-passed)\n", sizeof(Small));
+    printf("sizeof(Large) = %zu (memory-passed)\n", sizeof(Large));
+    return 0;
+}
+```
+
+Making a C header usable from C++ — the `extern "C"` idiom:
+
+```c
+/* ============================ mathlib.h ============================ */
+#ifndef MATHLIB_H
+#define MATHLIB_H
+
+/* A C++ compiler mangles symbol names to encode parameter types, which
+   supports overloading but produces a symbol a C object file does not
+   contain. extern "C" suppresses the mangling for these declarations.
+
+   __cplusplus is defined only by C++ compilers, so this header stays
+   valid C -- the guard is invisible when compiled as C. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int    ml_add(int a, int b);
+double ml_average(const double *values, unsigned long count);
+
+/* An OPAQUE handle: callers cannot see the fields, so the layout may
+   change without breaking ABI compatibility with existing binaries. */
+typedef struct MlContext MlContext;
+
+MlContext *ml_create(void);
+void       ml_destroy(MlContext *ctx);
+int        ml_accumulate(MlContext *ctx, int value);
+int        ml_total(const MlContext *ctx);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MATHLIB_H */
+```
+
+```c
+/* ============================ mathlib.c ============================ */
+#include "mathlib.h"
+#include <stdlib.h>
+
+/* The definition lives here, invisible to callers. Adding a field to
+   this struct does NOT break binaries compiled against the header. */
+struct MlContext { int total; int count; };
+
+int ml_add(int a, int b) { return a + b; }
+
+double ml_average(const double *values, unsigned long count)
+{
+    if (!values || count == 0) return 0.0;
+    double sum = 0.0;
+    for (unsigned long i = 0; i < count; i++) sum += values[i];
+    return sum / (double)count;
+}
+
+MlContext *ml_create(void)      { return calloc(1, sizeof(MlContext)); }
+void       ml_destroy(MlContext *c) { free(c); }
+
+int ml_accumulate(MlContext *c, int v)
+{
+    if (!c) return -1;
+    c->total += v;
+    c->count++;
+    return c->total;
+}
+
+int ml_total(const MlContext *c) { return c ? c->total : 0; }
+```
+
+```bash
+# Inspect the actual symbols an object file exports.
+$ gcc -c mathlib.c -o mathlib.o && nm mathlib.o | grep ' T '
+0000000000000000 T ml_accumulate
+0000000000000030 T ml_add
+0000000000000040 T ml_average
+0000000000000000 T ml_create
+0000000000000010 T ml_destroy
+0000000000000020 T ml_total
+# Plain, unmangled names -- exactly what a C++ 'extern "C"' block expects.
+
+# The same source compiled as C++ WITHOUT extern "C":
+$ g++ -c -x c++ mathlib.c -o cpp.o && nm cpp.o | grep add
+0000000000000000 T _Z6ml_addii        <- mangled: 'ii' encodes (int, int)
+
+# See the calling convention directly:
+$ gcc -O2 -S -o - abi.c | grep -A6 six_in_registers
+#   leaq (%rdi,%rsi), %rax     <- first two arguments in RDI and RSI
+```
+
+```text
+   x86-64 SYSTEM V CALLING CONVENTION
+
+   f(a, b, c, d, e, f, g)
+     |  |  |  |  |  |  |
+     v  v  v  v  v  v  +--> pushed on the STACK
+    RDI RSI RDX RCX R8 R9
+
+   doubles use a SEPARATE sequence:  XMM0 XMM1 ... XMM7
+   return value:  RAX  (integers/pointers)   XMM0  (floating point)
+
+   CALLEE-SAVED (the called function must restore these)
+        RBX  RBP  R12  R13  R14  R15
+   CALLER-SAVED (assume they are destroyed by any call)
+        RAX RCX RDX RSI RDI R8-R11  and all XMM
+
+   API vs ABI
+
+     add a function to a header      API unchanged for callers, ABI fine
+     reorder two struct fields       API IDENTICAL, ABI BROKEN
+     change 'int' field to 'long'    API identical, ABI BROKEN
+     rename a function               API broken, ABI broken
+
+   This is why public libraries hide their structs behind opaque handles.
+```
+
+**Key Takeaways**
+
+- The calling convention specifies which registers carry arguments and return values, who preserves what, and how the stack is aligned; it is part of the platform ABI, not the C language.
+- API compatibility means the source still compiles; ABI compatibility means existing binaries still work — reordering a struct's fields breaks the second while leaving the first intact.
+- On x86-64 System V, the first six integer arguments go in `RDI, RSI, RDX, RCX, R8, R9`, floats go in `XMM0`–`XMM7`, and results return in `RAX` or `XMM0`.
+- Small structs are passed in registers and large ones by hidden pointer, which is why passing big structs by value is discouraged.
+- C++ mangles symbol names to support overloading, so headers meant for both languages must wrap declarations in `extern "C"`, guarded by `#ifdef __cplusplus`.
+
+> 🧪 Practice
+>
+> 1. Write functions taking 3, 6, and 9 integer arguments, compile with `gcc -O2 -S`, and identify where the seventh argument comes from.
+> 2. Compile the same source as C and as C++ and compare `nm` output, then add `extern "C"` and observe the change.
+> 3. Write a struct-returning function and inspect the assembly to determine whether it returns in registers or through a hidden pointer.
+> 4. Interview-style: *"You add a field to a struct in a shared library. Existing programs crash. Why, when nothing failed to compile?"* Hint: consider what the old binaries believe about `sizeof` and member offsets.
 
 #### Inline Assembly
 
+**Theory**
+
+Occasionally C cannot express what you need: a privileged instruction, a CPU feature with no intrinsic, an atomic operation the compiler will not emit, or a cycle-exact sequence. **Inline assembly** lets you embed machine instructions in a C function while still letting the compiler manage registers around them.
+
+GCC and Clang use extended asm, whose syntax is dense but systematic:
+
+```c
+asm volatile ( "instructions"
+             : output operands
+             : input operands
+             : clobbered registers );
+```
+
+The four sections must be understood together, because the constraint letters are what connect assembly to C variables:
+
+| Constraint | Meaning |
+|---|---|
+| `"r"` | any general-purpose register |
+| `"m"` | a memory location |
+| `"i"` | an immediate constant |
+| `"a"`, `"b"`, `"c"`, `"d"` | specifically RAX, RBX, RCX, RDX |
+| `"=r"` | write-only output |
+| `"+r"` | read-write operand |
+| `"0"` | the same location as operand 0 |
+
+Operands are referenced as `%0`, `%1`, and so on, numbered from the first output. Named operands (`%[result]`) are far more readable and are what modern code uses.
+
+Three details cause most inline-asm bugs:
+
+**The clobber list must be complete.** If your assembly modifies a register you did not declare, the compiler still believes its old value is live, and the resulting corruption is essentially undebuggable. `"memory"` in the clobber list says "this may read or write arbitrary memory", forcing the compiler to flush and reload; `"cc"` says the condition flags changed.
+
+**`volatile` prevents removal and reordering.** Without it, the compiler may delete asm whose outputs are unused, or hoist it out of a loop. Any asm with a side effect the operands do not express — I/O, a barrier, a system call — needs `volatile`.
+
+**GCC uses AT&T syntax by default**: `mov src, dst` — the reverse of Intel order — with `%` before registers and `$` before immediates. Since `%` is also the operand marker, registers written literally need `%%`.
+
+The honest guidance is that **inline assembly is almost always the wrong tool**. It is unportable across architectures *and* across compilers, it blocks optimization, it cannot be inlined into by the compiler's own passes, and modern compilers generate better code than hand-written assembly for nearly everything. Before reaching for it, consider:
+
+1. **Compiler builtins** — `__builtin_popcount`, `__builtin_expect`, `__builtin_add_overflow`.
+2. **Intrinsics** — `<immintrin.h>` gives SSE and AVX as ordinary functions the optimizer understands.
+3. **Standard atomics** — `<stdatomic.h>` covers what most hand-written asm barriers were for.
+
+Legitimate remaining uses are narrow: privileged instructions (`cpuid`, `rdtsc`, `hlt`), system call stubs, memory barriers on exotic platforms, and cryptographic code that must run in constant time.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+
+/* This file is x86-64 specific. Guard architecture-dependent code so it
+   fails to build clearly rather than mysteriously. */
+#if !defined(__x86_64__)
+int main(void) { printf("this example requires x86-64\n"); return 0; }
+#else
+
+/* ---- 1. the minimal form: one input, one output ---- */
+static int add_asm(int a, int b)
+{
+    int result;
+    asm ("addl %[rhs], %[out]"          /* AT&T: add rhs INTO out */
+         : [out] "=r" (result)          /* output: any register, write-only */
+         : [rhs] "r" (b), "0" (a));     /* inputs: b in a register,
+                                           a in the SAME place as operand 0 */
+    return result;
+}
+
+/* ---- 2. cpuid: a genuinely good use -- no C equivalent exists ---- */
+static void cpu_vendor(char out[13])
+{
+    uint32_t eax, ebx, ecx, edx;
+
+    /* cpuid hard-wires its operands to specific registers, so we name
+       them with the a/b/c/d constraints rather than letting GCC choose. */
+    asm volatile ("cpuid"
+                  : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
+                  : "a" (0)                      /* leaf 0: vendor string */
+                  : );
+
+    /* The 12-character vendor string arrives in EBX, EDX, ECX -- in that
+       order, which is not the numeric order of the registers. */
+    ((uint32_t *)out)[0] = ebx;
+    ((uint32_t *)out)[1] = edx;
+    ((uint32_t *)out)[2] = ecx;
+    out[12] = '\0';
+}
+
+/* ---- 3. rdtsc: read the CPU timestamp counter ---- */
+static uint64_t read_tsc(void)
+{
+    uint32_t lo, hi;
+    /* volatile is ESSENTIAL: without it the compiler may hoist this out
+       of a loop or delete it, since its inputs never change. */
+    asm volatile ("rdtsc" : "=a" (lo), "=d" (hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* ---- 4. a compiler barrier: no instructions at all ---- */
+static inline void compiler_barrier(void)
+{
+    /* Empty assembly, but the "memory" clobber tells the compiler that
+       arbitrary memory may have changed -- so it must not move loads or
+       stores across this point. Emits ZERO instructions. */
+    asm volatile ("" ::: "memory");
+}
+
+/* ---- 5. byte swap, to compare against the builtin ---- */
+static uint32_t bswap_asm(uint32_t x)
+{
+    asm ("bswapl %0" : "+r" (x));      /* "+r": read AND written */
+    return x;
+}
+
+int main(void)
+{
+    printf("add_asm(20, 22)   = %d\n", add_asm(20, 22));
+
+    char vendor[13];
+    cpu_vendor(vendor);
+    printf("CPU vendor        = %s\n", vendor);
+
+    uint64_t t0 = read_tsc();
+    volatile long spin = 0;
+    for (long i = 0; i < 1000000; i++) spin += i;
+    uint64_t t1 = read_tsc();
+    printf("elapsed cycles    = %llu\n", (unsigned long long)(t1 - t0));
+
+    compiler_barrier();
+
+    uint32_t v = 0x12345678u;
+    printf("bswap_asm(0x%08X) = 0x%08X\n", v, bswap_asm(v));
+    printf("__builtin_bswap32 = 0x%08X   <- prefer this: portable and\n",
+           __builtin_bswap32(v));
+    printf("                                 the optimizer understands it\n");
+    return 0;
+}
+#endif
+```
+
+The alternatives that almost always beat inline assembly:
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+
+int main(void)
+{
+    uint32_t x = 0xF0F0F0F0u;
+
+    /* 1. BUILTINS: portable across architectures, one instruction each,
+          and fully visible to the optimizer. */
+    printf("popcount     = %d\n", __builtin_popcount(x));
+    printf("leading zeros= %d\n", __builtin_clz(x));
+    printf("byte swap    = 0x%08X\n", __builtin_bswap32(x));
+
+    int sum;
+    printf("checked add  = %s\n",
+           __builtin_add_overflow(2147483647, 1, &sum) ? "overflow" : "ok");
+
+    /* Branch hints, where profiling shows they help. */
+    int rare = 0;
+    if (__builtin_expect(rare, 0)) printf("unlikely\n");
+
+    /* 2. STANDARD ATOMICS: what most hand-written barriers were for. */
+    _Atomic int counter = 0;
+    atomic_fetch_add(&counter, 1);
+    atomic_thread_fence(memory_order_seq_cst);   /* a portable barrier */
+    printf("atomic count = %d\n", atomic_load(&counter));
+
+    /* 3. INTRINSICS (<immintrin.h>) expose SSE/AVX as ordinary functions
+          that the register allocator and scheduler still understand,
+          unlike an opaque asm block. */
+    printf("\nprefer, in order: builtins > intrinsics > atomics > inline asm\n");
+    return 0;
+}
+```
+
+| Approach | Portable | Optimizer-friendly | Use when |
+|---|---|---|---|
+| Plain C | yes | fully | almost always |
+| Compiler builtin | across architectures | fully | popcount, overflow checks, hints |
+| Intrinsics | within an ISA family | mostly | SIMD work |
+| `<stdatomic.h>` | fully | yes | synchronization, barriers |
+| Inline assembly | **no** | **blocks it** | privileged instructions, syscall stubs |
+
+**Key Takeaways**
+
+- Extended asm connects assembly to C through constraint letters and named operands, with separate sections for outputs, inputs, and clobbers.
+- An incomplete clobber list corrupts registers the compiler still believes are live; `"memory"` forces a flush and reload, and `"cc"` declares that flags changed.
+- `volatile` prevents the compiler from deleting or reordering asm whose effects are not visible in its operands.
+- GCC defaults to AT&T syntax with reversed operand order, and literal register names need `%%` because `%` marks operands.
+- Reach for builtins, intrinsics, and `<stdatomic.h>` first — inline assembly is unportable, blocks optimization, and is rarely faster than what the compiler produces.
+
+> 🧪 Practice
+>
+> 1. Write an inline-asm function that multiplies two integers, then compare its generated code with the plain C version at `-O2`.
+> 2. Use `cpuid` leaf 1 to detect whether the CPU supports SSE4.2, checking the relevant bit of `ECX`.
+> 3. Write a byte-swap in inline assembly and benchmark it against `__builtin_bswap32` over ten million values.
+> 4. Interview-style: *"What can go wrong if you omit a register from the clobber list?"* Hint: the compiler still believes it holds something valuable.
+
 #### Linking Against C from Other Languages
+
+**Theory**
+
+C's ABI has become the universal interface between languages. Python, Rust, Go, Java, C#, Ruby, and JavaScript runtimes can all call C, and almost none can call each other directly. The reason is that C's binary contract is simple, stable, and documented: plain symbol names, a well-defined calling convention, and data types that map onto machine primitives.
+
+This is why "writing bindings" almost always means "expose a C interface", even for a library written in C++ or Rust.
+
+Making a C library comfortably callable from elsewhere is a design task, and a few rules cover most of it:
+
+**Keep the interface in the C subset that maps cleanly.** Scalars, pointers, and opaque handles cross language boundaries easily. Function-like macros, inline functions, complex struct-by-value passing, and variadic functions do not — a macro has no symbol to call, and every foreign-function interface struggles with varargs.
+
+**Use fixed-width types.** `int32_t` is unambiguous on both sides; `long` is 8 bytes on Linux and 4 on Windows, and the mismatch corrupts arguments silently.
+
+**Prefer opaque handles to exposed structs.** The caller holds a pointer and never inspects it, which means your layout is free to change and the other language does not need to replicate your struct definition.
+
+**Be explicit about ownership.** Which side allocates, which side frees, and with what function? Foreign runtimes have their own allocators, so memory allocated by your library must be freed by your library — always export a matching `free` function rather than letting the caller call `free` directly.
+
+**Return errors as values.** Do not `exit`, do not `abort`, and do not let a C++ exception escape across the boundary — an exception unwinding into a foreign runtime is undefined behavior.
+
+**Keep strings simple.** NUL-terminated UTF-8 (`const char *`) is what every language can convert. Returning a heap-allocated string requires a paired free function.
+
+Mechanically, the caller side varies but the shape is the same. Python's `ctypes` loads a shared library and declares signatures at runtime. Rust uses `extern "C"` blocks with `unsafe`. Go uses cgo. All of them ultimately do `dlopen` and a call through the C ABI.
+
+The one thing to keep straight is that **callbacks must not violate the callee's expectations**: a function pointer handed to C must have C linkage, must not throw, and must be careful about the foreign runtime's threading rules — calling into a Python callback from a C thread requires acquiring the GIL first.
+
+**Examples**
+
+A C library designed for foreign consumption:
+
+```c
+/* ============================ counter.h ============================ */
+#ifndef COUNTER_H
+#define COUNTER_H
+
+#include <stdint.h>     /* fixed-width types: unambiguous in every language */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* An OPAQUE handle. Foreign callers hold the pointer and never look
+   inside, so they need no copy of the struct definition and the layout
+   is free to change. */
+typedef struct Counter Counter;
+
+/* Errors are RETURN VALUES. Never exit(), abort(), or let an exception
+   escape -- a foreign runtime cannot recover from any of those. */
+typedef enum {
+    COUNTER_OK          =  0,
+    COUNTER_ERR_NULL    = -1,
+    COUNTER_ERR_NOMEM   = -2,
+    COUNTER_ERR_OVERFLOW= -3
+} CounterStatus;
+
+/* Lifecycle: the LIBRARY allocates and the LIBRARY frees. A foreign
+   runtime's allocator is not ours, so never ask the caller to free(). */
+Counter      *counter_create(int64_t initial);
+void          counter_destroy(Counter *c);      /* accepts NULL */
+
+CounterStatus counter_add(Counter *c, int64_t delta);
+CounterStatus counter_value(const Counter *c, int64_t *out);
+const char   *counter_strerror(CounterStatus status);   /* static: do not free */
+
+/* A callback taking a context pointer, so the foreign side can carry
+   its own state without needing a global. */
+typedef void (*CounterObserver)(int64_t new_value, void *user_data);
+CounterStatus counter_set_observer(Counter *c, CounterObserver fn, void *user_data);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* COUNTER_H */
+```
+
+```c
+/* ============================ counter.c ============================ */
+#include "counter.h"
+#include <stdlib.h>
+#include <limits.h>
+#include <stdint.h>
+
+struct Counter {                    /* invisible to callers */
+    int64_t         value;
+    CounterObserver observer;
+    void           *user_data;
+};
+
+Counter *counter_create(int64_t initial)
+{
+    Counter *c = calloc(1, sizeof *c);
+    if (c) c->value = initial;
+    return c;                        /* NULL on failure: the universal signal */
+}
+
+void counter_destroy(Counter *c) { free(c); }     /* free(NULL) is a no-op */
+
+CounterStatus counter_add(Counter *c, int64_t delta)
+{
+    if (!c) return COUNTER_ERR_NULL;
+
+    /* Check before the operation: signed overflow is UB. */
+    if (delta > 0 && c->value > INT64_MAX - delta) return COUNTER_ERR_OVERFLOW;
+    if (delta < 0 && c->value < INT64_MIN - delta) return COUNTER_ERR_OVERFLOW;
+
+    c->value += delta;
+    if (c->observer) c->observer(c->value, c->user_data);
+    return COUNTER_OK;
+}
+
+CounterStatus counter_value(const Counter *c, int64_t *out)
+{
+    if (!c || !out) return COUNTER_ERR_NULL;
+    *out = c->value;
+    return COUNTER_OK;
+}
+
+const char *counter_strerror(CounterStatus status)
+{
+    switch (status) {
+    case COUNTER_OK:           return "success";
+    case COUNTER_ERR_NULL:     return "null argument";
+    case COUNTER_ERR_NOMEM:    return "out of memory";
+    case COUNTER_ERR_OVERFLOW: return "value would overflow";
+    }
+    return "unknown error";
+}
+
+CounterStatus counter_set_observer(Counter *c, CounterObserver fn, void *user_data)
+{
+    if (!c) return COUNTER_ERR_NULL;
+    c->observer  = fn;
+    c->user_data = user_data;
+    return COUNTER_OK;
+}
+```
+
+Calling it from Python, Rust, and C++:
+
+```python
+# ============================ caller.py ============================
+import ctypes
+
+lib = ctypes.CDLL("./libcounter.so")
+
+# ctypes cannot read the header, so every signature must be declared.
+# Getting these wrong corrupts arguments silently -- there is no check.
+lib.counter_create.argtypes = [ctypes.c_int64]
+lib.counter_create.restype  = ctypes.c_void_p        # the opaque handle
+
+lib.counter_destroy.argtypes = [ctypes.c_void_p]
+lib.counter_destroy.restype  = None
+
+lib.counter_add.argtypes = [ctypes.c_void_p, ctypes.c_int64]
+lib.counter_add.restype  = ctypes.c_int
+
+lib.counter_value.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int64)]
+lib.counter_value.restype  = ctypes.c_int
+
+lib.counter_strerror.argtypes = [ctypes.c_int]
+lib.counter_strerror.restype  = ctypes.c_char_p      # borrowed: do not free
+
+# A Python function exposed as a C function pointer.
+OBSERVER = ctypes.CFUNCTYPE(None, ctypes.c_int64, ctypes.c_void_p)
+
+def on_change(new_value, _user_data):
+    print(f"  observer saw {new_value}")
+
+callback = OBSERVER(on_change)      # MUST be kept alive: if Python garbage
+                                    # collects it, C calls a dangling pointer
+lib.counter_set_observer.argtypes = [ctypes.c_void_p, OBSERVER, ctypes.c_void_p]
+
+handle = lib.counter_create(100)
+lib.counter_set_observer(handle, callback, None)
+
+lib.counter_add(handle, 50)
+
+out = ctypes.c_int64()
+lib.counter_value(handle, ctypes.byref(out))
+print(f"value = {out.value}")
+
+status = lib.counter_add(handle, 2**63 - 1)          # forces an overflow
+print("overflow ->", lib.counter_strerror(status).decode())
+
+lib.counter_destroy(handle)          # the LIBRARY frees what it allocated
+```
+
+```rust
+// ============================ caller.rs ============================
+use std::os::raw::{c_char, c_void};
+use std::ffi::CStr;
+
+// The opaque handle: an empty enum can never be constructed, which
+// enforces at compile time that Rust never dereferences it.
+#[repr(C)] pub struct Counter { _private: [u8; 0] }
+
+// extern "C" selects the C ABI; the symbol names are unmangled.
+#[link(name = "counter")]
+extern "C" {
+    fn counter_create(initial: i64) -> *mut Counter;
+    fn counter_destroy(c: *mut Counter);
+    fn counter_add(c: *mut Counter, delta: i64) -> i32;
+    fn counter_value(c: *const Counter, out: *mut i64) -> i32;
+    fn counter_strerror(status: i32) -> *const c_char;
+}
+
+fn main() {
+    unsafe {                                  // FFI is inherently unsafe
+        let handle = counter_create(100);
+        if handle.is_null() { return; }
+
+        counter_add(handle, 50);
+
+        let mut value: i64 = 0;
+        counter_value(handle, &mut value);
+        println!("value = {}", value);
+
+        let status = counter_add(handle, i64::MAX);
+        let msg = CStr::from_ptr(counter_strerror(status));   // borrowed
+        println!("overflow -> {}", msg.to_string_lossy());
+
+        counter_destroy(handle);              // paired with counter_create
+    }
+    let _ = std::ptr::null::<c_void>();
+}
+```
+
+```bash
+# Build the shared library the other languages will load.
+$ gcc -fPIC -shared -O2 counter.c -o libcounter.so
+
+# Confirm the exported symbols are plain and unmangled.
+$ nm -D libcounter.so | grep ' T '
+counter_add  counter_create  counter_destroy  counter_set_observer
+counter_strerror  counter_value
+
+$ python3 caller.py
+  observer saw 150
+value = 150
+overflow -> value would overflow
+```
+
+| Feature | Crosses the boundary well | Why |
+|---|---|---|
+| `int32_t`, `double`, pointers | yes | direct machine types |
+| Opaque handle (`void *`) | yes | no layout knowledge needed |
+| NUL-terminated UTF-8 string | yes | every language converts it |
+| Function pointer with a `void *ctx` | yes | context avoids globals |
+| `long`, `size_t` | risky | size differs by platform |
+| Struct by value | risky | ABI-specific decomposition |
+| Variadic functions | **no** | most FFIs cannot express them |
+| Macros, `inline` functions | **no** | no symbol exists to call |
+| C++ exceptions | **no** | undefined across the boundary |
+
+**Key Takeaways**
+
+- C's ABI is the universal interface between languages because its symbols are unmangled and its calling convention is simple and documented.
+- Expose fixed-width types, opaque handles, and NUL-terminated strings; avoid macros, inline functions, varargs, and struct-by-value at the boundary.
+- The library must free what the library allocated — foreign runtimes have their own allocators, so always export a paired destroy function.
+- Return errors as values and never let `exit`, `abort`, or an exception cross the boundary.
+- Callbacks need a `void *` context parameter, must have C linkage, and must be kept alive by the foreign side for as long as C holds the pointer.
+
+> 🧪 Practice
+>
+> 1. Build `libcounter.so` and call it from Python with `ctypes`, deliberately declaring a wrong `argtypes` to see how silently it fails.
+> 2. Add a function returning a heap-allocated string plus a paired free function, and use both correctly from Python.
+> 3. Write a C function taking a callback and invoke it from Python, confirming what happens if the callback object is garbage collected.
+> 4. Interview-style: *"Why must a C library expose its own free function instead of letting callers use `free`?"* Hint: consider which allocator each side of the boundary actually uses.
 
 #### Static vs Shared Libraries
 
+**Theory**
+
+A library is a bundle of compiled object files packaged for reuse. There are two ways to package one, and the choice affects program size, startup time, deployment, and how security patches reach your users.
+
+A **static library** (`.a` on Unix, `.lib` on Windows) is an archive of `.o` files. At link time, the linker copies the object files your program actually references directly into the executable. The library is then irrelevant — the binary is self-contained.
+
+A **shared library** (`.so` on Linux, `.dylib` on macOS, `.dll` on Windows) is loaded at run time. The executable records only a *reference* to it; the dynamic linker finds and maps it at startup, then resolves the symbols.
+
+The trade-offs are genuinely balanced:
+
+| | Static | Shared |
+|---|---|---|
+| Binary size | larger (code is copied in) | smaller |
+| Memory with many processes | one copy each | **one copy total, shared** |
+| Startup time | faster (nothing to resolve) | slower (load and relocate) |
+| Deployment | one self-contained file | library must be present and found |
+| Security updates | **relink and redistribute** | replace the library once |
+| Version conflicts | impossible | "dependency hell" |
+| Cross-TU optimization | possible with LTO | not across the boundary |
+| Call overhead | direct call | indirect through the PLT |
+
+The two decisive rows are usually memory sharing and updates. Fifty processes using a shared libc map the *same physical pages* of code, and a fix to a vulnerability in it reaches every one of them by replacing a single file. With static linking, each binary carries its own copy and each must be rebuilt.
+
+The counter-argument, which containers strengthened considerably, is that a statically linked binary has no runtime dependencies at all — it runs on any kernel-compatible system with no version negotiation. That predictability is why Go defaults to static linking.
+
+Two mechanics are worth knowing.
+
+**Shared libraries need position-independent code** (`-fPIC`), because the library may be loaded at a different address in each process. PIC accesses globals through the Global Offset Table rather than at fixed addresses, which is a small cost that makes sharing possible.
+
+**Link order matters for static libraries.** The linker processes its inputs left to right, and pulls an object from an archive only to satisfy a symbol that is *already* unresolved. So libraries must come *after* the files that use them: `gcc main.o -lmylib` works, `gcc -lmylib main.o` typically does not.
+
+Shared libraries carry a **soname** (`libfoo.so.1`) recording the ABI version. The convention is a chain of symlinks: `libfoo.so` for the linker at build time, `libfoo.so.1` as the soname burned into binaries, and `libfoo.so.1.2.3` as the actual file. Bumping the soname signals an incompatible ABI change, letting old and new versions coexist.
+
+`ldd` shows what an executable needs, and `LD_LIBRARY_PATH` (or better, `-rpath`) controls where the loader searches.
+
+**Examples**
+
+```c
+/* ============================ shapes.h ============================ */
+#ifndef SHAPES_H
+#define SHAPES_H
+
+double circle_area(double radius);
+double rect_area(double w, double h);
+const char *shapes_version(void);
+
+#endif
+```
+
+```c
+/* ============================ shapes.c ============================ */
+#include "shapes.h"
+
+#define PI 3.14159265358979323846
+
+double circle_area(double radius) { return PI * radius * radius; }
+double rect_area(double w, double h) { return w * h; }
+const char *shapes_version(void) { return "shapes 1.2.3"; }
+```
+
+```c
+/* ============================ app.c ============================ */
+#include <stdio.h>
+#include "shapes.h"
+
+int main(void)
+{
+    printf("using %s\n", shapes_version());
+    printf("circle r=2.0 -> %.4f\n", circle_area(2.0));
+    printf("rect 3x4     -> %.1f\n", rect_area(3.0, 4.0));
+    return 0;
+}
+```
+
+```bash
+# ===================== STATIC LIBRARY =====================
+# 1. Compile to an object file (no -fPIC needed).
+$ gcc -c -O2 shapes.c -o shapes.o
+
+# 2. Archive it. 'r' = insert, 'c' = create, 's' = write an index.
+$ ar rcs libshapes.a shapes.o
+$ ar t libshapes.a          # list the members
+shapes.o
+
+# 3. Link. The LIBRARY MUST COME AFTER the files that use it: the linker
+#    reads left to right and only pulls members that resolve a symbol
+#    that is already unresolved.
+$ gcc app.c -L. -lshapes -o app_static      # works
+$ gcc -L. -lshapes app.c -o app_static      # typically FAILS: undefined reference
+
+$ ./app_static
+using shapes 1.2.3
+circle r=2.0 -> 12.5664
+
+$ ldd app_static | grep shapes || echo "no shapes dependency -- code was copied in"
+no shapes dependency -- code was copied in
+
+# ===================== SHARED LIBRARY =====================
+# 1. -fPIC is REQUIRED: the library may load at a different address in
+#    each process, so it cannot use absolute addresses for its globals.
+$ gcc -c -fPIC -O2 shapes.c -o shapes_pic.o
+
+# 2. Link as a shared object, recording a SONAME (the ABI version that
+#    gets burned into every binary linked against it).
+$ gcc -shared -Wl,-soname,libshapes.so.1 shapes_pic.o -o libshapes.so.1.2.3
+
+# 3. The conventional symlink chain.
+$ ln -sf libshapes.so.1.2.3 libshapes.so.1     # what the loader looks for
+$ ln -sf libshapes.so.1     libshapes.so       # what the linker looks for
+
+# 4. Link the application against it.
+$ gcc app.c -L. -lshapes -o app_shared
+
+$ ldd app_shared
+    libshapes.so.1 => not found          # the loader cannot find it yet
+
+# 5. Tell the loader where to look. Three options, worst to best:
+$ LD_LIBRARY_PATH=. ./app_shared                    # per-run, for testing
+$ gcc app.c -L. -lshapes -Wl,-rpath,'$ORIGIN' -o app_shared   # baked in
+$ sudo cp libshapes.so.1.2.3 /usr/local/lib && sudo ldconfig   # installed
+
+# ===================== COMPARING THEM =====================
+$ ls -l app_static app_shared
+-rwxr-xr-x  16104  app_static      # carries the library's code
+-rwxr-xr-x  15952  app_shared      # carries only a reference
+
+$ nm -D libshapes.so.1.2.3 | grep ' T '
+0000000000001100 T circle_area
+0000000000001120 T rect_area
+0000000000001130 T shapes_version
+
+# THE UPDATE ARGUMENT: fix a bug in shapes.c, rebuild ONLY the library,
+# and every program using it is fixed with no relinking.
+$ gcc -shared -fPIC -O2 shapes.c -Wl,-soname,libshapes.so.1 -o libshapes.so.1.2.4
+$ ln -sf libshapes.so.1.2.4 libshapes.so.1
+$ LD_LIBRARY_PATH=. ./app_shared     # picks up the fix immediately
+# app_static still contains the OLD code and must be rebuilt.
+```
+
+```text
+   WHAT LINKING ACTUALLY DOES
+
+   STATIC                              SHARED
+
+   app.o  +  libshapes.a               app.o  +  libshapes.so
+      |          |                        |            |
+      +----------+                        |            (stays on disk)
+           |                              |
+           v                              v
+   +-----------------+            +-----------------+
+   | app_static      |            | app_shared      |
+   | - main          |            | - main          |
+   | - circle_area   | <- COPIED  | - "needs        |
+   | - rect_area     |            |    libshapes.so.1"
+   +-----------------+            +-----------------+
+   self-contained                          |
+                                    at startup, ld.so maps the library
+                                    and resolves the symbols
+
+   MEMORY WITH 50 PROCESSES
+     static:  50 copies of the library's code in RAM
+     shared:  ONE copy, mapped into all 50 address spaces
+
+   LINK ORDER (static archives only)
+     gcc main.o -lfoo     works    -- foo's symbols are unresolved when
+                                      the linker reaches the archive
+     gcc -lfoo main.o     fails    -- nothing was unresolved yet, so
+                                      no members were pulled in
+```
+
+**Key Takeaways**
+
+- A static library is copied into the executable at link time; a shared library is referenced and loaded at run time by the dynamic linker.
+- Shared libraries let many processes share one physical copy of the code and let a security fix reach every user by replacing one file — the two strongest arguments for them.
+- Static linking produces a self-contained binary with no runtime dependencies and faster startup, which is why containers and Go favor it.
+- Shared libraries require `-fPIC` so they can load at any address, and carry a soname that records the ABI version.
+- Static archive link order matters: the library must appear *after* the objects that reference it, because the linker resolves left to right.
+
+> 🧪 Practice
+>
+> 1. Build the same source as both a static and a shared library, link both, and compare binary sizes and `ldd` output.
+> 2. Demonstrate the link-order rule by putting `-lshapes` before and after `app.c`, and read the error.
+> 3. Change the library's implementation, rebuild only the shared library, and confirm the existing binary picks up the change while the static one does not.
+> 4. Interview-style: *"A security patch is released for a library you use. Which linking strategy gets it to your users faster?"* Hint: consider what must be rebuilt and redistributed in each case.
+
 #### Dynamic Loading with dlopen
 
+**Theory**
+
+Linking against a shared library at build time still requires the library to exist when the program starts — the loader resolves everything up front, and a missing library means the program will not run at all.
+
+**Dynamic loading** removes that requirement. With `dlopen` the program decides *at run time* which library to load, by name, and looks up symbols by string. Nothing is recorded in the executable, and the library's absence is a condition your code can handle rather than a startup failure.
+
+The API is four functions:
+
+| Function | Purpose |
+|---|---|
+| `dlopen(path, flags)` | load a library, returning a handle or `NULL` |
+| `dlsym(handle, "name")` | look up a symbol, returning its address or `NULL` |
+| `dlclose(handle)` | release it |
+| `dlerror()` | describe the last failure — **and clear it** |
+
+The two important flags are `RTLD_LAZY` (resolve symbols on first use, faster) and `RTLD_NOW` (resolve everything immediately, so errors surface at load time). `RTLD_GLOBAL` makes the library's symbols available to subsequently loaded libraries.
+
+This is the mechanism behind **plugin architectures**: a program defines an interface, and third parties ship `.so` files implementing it. The host scans a directory, loads each one, looks up a known entry point, and calls it. Editors, browsers, audio workstations, and database engines all work this way.
+
+Three details cause the bugs.
+
+**Casting a `void *` to a function pointer is not strictly conforming C.** The standard does not guarantee that object and function pointers are interconvertible; POSIX requires it, and the idiomatic workaround is a cast through a union or `*(void **)&fn = dlsym(...)`. In practice a direct cast works everywhere POSIX does, but compilers warn under `-pedantic`.
+
+**Always check `dlerror` correctly.** `dlsym` legitimately returns `NULL` for a symbol whose value *is* null, so the correct test is to call `dlerror()` first to clear any stale error, then `dlsym`, then `dlerror()` again to see whether it failed.
+
+**Unloading invalidates everything.** After `dlclose`, every function pointer and every pointer to data in that library dangles. A plugin that registered a callback, allocated memory the host still holds, or stored a pointer to its own static data will crash the host on next use. Plugin systems therefore either never unload, or define a strict teardown protocol.
+
+A stable **plugin ABI** is the real design work: define a version number the host checks, keep the interface struct's layout fixed, use opaque handles, and have the plugin's memory freed by the plugin.
+
+Compile the host with `-ldl` and, if the plugin needs to call back into the host's symbols, `-rdynamic`.
+
+**Examples**
+
+The plugin interface, shared by host and plugins:
+
+```c
+/* ============================ plugin.h ============================ */
+#ifndef PLUGIN_H
+#define PLUGIN_H
+
+#include <stdint.h>
+#include <stddef.h>     /* size_t -- headers must be self-contained */
+
+/* Bump this whenever the struct below changes incompatibly. The host
+   refuses to load a plugin whose version it does not understand --
+   this single check prevents a whole class of crashes. */
+#define PLUGIN_ABI_VERSION 1
+
+typedef struct {
+    uint32_t    abi_version;      /* MUST be first and MUST never move */
+    const char *name;
+    const char *description;
+
+    int  (*initialize)(void);                     /* 0 on success */
+    int  (*process)(const char *input, char *out, size_t out_cap);
+    void (*shutdown)(void);
+} PluginInterface;
+
+/* Every plugin exports exactly this symbol. The host looks it up by name. */
+typedef const PluginInterface *(*PluginEntryFn)(void);
+#define PLUGIN_ENTRY_SYMBOL "plugin_entry"
+
+#endif
+```
+
+```c
+/* ======================== plugin_upper.c ========================
+   Build:  gcc -fPIC -shared plugin_upper.c -o plugin_upper.so     */
+#include "plugin.h"
+#include <string.h>
+#include <ctype.h>
+#include <stdio.h>
+
+static int  upper_init(void)    { return 0; }
+static void upper_shutdown(void) { }
+
+static int upper_process(const char *in, char *out, size_t cap)
+{
+    size_t n = strlen(in);
+    if (n + 1 > cap) return -1;                  /* never overflow the caller */
+
+    for (size_t i = 0; i < n; i++)
+        out[i] = (char)toupper((unsigned char)in[i]);   /* cast: ctype rule */
+    out[n] = '\0';
+    return 0;
+}
+
+static const PluginInterface INTERFACE = {
+    .abi_version = PLUGIN_ABI_VERSION,
+    .name        = "upper",
+    .description = "converts text to upper case",
+    .initialize  = upper_init,
+    .process     = upper_process,
+    .shutdown    = upper_shutdown,
+};
+
+/* The one exported symbol the host looks for. */
+const PluginInterface *plugin_entry(void) { return &INTERFACE; }
+```
+
+The host that loads plugins at run time:
+
+```c
+/* ============================ host.c ============================
+   Build:  gcc host.c -ldl -o host                                */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <dlfcn.h>          /* dlopen, dlsym, dlclose, dlerror */
+#include "plugin.h"
+
+typedef struct {
+    void                  *handle;
+    const PluginInterface *iface;
+} LoadedPlugin;
+
+static int load_plugin(const char *path, LoadedPlugin *out)
+{
+    /* RTLD_NOW resolves every symbol immediately, so a missing dependency
+       fails HERE rather than at some later call. RTLD_LOCAL keeps the
+       plugin's symbols from leaking into later loads. */
+    void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        fprintf(stderr, "dlopen(%s): %s\n", path, dlerror());
+        return -1;
+    }
+
+    /* dlsym can legitimately return NULL for a symbol whose value is
+       null, so the reliable protocol is: clear, call, then check. */
+    dlerror();                                   /* clear any stale error */
+
+    PluginEntryFn entry;
+    /* Casting void* to a function pointer is not strictly conforming C.
+       POSIX guarantees it works; this form avoids the -pedantic warning. */
+    *(void **)&entry = dlsym(handle, PLUGIN_ENTRY_SYMBOL);
+
+    const char *err = dlerror();
+    if (err) {
+        fprintf(stderr, "dlsym(%s): %s\n", PLUGIN_ENTRY_SYMBOL, err);
+        dlclose(handle);
+        return -1;
+    }
+
+    const PluginInterface *iface = entry();
+
+    /* Validate the ABI BEFORE touching any other field -- a mismatched
+       plugin may have a completely different struct layout. */
+    if (!iface || iface->abi_version != PLUGIN_ABI_VERSION) {
+        fprintf(stderr, "%s: ABI version %u, host expects %d\n", path,
+                iface ? iface->abi_version : 0, PLUGIN_ABI_VERSION);
+        dlclose(handle);
+        return -1;
+    }
+
+    if (iface->initialize && iface->initialize() != 0) {
+        fprintf(stderr, "%s: initialize failed\n", path);
+        dlclose(handle);
+        return -1;
+    }
+
+    out->handle = handle;
+    out->iface  = iface;
+    return 0;
+}
+
+static void unload_plugin(LoadedPlugin *p)
+{
+    if (!p->handle) return;
+    if (p->iface && p->iface->shutdown) p->iface->shutdown();
+
+    dlclose(p->handle);
+    /* After dlclose, EVERY pointer into that library dangles -- including
+       p->iface and every function pointer inside it. Clear them. */
+    p->handle = NULL;
+    p->iface  = NULL;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <plugin.so>...\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    for (int i = 1; i < argc; i++) {
+        LoadedPlugin p = {0};
+
+        /* A missing or broken plugin is a HANDLED CONDITION here, not a
+           startup failure -- which is the whole point of dlopen. */
+        if (load_plugin(argv[i], &p) != 0) {
+            fprintf(stderr, "skipping %s\n\n", argv[i]);
+            continue;
+        }
+
+        printf("loaded: %s -- %s\n", p.iface->name, p.iface->description);
+
+        char output[256];
+        if (p.iface->process("Hello, Plugins!", output, sizeof output) == 0)
+            printf("  process() -> \"%s\"\n\n", output);
+
+        unload_plugin(&p);
+    }
+    return EXIT_SUCCESS;
+}
+```
+
+```bash
+# Build the plugin and the host.
+$ gcc -fPIC -shared plugin_upper.c -o plugin_upper.so
+$ gcc host.c -ldl -o host
+
+# -rdynamic is needed only if plugins call back into the HOST's symbols:
+$ gcc -rdynamic host.c -ldl -o host
+
+$ ./host ./plugin_upper.so
+loaded: upper -- converts text to upper case
+  process() -> "HELLO, PLUGINS!"
+
+# A missing plugin is handled, not fatal:
+$ ./host ./nonexistent.so
+dlopen(./nonexistent.so): ./nonexistent.so: cannot open shared object file...
+skipping ./nonexistent.so
+
+# Inspect what a shared object exports:
+$ nm -D plugin_upper.so | grep ' T '
+0000000000001139 T plugin_entry
+```
+
+| | Link-time (`-lfoo`) | Runtime (`dlopen`) |
+|---|---|---|
+| Library needed at build | yes | no |
+| Library needed at startup | yes — or the program will not run | no |
+| Missing library | fatal, before `main` | a handled error |
+| Symbols resolved | by the loader, automatically | by you, by name |
+| Type checking | full, by the compiler | **none** — you cast |
+| Choose which library at run time | no | yes |
+| Used for | ordinary dependencies | plugins, optional features |
+
+**Key Takeaways**
+
+- `dlopen` loads a library by name at run time and `dlsym` looks up symbols by string, so a missing library becomes a handled condition rather than a startup failure.
+- Use `RTLD_NOW` so unresolved symbols fail at load time, and clear `dlerror()` before `dlsym` because `NULL` can be a legitimate symbol value.
+- Casting `void *` to a function pointer is a POSIX guarantee rather than a C one; the `*(void **)&fn` form avoids the pedantic warning.
+- After `dlclose`, every pointer into that library — function pointers, static data, the interface struct — dangles.
+- A plugin ABI needs a version field checked before anything else, a fixed interface layout, and memory freed by whichever side allocated it.
+
+> 🧪 Practice
+>
+> 1. Write a second plugin that reverses its input, and confirm the host loads and runs both without recompilation.
+> 2. Change `PLUGIN_ABI_VERSION` in the host only, and verify the version check rejects the now-stale plugin.
+> 3. Write a host that scans a directory with `readdir` and loads every `.so` it finds, reporting failures individually.
+> 4. Interview-style: *"What happens to a function pointer obtained from `dlsym` after you call `dlclose`?"* Hint: ask whether the code it points to is still mapped.
+
 #### Cross-Platform Portability Concerns
+
+**Theory**
+
+C compiles nearly everywhere, which is often mistaken for "C code runs everywhere". The language is portable; a given program is portable only if it was written to be. The differences that break code fall into a few well-understood groups.
+
+**Type sizes.** The standard specifies minimum ranges, not exact sizes. `int` is at least 16 bits, `long` at least 32. In practice, LP64 (Linux, macOS: `long` is 8 bytes) and LLP64 (Windows: `long` is 4 bytes) differ on exactly the type most people reach for. Use `<stdint.h>` fixed-width types where the size matters, `size_t` for sizes, and `intptr_t` when a pointer must be stored in an integer.
+
+**Character signedness.** Plain `char` is signed on x86 and unsigned on ARM. Code that stores a byte in a `char` and compares it against a value above 127, or passes it to `<ctype.h>` without a cast, behaves differently on the two.
+
+**Endianness and alignment.** Covered earlier; the additional platform note is that x86 tolerates unaligned access while some ARM and most embedded targets fault or silently produce wrong results.
+
+**Paths and filesystems.** Separators (`/` vs `\`), case sensitivity, maximum lengths, and reserved names all differ. Windows also distinguishes text and binary file modes, so the `b` in `fopen` matters there and nowhere else.
+
+**Line endings.** `\n` on Unix, `\r\n` on Windows. Text-mode I/O translates them on Windows and nowhere else, which is why a file written in text mode on one platform and read in binary mode on another has stray `\r` bytes.
+
+**APIs.** POSIX functions do not exist on Windows; Windows APIs do not exist elsewhere. Even shared names differ subtly — `strcasecmp` versus `_stricmp`.
+
+The techniques that actually work:
+
+- **Isolate platform code behind your own interface.** Write `platform_mkdir`, implement it twice, and let the rest of the program stay portable. This is far better than scattering `#ifdef` through logic.
+- **Use feature tests rather than platform guesses** where possible — check for the capability, not the operating system.
+- **Rely on the standard library first.** `<stdio.h>`, `<string.h>`, and `<time.h>` work everywhere; reach for POSIX only when you must.
+- **Test on more than one platform.** CI on Linux, macOS, and Windows catches these immediately; a single-platform project accumulates assumptions silently.
+- **Compile with `-Wall -Wextra -Wpedantic`** and, for maximum strictness, `-std=c11` rather than `gnu11`, so GNU extensions do not slip in unnoticed.
+
+The predefined macros (`_WIN32`, `__linux__`, `__APPLE__`) identify the platform, and `__STDC_VERSION__` identifies the language level. Note that `_WIN32` is defined on 64-bit Windows too — `_WIN64` is the 64-bit-specific one.
+
+**Examples**
+
+A platform abstraction layer — the pattern that keeps `#ifdef` out of your logic:
+
+```c
+/* ============================ platform.h ============================ */
+#ifndef PLATFORM_H
+#define PLATFORM_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+/* ---- identify the platform ONCE, here, and nowhere else ---- */
+#if defined(_WIN32)                 /* defined on 32- AND 64-bit Windows */
+#  define PLATFORM_WINDOWS 1
+#  define PATH_SEPARATOR '\\'
+#elif defined(__APPLE__)
+#  define PLATFORM_MACOS 1
+#  define PATH_SEPARATOR '/'
+#elif defined(__linux__)
+#  define PLATFORM_LINUX 1
+#  define PATH_SEPARATOR '/'
+#else
+#  error "unsupported platform -- add a case here and in platform.c"
+#endif
+
+/* A portable INTERFACE. Callers never see an #ifdef. */
+bool        plat_mkdir(const char *path);
+bool        plat_file_exists(const char *path);
+const char *plat_name(void);
+void        plat_sleep_ms(unsigned ms);
+int         plat_strcasecmp(const char *a, const char *b);
+
+#endif
+```
+
+```c
+/* ============================ platform.c ============================ */
+#include "platform.h"
+#include <string.h>
+
+/* Every #ifdef lives in this ONE file. The rest of the program is
+   ordinary portable C. */
+#ifdef PLATFORM_WINDOWS
+#  include <windows.h>
+#  include <direct.h>
+#  include <io.h>
+#else
+#  include <sys/stat.h>
+#  include <unistd.h>
+#  include <strings.h>
+#endif
+
+bool plat_mkdir(const char *path)
+{
+#ifdef PLATFORM_WINDOWS
+    return _mkdir(path) == 0;              /* no mode argument on Windows */
+#else
+    return mkdir(path, 0755) == 0;         /* POSIX takes a permission mode */
+#endif
+}
+
+bool plat_file_exists(const char *path)
+{
+#ifdef PLATFORM_WINDOWS
+    return _access(path, 0) == 0;
+#else
+    return access(path, F_OK) == 0;
+#endif
+}
+
+void plat_sleep_ms(unsigned ms)
+{
+#ifdef PLATFORM_WINDOWS
+    Sleep(ms);                             /* milliseconds */
+#else
+    usleep((useconds_t)ms * 1000);         /* microseconds */
+#endif
+}
+
+int plat_strcasecmp(const char *a, const char *b)
+{
+#ifdef PLATFORM_WINDOWS
+    return _stricmp(a, b);                 /* same job, different name */
+#else
+    return strcasecmp(a, b);
+#endif
+}
+
+const char *plat_name(void)
+{
+#if defined(PLATFORM_WINDOWS)
+    return "Windows";
+#elif defined(PLATFORM_MACOS)
+    return "macOS";
+#else
+    return "Linux";
+#endif
+}
+```
+
+Inspecting the assumptions a program is making:
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <limits.h>
+#include <stddef.h>
+#include <assert.h>
+
+int main(void)
+{
+    printf("=== language level ===\n");
+#ifdef __STDC_VERSION__
+    printf("  __STDC_VERSION__ = %ldL\n", __STDC_VERSION__);
+#else
+    printf("  pre-C99 compiler\n");
+#endif
+
+    printf("\n=== type sizes (the LP64 / LLP64 divide) ===\n");
+    printf("  char       %2zu   short      %2zu\n", sizeof(char), sizeof(short));
+    printf("  int        %2zu   long       %2zu   <- 8 on Linux, 4 on Windows\n",
+           sizeof(int), sizeof(long));
+    printf("  long long  %2zu   void *     %2zu\n",
+           sizeof(long long), sizeof(void *));
+    printf("  size_t     %2zu   ptrdiff_t  %2zu\n",
+           sizeof(size_t), sizeof(ptrdiff_t));
+
+    /* The fixed-width types exist precisely so size is never in doubt. */
+    printf("\n=== fixed-width types: identical everywhere ===\n");
+    printf("  int32_t %zu   int64_t %zu   intptr_t %zu\n",
+           sizeof(int32_t), sizeof(int64_t), sizeof(intptr_t));
+
+    printf("\n=== character signedness ===\n");
+    printf("  plain char is %s (signed on x86, unsigned on ARM)\n",
+           CHAR_MIN < 0 ? "SIGNED" : "unsigned");
+    printf("  this is why <ctype.h> calls need (unsigned char) casts\n");
+
+    printf("\n=== byte order ===\n");
+    uint32_t probe = 0x01020304u;
+    printf("  %s-endian\n",
+           *(const unsigned char *)&probe == 0x04 ? "little" : "big");
+
+    printf("\n=== documented assumptions, enforced at COMPILE time ===\n");
+    static_assert(CHAR_BIT == 8,            "assumes 8-bit bytes");
+    static_assert(sizeof(int) >= 4,         "assumes a 32-bit int");
+    static_assert(sizeof(void *) >= 4,      "assumes 32-bit or wider pointers");
+    printf("  all static_assert checks passed on this platform\n");
+
+    /* Portable printing: the PRI* macros expand to the right specifier. */
+    printf("\n=== portable format specifiers ===\n");
+    printf("  size_t needs %%zu, int64_t needs PRId64, pointers need %%p\n");
+    return 0;
+}
+```
+
+| Concern | Varies how | Portable approach |
+|---|---|---|
+| `int`, `long` size | 16/32/64 bits | `<stdint.h>` fixed-width types |
+| Plain `char` signedness | signed on x86, unsigned on ARM | use `unsigned char` for bytes |
+| Endianness | little on x86/ARM, big elsewhere | serialize with shifts |
+| Unaligned access | fine on x86, faults on some ARM | `memcpy` into an aligned object |
+| Path separator | `/` vs `\` | a platform layer, or `/` (Windows accepts it) |
+| Line endings | `\n` vs `\r\n` | binary mode plus explicit handling |
+| Text/binary file mode | matters only on Windows | always pass `b` for binary |
+| POSIX APIs | absent on Windows | wrap behind your own interface |
+| `printf` for `size_t` | `%zu` (C99+) | `%zu`, and `PRI*` for fixed-width |
+
+**Key Takeaways**
+
+- The standard fixes minimum ranges, not sizes: `long` is 8 bytes on Linux and 4 on Windows, so use `<stdint.h>` types wherever the width matters.
+- Plain `char` is signed on x86 and unsigned on ARM, which is why byte values belong in `unsigned char` and `<ctype.h>` calls need a cast.
+- Isolate every platform difference behind your own interface in one file, rather than scattering `#ifdef` through application logic.
+- `_WIN32` is defined on 64-bit Windows as well, and an `#error` in the final `#else` turns an unsupported platform into a clear build failure.
+- Document platform assumptions with `static_assert` so a new target fails to build instead of failing at run time, and test on more than one platform in CI.
+
+> 🧪 Practice
+>
+> 1. Write a program printing every fundamental type's size and the signedness of `char`, then compare its output under `gcc` and `gcc -m32`.
+> 2. Build a small platform layer providing `plat_mkdir` and `plat_file_exists`, and write an application that uses it with no `#ifdef` of its own.
+> 3. Add `static_assert` checks for 8-bit bytes, a 32-bit `int`, and IEEE-754 doubles, then deliberately break one to see the build fail.
+> 4. Interview-style: *"Your code works on Linux and crashes on an embedded ARM target. What would you check first?"* Hint: consider `char` signedness, alignment, and endianness before anything else.
 
 <a id="124-embedded-and-freestanding-c"></a>
 ### 12.4 Embedded and Freestanding C
 
+On a microcontroller there is no operating system, often no heap, and a few kilobytes of RAM — but C runs there essentially unchanged, which is why it has dominated embedded work for decades. This section covers talking to hardware directly, the keyword that makes it possible, the constrained world of interrupt handlers, and how a program is laid out in memory when nothing else is there to do it for you.
+
 #### Memory-Mapped Registers
+
+**Theory**
+
+A microcontroller has peripherals: timers, serial ports, GPIO pins, analog converters. Your program must configure and control them, and on almost every modern architecture it does so through **memory-mapped I/O**.
+
+The idea is that the hardware designers wire certain peripheral registers to respond to specific *addresses*. Writing to address `0x40020014` does not store a value in RAM — it drives voltage onto physical pins. Reading `0x40020010` does not load from memory; it samples the pins' current state. From C's perspective these look exactly like memory, which means no special instructions are needed: a pointer dereference is the entire interface.
+
+```text
+   A MICROCONTROLLER'S ADDRESS SPACE
+
+   0xFFFFFFFF  +---------------------------+
+               |  system / debug           |
+   0x40020000  +---------------------------+
+               |  GPIO port A registers    | <- writing here drives PINS
+   0x40000000  +---------------------------+
+               |  other peripherals        |
+   0x20005000  +---------------------------+
+               |  SRAM (variables, stack)  | <- ordinary memory
+   0x20000000  +---------------------------+
+               |  FLASH (code, constants)  | <- your program
+   0x08000000  +---------------------------+
+
+   Same pointer syntax, completely different behavior.
+```
+
+Registers have properties ordinary memory does not, and each one breaks an assumption the compiler normally makes:
+
+- **Reading can have side effects.** Reading a UART's data register *removes* the byte from the receive FIFO. Reading a status register may clear the flags it reports. So a redundant read is not redundant.
+- **The value changes without your code writing it.** A timer counter increments on its own; an input pin changes when something external happens.
+- **Write-only and read-only registers exist**, and the value read back after a write may differ from what was written.
+- **Access width and order matter.** Some registers must be written as a 32-bit word; some require a specific sequence to unlock.
+
+All of this means the compiler must not cache, eliminate, or reorder these accesses — which is exactly what `volatile` is for, covered in the next topic.
+
+The idiomatic way to describe a peripheral is a `volatile` struct whose members match the register layout, placed at the peripheral's base address:
+
+```c
+typedef struct {
+    volatile uint32_t MODER;    /* offset 0x00 */
+    volatile uint32_t OTYPER;   /* offset 0x04 */
+    ...
+} GPIO_TypeDef;
+
+#define GPIOA ((GPIO_TypeDef *)0x40020000u)
+```
+
+This is what vendor headers (CMSIS for ARM Cortex-M) provide, and it works because the struct members land at exactly the offsets the hardware documents — provided the types are exact-width and no padding is introduced, which is why every member is a `uint32_t`.
+
+Read-modify-write is the standard operation for configuring a field: read the register, clear the bits you own, OR in the new value, write it back. Doing this without the clear step leaves stale bits set; doing it non-atomically when an interrupt also touches the register is a genuine race.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>     /* offsetof */
+
+/* =====================================================================
+   A simplified GPIO peripheral, in the style of ARM Cortex-M vendor
+   headers. Every member is exact-width so the offsets match the
+   hardware documentation with no padding.
+   ===================================================================== */
+typedef struct {
+    volatile uint32_t MODER;    /* 0x00  mode: 2 bits per pin           */
+    volatile uint32_t OTYPER;   /* 0x04  output type: 1 bit per pin     */
+    volatile uint32_t OSPEEDR;  /* 0x08  speed: 2 bits per pin          */
+    volatile uint32_t PUPDR;    /* 0x0C  pull-up/down: 2 bits per pin   */
+    volatile const uint32_t IDR;/* 0x10  input data -- READ ONLY        */
+    volatile uint32_t ODR;      /* 0x14  output data                    */
+    volatile uint32_t BSRR;     /* 0x18  atomic set/reset -- WRITE ONLY */
+} GPIO_TypeDef;
+
+/* On real hardware this is the peripheral's fixed address:
+       #define GPIOA ((GPIO_TypeDef *)0x40020000u)
+   Here we point at a simulated block so the example runs on a PC. */
+static GPIO_TypeDef simulated_port;
+#define GPIOA (&simulated_port)
+
+/* --- field definitions, as shifts and masks ------------------------- */
+#define MODER_MASK(pin)     (0x3u << ((pin) * 2))   /* 2 bits per pin */
+#define MODER_INPUT         0x0u
+#define MODER_OUTPUT        0x1u
+#define MODER_ALTERNATE     0x2u
+#define MODER_ANALOG        0x3u
+
+/* BSRR: writing bit n SETS pin n; writing bit n+16 CLEARS pin n.
+   This exists so a pin can be changed with ONE write -- no read, no
+   modify, so an interrupt cannot corrupt it halfway through. */
+#define BSRR_SET(pin)       (1u << (pin))
+#define BSRR_RESET(pin)     (1u << ((pin) + 16))
+
+/* --- configure one pin's mode: the read-modify-write idiom ---------- */
+static void gpio_set_mode(GPIO_TypeDef *port, unsigned pin, uint32_t mode)
+{
+    uint32_t reg = port->MODER;              /* 1. READ the whole register */
+    reg &= ~MODER_MASK(pin);                 /* 2. CLEAR only our field    */
+    reg |= (mode << (pin * 2));              /* 3. OR in the new value     */
+    port->MODER = reg;                       /* 4. WRITE it back           */
+
+    /* Skipping step 2 would leave stale bits set. Doing steps 1-4
+       non-atomically while an ISR also writes MODER is a real race --
+       which is exactly why BSRR exists for the data register. */
+}
+
+/* --- driving a pin: two ways, one of them atomic ------------------- */
+static void gpio_write_odr(GPIO_TypeDef *port, unsigned pin, int high)
+{
+    /* Read-modify-write on ODR: NOT atomic. An interrupt landing between
+       the read and the write can lose an update to a different pin. */
+    if (high) port->ODR |=  (1u << pin);
+    else      port->ODR &= ~(1u << pin);
+}
+
+static void gpio_write_bsrr(GPIO_TypeDef *port, unsigned pin, int high)
+{
+    /* A SINGLE write. The hardware performs the set or clear atomically,
+       and other pins are untouched. Always prefer this. */
+    port->BSRR = high ? BSRR_SET(pin) : BSRR_RESET(pin);
+}
+
+static int gpio_read(const GPIO_TypeDef *port, unsigned pin)
+{
+    return (port->IDR >> pin) & 1u;          /* IDR is read-only */
+}
+
+/* Simulate what the hardware does with a BSRR write, so the demo runs. */
+static void simulate_bsrr(GPIO_TypeDef *port)
+{
+    uint32_t bsrr = port->BSRR;
+    port->ODR |=  (bsrr & 0xFFFFu);          /* low half sets   */
+    port->ODR &= ~((bsrr >> 16) & 0xFFFFu);  /* high half clears */
+    port->BSRR = 0;
+}
+
+int main(void)
+{
+    /* Verify the struct layout matches the hardware's documented offsets.
+       On a real target a mismatch would write to the WRONG register. */
+    printf("register offsets:\n");
+    printf("  MODER  0x%02zX   OTYPER 0x%02zX   OSPEEDR 0x%02zX\n",
+           offsetof(GPIO_TypeDef, MODER), offsetof(GPIO_TypeDef, OTYPER),
+           offsetof(GPIO_TypeDef, OSPEEDR));
+    printf("  PUPDR  0x%02zX   IDR    0x%02zX   ODR     0x%02zX   BSRR 0x%02zX\n",
+           offsetof(GPIO_TypeDef, PUPDR), offsetof(GPIO_TypeDef, IDR),
+           offsetof(GPIO_TypeDef, ODR),   offsetof(GPIO_TypeDef, BSRR));
+    printf("  sizeof = %zu bytes (no padding: every member is uint32_t)\n\n",
+           sizeof(GPIO_TypeDef));
+
+    /* Configure pin 5 as an output, pin 0 as an input. */
+    gpio_set_mode(GPIOA, 5, MODER_OUTPUT);
+    gpio_set_mode(GPIOA, 0, MODER_INPUT);
+    printf("MODER after configuring pins 5 and 0: 0x%08X\n", GPIOA->MODER);
+    printf("  bits 10-11 = %u (output), bits 0-1 = %u (input)\n\n",
+           (GPIOA->MODER >> 10) & 3u, GPIOA->MODER & 3u);
+
+    /* Drive the pin high, then low, using the atomic register. */
+    gpio_write_bsrr(GPIOA, 5, 1);  simulate_bsrr(GPIOA);
+    printf("after BSRR set:   ODR = 0x%08X (pin 5 %s)\n",
+           GPIOA->ODR, (GPIOA->ODR >> 5) & 1u ? "high" : "low");
+
+    gpio_write_bsrr(GPIOA, 5, 0);  simulate_bsrr(GPIOA);
+    printf("after BSRR reset: ODR = 0x%08X (pin 5 %s)\n",
+           GPIOA->ODR, (GPIOA->ODR >> 5) & 1u ? "high" : "low");
+
+    gpio_write_odr(GPIOA, 5, 1);
+    printf("after ODR |= :    ODR = 0x%08X (same result, NOT atomic)\n\n",
+           GPIOA->ODR);
+
+    /* Reading an input pin. */
+    simulated_port.MODER = simulated_port.MODER;   /* keep the simulation honest */
+    *(uint32_t *)&simulated_port.IDR = 0x0001u;    /* pretend pin 0 went high */
+    printf("pin 0 reads %d\n", gpio_read(GPIOA, 0));
+    return 0;
+}
+```
+
+```text
+   THE READ-MODIFY-WRITE RACE
+
+   MODER controls several pins. Two writers, no atomicity:
+
+   main thread                        interrupt handler
+   -------------------------------    -------------------------------
+   reg = MODER          (0x00000000)
+                                      reg2 = MODER      (0x00000000)
+                                      reg2 |= pin3 bits
+                                      MODER = reg2      (0x000000C0)
+   reg |= pin5 bits
+   MODER = reg          (0x00000400)
+                                      ^ pin 3's configuration is LOST
+
+   THE HARDWARE'S ANSWER: a set/reset register
+       BSRR = (1 << pin)        one write, atomic, other pins untouched
+   No read, so nothing can be lost between the read and the write.
+```
+
+**Key Takeaways**
+
+- Memory-mapped I/O wires peripheral registers to fixed addresses, so a pointer dereference is the entire hardware interface — no special instructions required.
+- Register reads can have side effects and register values change without your code writing them, which is why `volatile` is mandatory here.
+- Describe a peripheral as a `volatile` struct of exact-width members at a fixed base address, and verify the offsets match the documentation.
+- Configuring a field is read, clear the field, OR in the new value, write back — omitting the clear leaves stale bits.
+- Read-modify-write is not atomic; prefer a hardware set/reset register such as BSRR, which changes a pin with one write that cannot be interrupted halfway.
+
+> 🧪 Practice
+>
+> 1. Define a struct for a UART with status, data, and control registers, and confirm with `offsetof` that the members land at the documented offsets.
+> 2. Write `set_field(volatile uint32_t *reg, unsigned shift, unsigned width, uint32_t value)` implementing a correct read-modify-write for any field.
+> 3. Explain why `port->ODR |= (1 << 5)` can lose an update from an interrupt handler, and rewrite it using a set/reset register.
+> 4. Interview-style: *"Why can reading a hardware register twice give different results with no code in between?"* Hint: consider who else is allowed to change that address.
 
 #### volatile in Hardware Contexts
 
+**Theory**
+
+The compiler's optimizer assumes that the only way memory changes is through code it can see. Given that assumption, it does entirely reasonable things: keep a variable in a register instead of reloading it, delete a store whose value is never read, hoist an invariant load out of a loop, or collapse repeated reads into one.
+
+Every one of those is wrong for a hardware register.
+
+**`volatile` tells the compiler that an object may change outside its knowledge, and that every access has an observable effect.** In consequence it must:
+
+- Read from memory every time the source reads, never reusing a cached value.
+- Write to memory every time the source writes, never eliminating a "dead" store.
+- Not reorder volatile accesses relative to each other.
+- Not merge or split accesses.
+
+Three situations genuinely require it, and they are the only ones:
+
+1. **Memory-mapped hardware registers**, which change independently and whose reads may have side effects.
+2. **Variables shared with an interrupt handler**, since the ISR runs between arbitrary instructions.
+3. **Variables modified across `setjmp`/`longjmp`**, as covered earlier.
+
+The most important thing to state clearly is what `volatile` is **not**. It is **not a synchronization primitive**. It gives no atomicity — `volatile int x; x++` is still a non-atomic read-modify-write. It gives no ordering with respect to *non-volatile* accesses, and no memory barriers, so it does not make data visible to another CPU core. Using `volatile` for multithreaded synchronization is a widespread and genuine bug; use `<stdatomic.h>` for that.
+
+The distinction between the two use cases is worth holding onto:
+
+| Need | Tool |
+|---|---|
+| Hardware register, changes outside the program | `volatile` |
+| Flag set by an interrupt handler, read by main | `volatile sig_atomic_t` |
+| Shared between threads or CPU cores | `_Atomic` |
+| Both hardware and cross-core | `volatile _Atomic` |
+
+Placement is the other trap, and it follows the same right-to-left reading as `const`:
+
+```c
+volatile uint32_t *p;        /* pointer to volatile data  -- the usual case */
+uint32_t *volatile p;        /* volatile pointer to normal data */
+volatile uint32_t *volatile p;  /* both */
+```
+
+For a hardware register you want the first: the *data* is volatile, and the pointer itself is an ordinary variable.
+
+The cost is real — every access becomes a memory operation, so a `volatile` loop counter can be several times slower. Mark only what needs it: a common and effective pattern is to copy a `volatile` value into a local once and work with the local.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <signal.h>
+#include <stdatomic.h>
+
+/* Simulated hardware registers. On real hardware these would be at
+   fixed addresses; the volatile qualifier is what matters here. */
+static volatile uint32_t status_register = 0;
+static volatile uint32_t data_register   = 0;
+static uint32_t          plain_variable  = 0;
+
+#define STATUS_READY (1u << 0)
+
+/* =====================================================================
+   1. Polling a hardware flag: the canonical use of volatile.
+   ===================================================================== */
+
+/* WITHOUT volatile the compiler sees a loop whose condition never changes
+   inside the loop, hoists the load out, and generates an infinite loop:
+       if (!(reg & READY)) for (;;) ;
+   This is not a hypothetical -- it is what -O2 actually produces. */
+static void wait_for_ready_broken(void)
+{
+    /* while (!(plain_variable & STATUS_READY)) { }   <- would hang forever */
+    printf("  (a non-volatile poll on plain_variable=%u would never exit)\n",
+           plain_variable);
+}
+
+/* WITH volatile the register is re-read on every iteration, so the loop
+   observes the hardware setting the bit. */
+static int wait_for_ready(unsigned max_polls)
+{
+    unsigned polls = 0;
+    while (!(status_register & STATUS_READY)) {   /* re-read EVERY time */
+        if (++polls >= max_polls) return -1;      /* a real driver times out */
+    }
+    return 0;
+}
+
+/* =====================================================================
+   2. A read with a SIDE EFFECT: the compiler must not eliminate it.
+   ===================================================================== */
+static void drain_fifo(void)
+{
+    /* On real hardware, reading the data register REMOVES a byte from the
+       receive FIFO. The value is discarded, so without volatile the
+       compiler would delete the read entirely -- and the FIFO would never
+       drain. The cast to void says "discarding this on purpose". */
+    for (int i = 0; i < 4; i++)
+        (void)data_register;
+}
+
+/* =====================================================================
+   3. Shared with an interrupt handler.
+   ===================================================================== */
+
+/* volatile sig_atomic_t: volatile so the main loop re-reads it, and
+   sig_atomic_t so the read and write are indivisible. */
+static volatile sig_atomic_t interrupt_flag = 0;
+
+static void handler(int sig) { (void)sig; interrupt_flag = 1; }
+
+/* =====================================================================
+   4. What volatile does NOT do.
+   ===================================================================== */
+static volatile int volatile_counter = 0;   /* NOT thread-safe */
+static _Atomic  int atomic_counter   = 0;   /* thread-safe     */
+
+/* =====================================================================
+   5. Placement: read the declaration right to left.
+   ===================================================================== */
+static void placement_rules(void)
+{
+    static volatile uint32_t reg_storage = 0;
+    static uint32_t          plain_storage = 0;
+
+    volatile uint32_t *p_to_volatile = &reg_storage;   /* the usual case:
+                                                          the DATA is volatile */
+    uint32_t *volatile volatile_p    = &plain_storage; /* the POINTER is volatile */
+
+    *p_to_volatile = 1;        /* this WRITE is volatile */
+    *volatile_p    = 2;        /* this write is ordinary; the pointer is volatile */
+
+    printf("  reg_storage   = %u  (via a pointer to volatile)\n", reg_storage);
+    printf("  plain_storage = %u  (via a volatile pointer)\n", plain_storage);
+}
+
+int main(void)
+{
+    printf("POLLING A HARDWARE FLAG\n");
+    wait_for_ready_broken();
+    status_register = STATUS_READY;                /* pretend hardware set it */
+    printf("  wait_for_ready -> %s\n", wait_for_ready(1000) == 0 ? "ready" : "timeout");
+
+    status_register = 0;
+    printf("  with the flag clear -> %s (correctly times out)\n",
+           wait_for_ready(1000) == 0 ? "ready" : "timeout");
+
+    printf("\nREADS WITH SIDE EFFECTS\n");
+    drain_fifo();
+    printf("  four volatile reads issued; none was optimized away\n");
+
+    printf("\nINTERRUPT FLAG\n");
+    signal(SIGUSR1, handler);
+    raise(SIGUSR1);
+    printf("  interrupt_flag = %d (set by the handler, seen by main)\n",
+           (int)interrupt_flag);
+
+    printf("\nWHAT volatile DOES NOT DO\n");
+    volatile_counter++;                 /* still THREE operations: load, add, store */
+    atomic_fetch_add(&atomic_counter, 1);   /* genuinely indivisible */
+    printf("  volatile_counter++ is load-add-store: NOT atomic\n");
+    printf("  volatile gives no atomicity, no ordering, no barriers\n");
+    printf("  use _Atomic for threads; volatile is for HARDWARE\n");
+
+    printf("\nPLACEMENT\n");
+    placement_rules();
+    return 0;
+}
+```
+
+```bash
+# See the optimizer's behavior directly. Without volatile the load is
+# hoisted out of the loop and the loop becomes unconditional:
+$ gcc -O2 -S -o - poll.c | grep -A6 wait_loop
+.L2:
+        jmp     .L2              # infinite loop: the load was hoisted out
+
+# With volatile, the load stays inside:
+.L3:
+        movl    status(%rip), %eax     # re-read on EVERY iteration
+        testb   $1, %al
+        je      .L3
+```
+
+| | `volatile` | `_Atomic` | Both |
+|---|---|---|---|
+| Forces re-read from memory | yes | yes | yes |
+| Prevents eliminating stores | yes | yes | yes |
+| Indivisible read-modify-write | **no** | yes | yes |
+| Orders non-volatile accesses | **no** | yes | yes |
+| Inserts memory barriers | **no** | yes | yes |
+| Correct for hardware registers | **yes** | not sufficient alone | yes |
+| Correct for thread synchronization | **no** | **yes** | yes |
+
+**Key Takeaways**
+
+- `volatile` tells the compiler an object may change outside its knowledge, forcing a real memory access for every read and write and forbidding reordering among volatile accesses.
+- It is required for memory-mapped registers, variables shared with an interrupt handler, and variables modified across `longjmp` — and for nothing else.
+- Without it, a polling loop's load is hoisted out and becomes an infinite loop, and a read whose value is discarded is deleted entirely.
+- `volatile` provides no atomicity, no ordering with non-volatile accesses, and no barriers, so it is not a thread-synchronization primitive — use `_Atomic`.
+- Read the declaration right to left: `volatile uint32_t *p` is a pointer to volatile data, which is what a hardware register needs.
+
+> 🧪 Practice
+>
+> 1. Write a polling loop on a non-volatile global, compile at `-O0` and `-O2`, and compare the generated assembly.
+> 2. Write a function that reads a `volatile` variable three times and discards the results, and confirm all three loads appear in the assembly.
+> 3. Increment a `volatile int` from two threads and show the count is wrong, then fix it with `_Atomic`.
+> 4. Interview-style: *"Is `volatile` enough to share a variable between two threads?"* Hint: separate "the compiler must re-read it" from "no other core can interleave".
+
 #### Interrupt Service Routines
+
+**Theory**
+
+An **interrupt** is the hardware's way of demanding attention. When a timer expires, a byte arrives on a serial port, or a pin changes state, the peripheral raises a signal; the CPU finishes its current instruction, saves enough state to resume, and jumps to an **interrupt service routine** (ISR).
+
+The essential property is that this happens **between any two instructions of your main code**, with no cooperation from it. An ISR is not called by your program — it interrupts it. That single fact generates every rule about writing them.
+
+**Rule one: be fast.** While an ISR runs, interrupts of the same or lower priority are typically blocked. A slow ISR delays every other event and can cause data loss — a UART's receive buffer overruns while you were busy. The discipline is to do the minimum in the ISR (read the byte, store it, set a flag) and let the main loop do the work.
+
+**Rule two: never block.** No waiting for another interrupt, no polling a flag that only an ISR can set, no acquiring a mutex that main-loop code might hold. Each of those deadlocks the system permanently.
+
+**Rule three: almost nothing from the standard library is safe.** `printf` is slow and often not reentrant. `malloc` manipulates global structures and can corrupt the heap if it interrupts itself. Floating point may require saving extra registers the ISR does not save. Treat the library as unavailable.
+
+**Rule four: shared variables must be `volatile`**, or the main loop will cache them in a register and never observe the ISR's updates. And because `volatile` gives no atomicity, any shared object larger than a single atomic-width word needs the access protected — typically by briefly disabling interrupts.
+
+That last point deserves emphasis. A 32-bit counter on an 8-bit micro takes four instructions to read; an interrupt landing in the middle yields a **torn read** mixing old and new halves. The fix is a critical section: disable interrupts, copy the value, restore the previous interrupt state. Note *restore*, not *enable* — blindly enabling interrupts at the end of a nested critical section re-enables them too early.
+
+**Rule five: acknowledge the interrupt.** Most peripherals latch a flag that must be explicitly cleared, or the ISR is re-entered immediately in an infinite loop. This is the single most common embedded bug.
+
+The classic architecture that follows from all this is the **flag-and-defer pattern**: ISRs are tiny and only enqueue work, and a main loop drains the queue. It is the same shape as the signal handler pattern from the previous chapter, for the same reason.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+/* =====================================================================
+   On a real target these are intrinsics or inline assembly, e.g.
+       __disable_irq() / __enable_irq()   (ARM CMSIS)
+       cli() / sei()                      (AVR)
+   Here they are simulated so the example runs on a PC.
+   ===================================================================== */
+static volatile bool interrupts_enabled = true;
+
+static uint32_t irq_save_disable(void)
+{
+    uint32_t previous = interrupts_enabled;
+    interrupts_enabled = false;
+    return previous;                       /* return the PREVIOUS state */
+}
+
+static void irq_restore(uint32_t previous)
+{
+    interrupts_enabled = previous;         /* RESTORE, do not blindly enable:
+                                              nested critical sections would
+                                              otherwise re-enable too early */
+}
+
+/* =====================================================================
+   Shared state. Every object touched by both an ISR and the main loop
+   must be volatile, or the main loop caches it and never sees updates.
+   ===================================================================== */
+#define RX_CAPACITY 64
+
+static volatile uint8_t  rx_buffer[RX_CAPACITY];
+static volatile uint16_t rx_head = 0;      /* written ONLY by the ISR  */
+static volatile uint16_t rx_tail = 0;      /* written ONLY by the main loop */
+static volatile uint32_t rx_dropped = 0;
+static volatile uint32_t tick_count = 0;
+static volatile bool     tick_flag = false;
+
+/* Simulated hardware registers. */
+static volatile uint32_t uart_status = 0;
+static volatile uint8_t  uart_data   = 0;
+#define UART_RX_NOT_EMPTY (1u << 0)
+
+/* =====================================================================
+   ISR 1: UART receive. Short, non-blocking, no library calls.
+   ===================================================================== */
+static void uart_isr(void)
+{
+    /* Read the byte -- on real hardware this also CLEARS the interrupt
+       flag, which is why acknowledging is often implicit for a UART. */
+    uint8_t byte = uart_data;
+
+    /* A single-producer ring buffer. Because only the ISR writes head
+       and only the main loop writes tail, no lock is needed. */
+    uint16_t next = (uint16_t)((rx_head + 1u) % RX_CAPACITY);
+
+    if (next == rx_tail) {
+        rx_dropped++;                      /* full: drop and COUNT it */
+    } else {
+        rx_buffer[rx_head] = byte;
+        rx_head = next;                    /* publish AFTER the data */
+    }
+
+    /* NOT here: printf, malloc, blocking waits, long loops, floating point. */
+    uart_status &= ~UART_RX_NOT_EMPTY;
+}
+
+/* =====================================================================
+   ISR 2: timer tick. Sets a flag; the main loop does the real work.
+   ===================================================================== */
+static void timer_isr(void)
+{
+    tick_count++;
+    tick_flag = true;                      /* flag and defer */
+
+    /* On real hardware you MUST clear the peripheral's pending flag here,
+       or the ISR is re-entered immediately, forever. This is the single
+       most common embedded bug:
+           TIM2->SR &= ~TIM_SR_UIF; */
+}
+
+/* =====================================================================
+   Main-loop side: reading shared state safely.
+   ===================================================================== */
+
+/* A single byte fits in one atomic access, so no critical section is
+   needed to consume from the ring buffer. */
+static bool rx_read(uint8_t *out)
+{
+    if (rx_tail == rx_head) return false;          /* empty */
+    *out = rx_buffer[rx_tail];
+    rx_tail = (uint16_t)((rx_tail + 1u) % RX_CAPACITY);
+    return true;
+}
+
+/* A 32-bit counter may take several instructions to read on a small MCU.
+   An interrupt landing mid-read yields a TORN value mixing old and new
+   halves, so the read must be inside a critical section. */
+static uint32_t read_tick_count(void)
+{
+    uint32_t saved = irq_save_disable();   /* enter the critical section */
+    uint32_t value = tick_count;           /* now indivisible */
+    irq_restore(saved);                    /* restore the PREVIOUS state */
+    return value;
+}
+
+/* Simulate the hardware delivering bytes and timer events. */
+static void simulate_uart_rx(const char *text)
+{
+    for (const char *p = text; *p; p++) {
+        uart_data   = (uint8_t)*p;
+        uart_status |= UART_RX_NOT_EMPTY;
+        uart_isr();                        /* the hardware would call this */
+    }
+}
+
+int main(void)
+{
+    printf("ISR-driven UART receive with a ring buffer\n\n");
+
+    simulate_uart_rx("Hello from the ISR");
+    for (int i = 0; i < 5; i++) timer_isr();
+
+    /* The MAIN LOOP does everything the ISR could not: printing,
+       allocating, and any work that takes real time. */
+    printf("main loop draining the buffer: \"");
+    uint8_t byte;
+    while (rx_read(&byte)) putchar(byte);
+    printf("\"\n");
+
+    if (tick_flag) {
+        tick_flag = false;                 /* clear it before handling */
+        printf("ticks observed: %u (read inside a critical section)\n",
+               read_tick_count());
+    }
+
+    /* Overflow accounting: drop and count, never block inside the ISR. */
+    printf("\nfilling the buffer past capacity...\n");
+    char flood[RX_CAPACITY + 20];
+    memset(flood, 'x', sizeof flood - 1);
+    flood[sizeof flood - 1] = '\0';
+    simulate_uart_rx(flood);
+    printf("bytes dropped: %u (the ISR counted them and moved on)\n", rx_dropped);
+    return 0;
+}
+```
+
+```text
+   WHAT AN INTERRUPT ACTUALLY DOES
+
+   main loop
+      |  instruction
+      |  instruction   <-- IRQ asserted here
+      |       |
+      |       +--> CPU: finish this instruction, push context,
+      |                 jump to the vector table entry
+      |                       |
+      |                       v
+      |                 +-----------+
+      |                 |    ISR    |  runs with same/lower priority
+      |                 |  (short!) |  interrupts BLOCKED
+      |                 +-----------+
+      |                       |
+      |       +<--------------+  restore context, resume
+      v  instruction
+
+   The main loop had NO IDEA this happened. That is why:
+     - shared variables must be volatile   (main would cache them)
+     - multi-word reads need a critical section  (they can TEAR)
+     - the ISR must not block               (nothing can preempt it)
+
+   THE TORN READ
+
+   tick_count is 0x0000FFFF, ISR increments to 0x00010000
+
+   main:  read low half   -> 0xFFFF
+              <-- ISR runs, counter becomes 0x00010000
+   main:  read high half  -> 0x0001
+          combined        -> 0x0001FFFF     a value that NEVER EXISTED
+```
+
+| Allowed in an ISR | Forbidden in an ISR |
+|---|---|
+| Read/write `volatile` shared state | `printf` and most of stdio |
+| Set a flag for the main loop | `malloc` / `free` |
+| Copy a byte into a buffer | blocking or waiting on anything |
+| Clear the peripheral's pending flag | long loops or heavy computation |
+| Increment a counter | acquiring a lock main-loop code holds |
+| Enqueue work | floating point (on many targets) |
+
+**Key Takeaways**
+
+- An ISR interrupts the main program between arbitrary instructions, so every shared variable must be `volatile` or the main loop will never observe the updates.
+- Keep ISRs short and non-blocking: do the minimum, set a flag, and defer the real work to the main loop.
+- Objects too large for a single atomic access can tear when read concurrently — protect them by disabling interrupts, and *restore* the previous state rather than blindly enabling.
+- Almost nothing in the standard library is safe in an ISR, especially `printf` and `malloc`.
+- Clear the peripheral's pending flag before returning, or the ISR will be re-entered immediately and forever.
+
+> 🧪 Practice
+>
+> 1. Extend the ring buffer with a `rx_available()` function and confirm it stays correct while the ISR is producing.
+> 2. Write a 64-bit millisecond counter incremented by a timer ISR, and a main-loop reader that avoids torn reads.
+> 3. Explain why the single-producer/single-consumer ring buffer needs no critical section, and what changes if a second producer is added.
+> 4. Interview-style: *"Your ISR fires once and then the system hangs. What is the most likely cause?"* Hint: consider what the peripheral is still asserting.
 
 #### Avoiding Dynamic Allocation
 
+**Theory**
+
+Most embedded systems ban `malloc` outright. That sounds extreme until you look at what dynamic allocation actually promises, and what an embedded system actually needs.
+
+The objections are concrete:
+
+**It can fail, and there is nowhere to go.** On a desktop, an allocation failure can be reported to a user. On a flight controller there is no user, and no meaningful recovery — the correct response to "out of memory" mid-flight does not exist. A system that cannot fail must not perform operations that can.
+
+**Fragmentation is unbounded.** Repeated allocation and freeing of mixed sizes leaves the heap perforated: plenty of total free memory, no single block large enough. A desktop process restarts; a device that must run for years cannot. Fragmentation is the failure that appears after six weeks of uptime.
+
+**Timing is non-deterministic.** `malloc` may take a few nanoseconds or may walk a long free list. A real-time system must bound its worst case, and "usually fast" is not a bound.
+
+**Memory use becomes unprovable.** With static allocation the linker reports exactly how much RAM the program uses, and you know at build time whether it fits. With a heap, the answer depends on the runtime path taken.
+
+The alternatives, in rough order of preference:
+
+**Static allocation.** Declare everything at file scope or as `static`, sized for the worst case. Memory use is known at link time, allocation cannot fail, and access time is constant. The cost is that the worst case is always occupied.
+
+**Pools (fixed-block allocators).** Pre-allocate an array of `N` identical objects plus a free list. Allocation and release are O(1) pointer operations, and because every block is the same size, **fragmentation is impossible**. This is the standard answer when you need dynamic *lifetime* without dynamic *sizing*.
+
+**Arena / bump allocators.** Carve a large static buffer with a moving pointer. Allocation is one addition; there is no individual free, only a reset of the whole arena. Ideal for per-frame or per-request data with a common lifetime.
+
+**Caller-provided buffers.** Library functions take a buffer and a size rather than allocating. This pushes the decision to the caller, who knows the lifetime, and keeps the library allocation-free.
+
+Note that the stack is not automatically safe either: it is small and rarely checked, so large local arrays, deep recursion, and variable-length arrays are all hazards. Many embedded coding standards ban recursion and VLAs for exactly this reason.
+
+**Examples**
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stddef.h>
+
+/* =====================================================================
+   1. STATIC ALLOCATION: sized for the worst case, known at link time.
+   ===================================================================== */
+#define MAX_SENSORS 8
+#define NAME_LEN    16
+
+typedef struct {
+    char     name[NAME_LEN];      /* a fixed array, not a char*  */
+    int32_t  reading;
+    bool     active;
+} Sensor;
+
+static Sensor sensors[MAX_SENSORS];      /* all the storage there will be */
+static size_t sensor_count = 0;
+
+static Sensor *sensor_add(const char *name)
+{
+    if (sensor_count >= MAX_SENSORS) return NULL;   /* a bounded, known limit */
+
+    Sensor *s = &sensors[sensor_count++];
+    snprintf(s->name, sizeof s->name, "%s", name);  /* bounded copy */
+    s->reading = 0;
+    s->active  = true;
+    return s;
+}
+
+/* =====================================================================
+   2. POOL ALLOCATOR: dynamic lifetime, fixed size, O(1), no fragmentation.
+   ===================================================================== */
+#define POOL_CAPACITY 16
+
+typedef struct Message {
+    uint8_t  payload[32];
+    uint16_t length;
+    struct Message *next_free;    /* reused as the free-list link */
+} Message;
+
+typedef struct {
+    Message  blocks[POOL_CAPACITY];
+    Message *free_list;
+    size_t   in_use, high_water;
+} MessagePool;
+
+static MessagePool pool;
+
+static void pool_init(MessagePool *p)
+{
+    p->free_list = NULL;
+    p->in_use = p->high_water = 0;
+
+    /* Thread every block onto the free list, back to front so that the
+       first allocation returns block 0. */
+    for (size_t i = POOL_CAPACITY; i-- > 0; ) {
+        p->blocks[i].next_free = p->free_list;
+        p->free_list = &p->blocks[i];
+    }
+}
+
+/* O(1), always. No searching, no coalescing, no worst case to reason about. */
+static Message *pool_alloc(MessagePool *p)
+{
+    Message *m = p->free_list;
+    if (!m) return NULL;                    /* exhausted: a KNOWN limit */
+
+    p->free_list = m->next_free;
+    m->next_free = NULL;
+    p->in_use++;
+    if (p->in_use > p->high_water) p->high_water = p->in_use;  /* track the peak */
+    return m;
+}
+
+static void pool_free(MessagePool *p, Message *m)
+{
+    if (!m) return;
+    m->next_free = p->free_list;            /* push back onto the free list */
+    p->free_list = m;
+    p->in_use--;
+    /* Every block is the SAME SIZE, so a freed block always satisfies any
+       future request. Fragmentation is structurally impossible. */
+}
+
+/* =====================================================================
+   3. ARENA / BUMP ALLOCATOR: one pointer, no individual free.
+   ===================================================================== */
+#define ARENA_SIZE 1024
+
+typedef struct {
+    unsigned char buffer[ARENA_SIZE];
+    size_t        offset;
+} Arena;
+
+static Arena arena;
+
+static void *arena_alloc(Arena *a, size_t size, size_t align)
+{
+    /* Round the current offset up to the required alignment. */
+    size_t aligned = (a->offset + align - 1) & ~(align - 1);
+
+    if (aligned + size > ARENA_SIZE) return NULL;   /* bounded by design */
+
+    void *p = a->buffer + aligned;
+    a->offset = aligned + size;             /* allocation is ONE addition */
+    return p;
+}
+
+static void arena_reset(Arena *a) { a->offset = 0; }   /* frees EVERYTHING */
+
+/* =====================================================================
+   4. CALLER-PROVIDED BUFFERS: the library never allocates.
+   ===================================================================== */
+static int format_reading(char *out, size_t cap, const Sensor *s)
+{
+    /* The caller owns the storage and decides its lifetime. */
+    return snprintf(out, cap, "%s=%d", s->name, s->reading);
+}
+
+int main(void)
+{
+    /* ---- static ---- */
+    printf("STATIC ALLOCATION\n");
+    sensor_add("temp"); sensor_add("humidity"); sensor_add("pressure");
+    sensors[0].reading = 23;
+
+    printf("  %zu of %d sensors used, %zu bytes reserved at link time\n",
+           sensor_count, MAX_SENSORS, sizeof sensors);
+
+    char line[32];
+    format_reading(line, sizeof line, &sensors[0]);
+    printf("  formatted into a caller buffer: \"%s\"\n", line);
+
+    /* ---- pool ---- */
+    printf("\nPOOL ALLOCATOR\n");
+    pool_init(&pool);
+
+    Message *held[4];
+    for (int i = 0; i < 4; i++) {
+        held[i] = pool_alloc(&pool);
+        if (held[i]) {
+            held[i]->length = (uint16_t)snprintf((char *)held[i]->payload,
+                                                 sizeof held[i]->payload,
+                                                 "message %d", i);
+        }
+    }
+    printf("  allocated 4: in_use=%zu\n", pool.in_use);
+
+    pool_free(&pool, held[1]);
+    pool_free(&pool, held[2]);
+    printf("  freed 2:     in_use=%zu\n", pool.in_use);
+
+    /* Exhaustion is a bounded, testable condition -- not a surprise. */
+    Message *all[POOL_CAPACITY];
+    size_t got = 0;
+    while (got < POOL_CAPACITY && (all[got] = pool_alloc(&pool)) != NULL) got++;
+    printf("  exhausted after %zu more; next alloc returns %s\n",
+           got, pool_alloc(&pool) == NULL ? "NULL" : "a block");
+    printf("  high water mark: %zu of %d blocks\n", pool.high_water, POOL_CAPACITY);
+
+    /* ---- arena ---- */
+    printf("\nARENA ALLOCATOR\n");
+    arena_reset(&arena);
+
+    int32_t *numbers = arena_alloc(&arena, 10 * sizeof(int32_t), _Alignof(int32_t));
+    char    *text    = arena_alloc(&arena, 64, 1);
+
+    if (numbers && text) {
+        for (int i = 0; i < 10; i++) numbers[i] = i * i;
+        snprintf(text, 64, "arena offset now %zu", arena.offset);
+        printf("  numbers[9]=%d, text=\"%s\"\n", numbers[9], text);
+    }
+    printf("  used %zu of %d bytes\n", arena.offset, ARENA_SIZE);
+
+    arena_reset(&arena);          /* frees everything at once, in O(1) */
+    printf("  after reset: %zu bytes used\n", arena.offset);
+    return 0;
+}
+```
+
+| Strategy | Allocation cost | Fragmentation | Individual free | Fails when |
+|---|---|---|---|---|
+| `malloc`/`free` | variable, unbounded | **yes** | yes | unpredictably |
+| Static | none | none | n/a | never (fixed at link) |
+| Pool | O(1) | **impossible** | yes | pool exhausted (known bound) |
+| Arena | O(1) | none | no — reset all | arena full (known bound) |
+| Caller-provided | caller's problem | caller's problem | caller's | caller decides |
+
+**Key Takeaways**
+
+- Embedded systems avoid `malloc` because it can fail with no recovery available, fragments unboundedly over long uptimes, and has non-deterministic timing.
+- Static allocation makes memory use known at link time and allocation incapable of failing, at the cost of always occupying the worst case.
+- A pool allocator gives dynamic lifetime with fixed-size blocks, making allocation O(1) and fragmentation structurally impossible.
+- An arena allocates by bumping a pointer and frees everything at once, which suits per-frame or per-request data sharing a lifetime.
+- The stack is not automatically safe: deep recursion, large locals, and VLAs overflow it silently, which is why many embedded standards ban them.
+
+> 🧪 Practice
+>
+> 1. Add `pool_available()` and a guard in `pool_free` that rejects a pointer outside the pool's block array.
+> 2. Extend the arena with save/restore markers so a scope can release everything it allocated without resetting the whole arena.
+> 3. Rewrite a small program that uses `malloc` to use a pool instead, and compare peak memory use.
+> 4. Interview-style: *"Why is `malloc` banned in most safety-critical embedded code?"* Hint: name three distinct problems, and say which one appears only after weeks of uptime.
+
 #### Linker Scripts and Sections
+
+**Theory**
+
+On a hosted system the linker uses a default script and you never think about it. On bare metal there is no operating system to load your program, so **you** must tell the linker exactly where everything goes: which addresses are flash, which are RAM, where the stack starts, and what the CPU should execute first.
+
+A compiled object file is divided into **sections**, each with a distinct purpose:
+
+| Section | Contains | Typically lives in |
+|---|---|---|
+| `.text` | executable code | flash / ROM |
+| `.rodata` | `const` data, string literals | flash / ROM |
+| `.data` | initialized globals | **RAM**, initialized *from* flash |
+| `.bss` | zero-initialized globals | RAM, zeroed at startup |
+| `.stack` / `.heap` | runtime storage | RAM |
+
+The `.data` row is the interesting one. A variable like `int counter = 42;` must live in RAM (it is writable) but its initial value must survive power-off (so it must be in flash). The linker therefore places the variable in RAM but stores its initial value in flash, and **startup code copies it across before `main` runs**. Similarly, `.bss` holds variables initialized to zero — storing thousands of zeros in flash would be wasteful, so only the address range is recorded and startup code zeroes it.
+
+That copy-and-zero step is part of the **C runtime startup**, and on bare metal you often write it yourself. Until it has run, global variables do not have their initial values — which is why code that runs before it must not depend on them.
+
+A **linker script** describes two things:
+
+**`MEMORY`** declares the physical regions — name, permissions, origin address, and length.
+
+**`SECTIONS`** maps input sections into those regions, and defines symbols marking the boundaries. Those symbols (`_sdata`, `_edata`, `_sbss`, `_ebss`) are what the startup code uses to know what to copy and what to zero.
+
+A subtlety worth knowing: `>FLASH AT>FLASH` versus `>RAM AT>FLASH`. The first address is the **VMA** (where the section will be at run time) and the second is the **LMA** (where it is stored in the image). For `.data` they differ, and that difference is exactly what the startup copy resolves.
+
+On ARM Cortex-M, the first thing at the flash base is the **vector table**: an array whose first entry is the initial stack pointer and whose second is the reset handler's address. The CPU loads both directly from those addresses on reset, before any code has run.
+
+You control section placement from C with `__attribute__((section(".name")))`, which is how you put an interrupt vector table at a fixed address, place a lookup table in flash, or reserve a RAM region that survives a reset.
+
+`arm-none-eabi-size` and `objdump` report exactly how much flash and RAM the result uses, which is the build-time proof that the program fits.
+
+**Examples**
+
+A linker script for a Cortex-M microcontroller:
+
+```text
+/* ======================== device.ld ======================== */
+
+/* Where execution begins -- the linker keeps everything reachable
+   from this symbol and can warn about unused sections. */
+ENTRY(Reset_Handler)
+
+/* The physical memory regions of this specific chip. */
+MEMORY
+{
+    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 512K   /* read + execute */
+    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 128K   /* read + write   */
+}
+
+_stack_size = 0x2000;                     /* 8 KB of stack */
+
+SECTIONS
+{
+    /* ---- vector table: MUST be first, at the flash base address.
+            On reset the CPU loads the initial stack pointer from
+            offset 0 and the reset handler address from offset 4. ---- */
+    .isr_vector :
+    {
+        . = ALIGN(4);
+        KEEP(*(.isr_vector))       /* KEEP: never garbage-collect this,
+                                      even though no C code references it */
+        . = ALIGN(4);
+    } >FLASH
+
+    /* ---- code and read-only data: execute in place from flash ---- */
+    .text :
+    {
+        . = ALIGN(4);
+        *(.text)                   /* all code                     */
+        *(.text*)                  /* and per-function sections    */
+        *(.rodata)                 /* const data, string literals  */
+        *(.rodata*)
+        . = ALIGN(4);
+        _etext = .;                /* end of text: where .data's
+                                      initial values are stored     */
+    } >FLASH
+
+    /* ---- initialized globals: they LIVE in RAM (VMA) but are
+            STORED in flash (LMA). Startup copies flash -> RAM. ---- */
+    .data : AT(_etext)             /* AT() sets the load address */
+    {
+        . = ALIGN(4);
+        _sdata = .;                /* start, used by the startup copy */
+        *(.data)
+        *(.data*)
+        . = ALIGN(4);
+        _edata = .;                /* end */
+    } >RAM
+
+    /* ---- zero-initialized globals: no bytes in the image at all,
+            just an address range the startup code clears. ---- */
+    .bss :
+    {
+        . = ALIGN(4);
+        _sbss = .;
+        *(.bss)
+        *(.bss*)
+        *(COMMON)
+        . = ALIGN(4);
+        _ebss = .;
+    } >RAM
+
+    /* ---- reserve the stack and fail the BUILD if it does not fit ---- */
+    .stack :
+    {
+        . = ALIGN(8);
+        . = . + _stack_size;
+        . = ALIGN(8);
+        _estack = .;               /* the stack grows DOWN from here */
+    } >RAM
+}
+```
+
+The startup code that runs before `main`:
+
+```c
+/* ======================== startup.c ========================
+   Runs on reset, before the C environment exists. Until the copy and
+   zero loops below have finished, GLOBAL VARIABLES DO NOT HAVE THEIR
+   INITIAL VALUES -- so nothing here may depend on them.               */
+#include <stdint.h>
+
+/* These symbols are defined by the LINKER SCRIPT, not by any C file.
+   Only their ADDRESSES are meaningful, which is why they are declared
+   as arrays and used with & or as bare addresses. */
+extern uint32_t _etext, _sdata, _edata, _sbss, _ebss, _estack;
+
+extern int main(void);
+
+void Reset_Handler(void)
+{
+    /* 1. Copy .data from its load address in FLASH to its run address
+          in RAM. This is what gives  int x = 42;  its value. */
+    uint32_t *src = &_etext;               /* stored in flash after .text */
+    uint32_t *dst = &_sdata;               /* destination in RAM          */
+    while (dst < &_edata) *dst++ = *src++;
+
+    /* 2. Zero the .bss region. C guarantees uninitialized globals are
+          zero, and this loop is what actually makes that true. */
+    for (uint32_t *p = &_sbss; p < &_ebss; p++) *p = 0;
+
+    /* 3. Now the C environment is valid: globals have their values. */
+    main();
+
+    /* main must never return on bare metal -- there is nothing to
+       return to. Trap here rather than executing whatever follows. */
+    for (;;) { }
+}
+
+static void Default_Handler(void) { for (;;) { } }
+
+/* Weak aliases: a real driver can define NMI_Handler and override this. */
+void NMI_Handler(void)        __attribute__((weak, alias("Default_Handler")));
+void HardFault_Handler(void)  __attribute__((weak, alias("Default_Handler")));
+void SysTick_Handler(void)    __attribute__((weak, alias("Default_Handler")));
+
+/* The vector table, forced into the section the linker script places
+   at the flash base. 'used' stops the compiler discarding it, since no
+   C code ever references it. */
+__attribute__((section(".isr_vector"), used))
+const void *const vector_table[] = {
+    (const void *)&_estack,    /* 0x00: the CPU loads SP from here  */
+    (const void *)Reset_Handler,/* 0x04: and PC from here            */
+    (const void *)NMI_Handler,
+    (const void *)HardFault_Handler,
+    /* ... the rest of the device's interrupt vectors ... */
+};
+```
+
+Placing data in specific sections from C:
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+
+/* Each of these lands in a different section, which the linker script
+   then maps to flash or RAM. */
+
+int      initialized_global = 42;      /* .data  -- RAM, copied from flash */
+int      zero_global;                  /* .bss   -- RAM, zeroed at startup */
+const int constant_global = 100;       /* .rodata-- stays in flash         */
+static int file_static = 7;            /* .data, but not exported          */
+
+void some_function(void) { }           /* .text  -- flash                  */
+
+/* Explicit placement: a lookup table kept in flash to save RAM. */
+__attribute__((section(".rodata")))
+static const uint8_t sine_table[8] = { 128, 218, 255, 218, 128, 37, 0, 37 };
+
+/* A region that survives a warm reset, if the linker script excludes it
+   from the .bss zeroing loop. */
+__attribute__((section(".noinit")))
+static uint32_t reset_counter;
+
+int main(void)
+{
+    printf("SECTION PLACEMENT\n");
+    printf("  initialized_global = %d   (.data:   RAM, copied from flash)\n",
+           initialized_global);
+    printf("  zero_global        = %d    (.bss:    RAM, zeroed at startup)\n",
+           zero_global);
+    printf("  constant_global    = %d  (.rodata: stays in flash)\n",
+           constant_global);
+    printf("  file_static        = %d    (.data, internal linkage)\n",
+           file_static);
+    printf("  sine_table[2]      = %u  (.rodata via an attribute)\n",
+           sine_table[2]);
+
+    printf("\nWHY .data AND .bss DIFFER\n");
+    printf("  .data costs flash (the initial values) AND RAM\n");
+    printf("  .bss  costs ONLY RAM -- storing thousands of zeros in flash\n");
+    printf("        would be pure waste, so only the range is recorded\n");
+    (void)reset_counter;
+    return 0;
+}
+```
+
+```bash
+# What the image actually costs. This is the build-time proof that the
+# program fits the device.
+$ arm-none-eabi-size firmware.elf
+   text    data     bss     dec     hex filename
+  12456     108    2048   14612    3914 firmware.elf
+#    ^       ^       ^
+#    |       |       +-- RAM only, zeroed at startup
+#    |       +---------- RAM at run time, AND 108 bytes of flash for the values
+#    +------------------ flash only
+#
+# FLASH used = text + data = 12564 bytes
+# RAM   used = data + bss  = 2156 bytes (plus stack and heap)
+
+# List the sections and both addresses:
+$ arm-none-eabi-objdump -h firmware.elf
+Idx Name        Size      VMA       LMA       Algn
+  0 .isr_vector 000001b0  08000000  08000000  2**2
+  1 .text       000030a8  080001b0  080001b0  2**2
+  2 .data       0000006c  20000000  08003258  2**2   <- VMA != LMA
+#                                    ^^^^^^^^ stored in flash, lives in RAM
+
+$ arm-none-eabi-nm firmware.elf | grep -E '_sdata|_edata|_sbss|_ebss'
+20000000 D _sdata
+2000006c D _edata
+2000006c B _sbss
+2000086c B _ebss
+
+# Build with a custom script:
+$ arm-none-eabi-gcc -T device.ld -nostdlib startup.c main.c -o firmware.elf
+```
+
+```text
+   WHY .data NEEDS A COPY AT STARTUP
+
+   int counter = 42;    must be WRITABLE (so: RAM)
+                        must SURVIVE POWER-OFF (so: flash)
+
+   FLASH (persistent)              RAM (writable, volatile)
+   +---------------------+         +---------------------+
+   | .isr_vector         |         |                     |
+   | .text  (code)       |         |                     |
+   | .rodata (constants) |         |                     |
+   +---------------------+         +---------------------+
+   | initial values      |  COPY   | .data  counter = 42 |  <- VMA
+   | for .data      (LMA)| ------> |                     |
+   +---------------------+         +---------------------+
+                                   | .bss   (zeroed)     |  <- ZERO loop
+                                   +---------------------+
+                                   | heap (often unused) |
+                                   |          |          |
+                                   |          v          |
+                                   |          ^          |
+                                   |          |          |
+                                   | stack (grows DOWN)  |  <- _estack
+                                   +---------------------+
+
+   Reset_Handler does the COPY and the ZERO, then calls main().
+   Before those loops run, globals hold whatever was in RAM at power-on.
+```
+
+**Key Takeaways**
+
+- Object files are split into sections: `.text` and `.rodata` live in flash, `.data` and `.bss` live in RAM, and the linker script maps each to a physical region.
+- `.data` has a different load address (flash) from its run address (RAM), and startup code copies it across — which is what gives initialized globals their values.
+- `.bss` costs no space in the image because only its address range is recorded; startup zeroes it, which is what makes C's zero-initialization guarantee true.
+- The linker script defines boundary symbols such as `_sdata` and `_ebss` that the startup code uses; those symbols have meaningful addresses, not values.
+- Place data explicitly with `__attribute__((section(...)))`, use `KEEP` for tables no code references, and read total flash and RAM use from `size` output.
+
+> 🧪 Practice
+>
+> 1. Compile a program with an initialized global, an uninitialized global, and a `const` global, then use `objdump -h` and `nm` to find which section each landed in.
+> 2. Add a large `const` array and a large zeroed array, and observe how each changes the `text`, `data`, and `bss` figures from `size`.
+> 3. Write the `.data` copy and `.bss` zero loops from scratch, using linker-defined symbols, and explain why they must run before `main`.
+> 4. Interview-style: *"Why does an initialized global need both flash and RAM, while a zero-initialized one needs only RAM?"* Hint: ask where each one's initial value has to come from after a power cycle.
 
 ---
 
