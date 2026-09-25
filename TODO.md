@@ -4,19 +4,19 @@
 
 ### ANALYSIS
 - split large documents into smaller documents chapter by chapter
-- Java
 - Data Science
+- Cyber Security
+- Web Technologies
 - React
 - Database Management Systems
 - Calculus
 - Linear Algebra
 - Probability & Statistics
 - Discrete Mathematics
-- Cyber Security
-- Web Technologies
 - Operative Research
 
 ### IN PROGRESS
+- Java
 - Rust
 
 ### IN REVIEW
