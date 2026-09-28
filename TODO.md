@@ -4,7 +4,6 @@
 
 ### ANALYSIS
 - split large documents into smaller documents chapter by chapter
-- Data Science
 - Cyber Security
 - Web Technologies
 - React
@@ -16,7 +15,6 @@
 - Operative Research
 
 ### IN PROGRESS
-- Java
 - Rust
 
 ### IN REVIEW
@@ -26,5 +24,7 @@
 - C
 - Algorithms & Data Structures
 - Kubernetes
+- Java
+- Data Science
 
 ### DONE
