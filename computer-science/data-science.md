@@ -48,10 +48,8 @@
   - [9.3 Model Evaluation](#93-model-evaluation)
   - [9.4 Model Selection and Tuning](#94-model-selection-and-tuning)
 - [10. Supervised Learning](#10-supervised-learning)
-  - [10.1 Linear Models](#101-linear-models)
-  - [10.2 Tree-Based Models](#102-tree-based-models)
-  - [10.3 Instance and Kernel Methods](#103-instance-and-kernel-methods)
-  - [10.4 Probabilistic and Ensemble Methods](#104-probabilistic-and-ensemble-methods)
+  - [10.1 Regression](#101-regression)
+  - [10.2 Classification](#102-classification)
 - [11. Unsupervised Learning](#11-unsupervised-learning)
   - [11.1 Clustering](#111-clustering)
   - [11.2 Dimensionality Reduction](#112-dimensionality-reduction)
@@ -48236,7 +48234,7 @@ split = pd.DataFrame([
     ("encoding and scaling", "yes", "6.3"),
     ("model family selection", "yes", "9.1"),
     ("hyperparameter tuning", "yes", "9.4"),
-    ("ensembling", "yes", "10.4"),
+    ("ensembling", "yes", "10.2"),
     ("threshold / cost decisions", "NO", "8.4, 9.3"),
     ("calibration", "sometimes", "9.3"),
     ("deployment, monitoring, drift", "NO", "15"),
@@ -48301,7 +48299,7 @@ print("whether domain knowledge beats it. If it does not, ship the pipeline.")
   domain feature engineering          NO           6.3
   imputation, encoding, scaling       yes          6.1, 6.3
   model family + hyperparameters      yes          9.1, 9.4
-  ensembling                          yes          10.4
+  ensembling                          yes          10.2
   threshold and cost decisions        NO           8.4, 9.3
   deployment, monitoring, drift       NO           15
 
@@ -48705,66 +48703,523 @@ print("rather than a statistical one.")
 <a id="10-supervised-learning"></a>
 ## 10. Supervised Learning
 
-Supervised learning is the part of machine learning where the answer is
-supplied during training, and this chapter is a tour of the model families
-that exploit that, from linear models whose coefficients you can read off a
-page to gradient-boosted ensembles that win competitions and explain nothing.
-Each family encodes a different bet about the shape of the relationship
-between features and target, and the practical skill is recognising which bet
-the data supports. Chapter 9 established how to evaluate and select models
-without fooling yourself; this chapter assumes that discipline and
-concentrates on what is actually inside each algorithm.
+In supervised learning, the correct answer is given to the model during
+training. Every supervised problem is one of two kinds:
 
-<a id="101-linear-models"></a>
-### 10.1 Linear Models
+- **Regression**: the target is a number (a price, a delivery time, a count).
+- **Classification**: the target is a label (fraud or not fraud, which of six
+  products).
 
-Linear models assume the target responds to a weighted sum of the features, an
-assumption strong enough to make the fitted parameters interpretable and weak
-enough to remain useful across an enormous range of problems; this section
-covers the least-squares core, the diagnostics that tell you when the
-assumptions have failed, the penalties that make the models work in high
-dimensions, and the link functions that extend them beyond continuous targets.
+This choice comes first, before you pick any algorithm. It decides the loss
+function, the metrics, what the model outputs, and which models can fit the
+problem at all. This chapter has one section for each kind. Each section starts
+by defining the task and then walks through the algorithms that are best
+explained through it. Many algorithms (trees, ensembles, nearest neighbours)
+work for both tasks. They appear in whichever section their examples use, and
+the last topic of the chapter shows how little really changes between the two
+versions.
+
+Every algorithm makes an assumption about how the features relate to the
+target. The practical skill is spotting which assumption your data supports.
+Chapter 9 covered how to evaluate and compare models honestly. This chapter
+assumes you follow those rules and focuses on how each algorithm works.
+
+<a id="101-regression"></a>
+### 10.1 Regression
+
+In regression, the target is a number on a number line. That one fact shapes
+everything else: what counts as a mistake, which loss you minimise, which
+metrics make sense, and which models can produce the answer. This section
+covers:
+
+- what makes a problem regression, and why the loss decides what the model
+  actually predicts;
+- the main families of regression models and the assumption each one makes;
+- linear models: least squares, checking assumptions, ridge and lasso,
+  generalized linear models, and reading coefficients;
+- tree-based models: single trees, random forests, gradient boosting and
+  feature importance;
+- Gaussian processes, which return a prediction together with how sure they
+  are.
+
+#### What Makes a Problem Regression
+
+People often say "regression means the target is continuous". That is close,
+but it can mislead. A better test asks two questions about the target values:
+
+1. **Is the difference between two values meaningful?**
+2. **Is being wrong by 6 twice as bad as being wrong by 3?**
+
+If both answers are yes, the problem is regression. A postcode stored as an
+integer fails the first question: the difference between two postcodes means
+nothing. A satisfaction score from 1 to 5 probably fails the second. Chapter
+1.3 introduced these measurement scales; here is where getting them wrong
+starts to cost you.
+
+The most important idea in this topic is that **a regression model does not
+predict "the" target value**. For any input `x`, the target has a whole range
+of possible values, described by the distribution `P(y | x)`. The model
+predicts one *summary* of that distribution, and the loss you train with
+decides which summary:
+
+| Loss                        | What it predicts             | Use it when                                  |
+| --------------------------- | ---------------------------- | -------------------------------------------- |
+| squared error (L2)          | the **mean**                 | errors are symmetric and outliers are real   |
+| absolute error (L1)         | the **median**               | the target is skewed or has bad values       |
+| Huber                       | a mean that resists outliers | you want L2's precision without outlier damage |
+| pinball / quantile, level q | the **q-th quantile**        | you need a guarantee, not an average         |
+| Poisson / Tweedie deviance  | a mean on a count-like scale | the target is a count, a rate, or spend with many zeros |
+
+These are not tuning options. They answer *different questions*, and on a
+skewed target they give different answers from the same data. Take a courier
+quoting delivery times. Traffic can only make trips longer, so delivery time is
+skewed to the right. If the courier quotes the mean delivery time, it is late
+on about a third of deliveries. Quoting the 90th percentile instead is a
+different model of the same data, and the only change is the loss.
+
+Because the target is a number, three more things follow.
+
+**The model's output has no limits, but your target usually does.** A
+least-squares model can predict a negative count, a negative price, or a
+probability of 1.3, because nothing in the loss stops it. Clipping the
+prediction afterwards is the wrong fix. The right fix is to build the limit
+into the model with a link function, which is what generalized linear models
+do (covered later in this section). Taking the log of the target does
+something similar, but has its own trap: `exp(mean of log y)` is the geometric
+mean, which is smaller than the ordinary mean.
+
+**Some error can never be removed.** Part of the variation in `y` is pure
+noise, so the error has a floor above zero. RMSE only makes sense compared with
+the target's own scale and spread. `R²` tries to fix that, but it is measured
+against the variance of *this particular* test set, so the same model scores
+differently on a narrow test set than on a wide one. Chapter 9.3 covers these
+metrics in detail.
+
+**Decide whether you need to extrapolate before choosing a model.** If new data
+can fall outside the training range (a hotter summer, a bigger house, a higher
+spend), the model must be able to continue a trend. This is the clearest
+difference between the model families in the next topic.
+
+```python
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import (LinearRegression, QuantileRegressor,
+                                  HuberRegressor, PoissonRegressor)
+
+rng = np.random.default_rng(7)
+n = 4000
+
+# Delivery time in minutes against distance. The noise is RIGHT-SKEWED,
+# because traffic can only ever make a trip longer, never shorter.
+dist = rng.uniform(1, 12, n)
+noise = rng.lognormal(0.0, 0.9, n)                  # median 1, mean ~1.50
+y = 20 + 2.5 * dist + noise
+X = dist.reshape(-1, 1)
+
+# The truth, available only because we built it: three different "typical"
+# delivery times for the SAME trip.
+off_mean = np.exp(0.5 * 0.9 ** 2)
+off_med = 1.0
+off_q90 = np.exp(0.9 * 1.2816)
+
+print("THE TARGET HAS NO SINGLE 'TYPICAL' VALUE")
+print(f"  for a 6 km trip the true conditional mean   = "
+      f"{20 + 2.5*6 + off_mean:.2f} min")
+print(f"                      true conditional median = "
+      f"{20 + 2.5*6 + off_med:.2f} min")
+print(f"                      true conditional q90    = "
+      f"{20 + 2.5*6 + off_q90:.2f} min")
+
+# --- The LOSS chooses which of those three the model chases. ---
+fits = {
+    "squared  (MSE)": LinearRegression().fit(X, y),
+    "absolute (MAE)": QuantileRegressor(quantile=0.5, alpha=0).fit(X, y),
+    "pinball  (q90)": QuantileRegressor(quantile=0.9, alpha=0).fit(X, y),
+    "Huber          ": HuberRegressor(epsilon=1.35).fit(X, y),
+}
+print("\nSAME DATA, SAME MODEL CLASS, FOUR LOSSES")
+print(f"  {'loss':16s} {'slope':>7s} {'pred @ 6 km':>12s}   estimates")
+targets = {"squared  (MSE)": "the conditional MEAN",
+           "absolute (MAE)": "the conditional MEDIAN",
+           "pinball  (q90)": "the conditional 90th PERCENTILE",
+           "Huber          ": "mean, with outliers down-weighted"}
+for name, m in fits.items():
+    p = m.predict([[6.0]])[0]
+    print(f"  {name:16s} {float(np.ravel(m.coef_)[0]):7.3f} {p:12.2f}"
+          f"   {targets[name]}")
+
+# --- Why this is a decision and not a detail. ---
+late_mean = (y > 20 + 2.5 * dist + off_mean).mean()
+late_q90 = (y > 20 + 2.5 * dist + off_q90).mean()
+print("\n  A quoted delivery time is a PROMISE, so the summary is a choice:")
+print(f"    late rate when the courier quotes the mean: {late_mean:.1%}")
+print(f"    late rate when the courier quotes the q90 : {late_q90:.1%}")
+
+# --- Robustness: 1% of rows get a logging error, and they happen to be long
+#     trips, where a distorted point also has leverage on the slope.
+y_bad = y.copy()
+far = np.flatnonzero(dist > 9)
+hit = rng.choice(far, size=n // 100, replace=False)
+y_bad[hit] += 400
+print("\nAFTER CORRUPTING 1% OF ROWS (+400 min, all on long trips)")
+print(f"  {'loss':16s} {'slope clean':>11s} {'slope dirty':>11s}  {'shift':>7s}")
+for name, m in fits.items():
+    clean = float(np.ravel(m.coef_)[0])
+    if "squared" in name:
+        d = LinearRegression().fit(X, y_bad)
+    elif "absolute" in name:
+        d = QuantileRegressor(quantile=0.5, alpha=0).fit(X, y_bad)
+    elif "pinball" in name:
+        d = QuantileRegressor(quantile=0.9, alpha=0).fit(X, y_bad)
+    else:
+        d = HuberRegressor(epsilon=1.35).fit(X, y_bad)
+    dirty = float(np.ravel(d.coef_)[0])
+    print(f"  {name:16s} {clean:11.3f} {dirty:11.3f}  {dirty-clean:+7.3f}")
+
+# --- A target that is a COUNT is still regression, but squared loss on the
+#     raw scale predicts impossible values. ---
+n2 = 3000
+ad_spend = rng.uniform(0, 3, n2)
+lam = np.exp(-0.4 + 0.9 * ad_spend)                 # signups per day
+counts = rng.poisson(lam)
+Xc = ad_spend.reshape(-1, 1)
+ols = LinearRegression().fit(Xc, counts)
+pois = PoissonRegressor(alpha=0).fit(Xc, counts)
+grid = np.array([[0.0], [0.5], [1.5], [3.0]])
+print("\nCOUNTS: THE LINK FUNCTION IS PART OF THE TASK DEFINITION")
+print(f"  {'ad spend':>9s} {'true mean':>10s} {'OLS':>8s} {'Poisson GLM':>12s}")
+for g in grid:
+    t = np.exp(-0.4 + 0.9 * g[0])
+    print(f"  {g[0]:9.1f} {t:10.2f} {ols.predict([g])[0]:8.2f}"
+          f" {pois.predict([g])[0]:12.2f}")
+print(f"  OLS predicts {ols.predict([[0.0]])[0]:.2f} signups at zero spend; "
+      "a count cannot be negative.")
+```
+
+```text
+THE TARGET HAS NO SINGLE 'TYPICAL' VALUE
+  for a 6 km trip the true conditional mean   = 36.50 min
+                      true conditional median = 36.00 min
+                      true conditional q90    = 38.17 min
+
+SAME DATA, SAME MODEL CLASS, FOUR LOSSES
+  loss               slope  pred @ 6 km   estimates
+  squared  (MSE)     2.516        36.44   the conditional MEAN
+  absolute (MAE)     2.499        35.99   the conditional MEDIAN
+  pinball  (q90)     2.536        38.05   the conditional 90th PERCENTILE
+  Huber              2.502        36.08   mean, with outliers down-weighted
+
+  A quoted delivery time is a PROMISE, so the summary is a choice:
+    late rate when the courier quotes the mean: 32.0%
+    late rate when the courier quotes the q90 : 9.3%
+
+AFTER CORRUPTING 1% OF ROWS (+400 min, all on long trips)
+  loss             slope clean slope dirty    shift
+  squared  (MSE)         2.516       4.097   +1.581
+  absolute (MAE)         2.499       2.504   +0.005
+  pinball  (q90)         2.536       2.602   +0.066
+  Huber                  2.502       2.506   +0.004
+
+COUNTS: THE LINK FUNCTION IS PART OF THE TASK DEFINITION
+   ad spend  true mean      OLS  Poisson GLM
+        0.0       0.67    -0.69         0.69
+        0.5       1.05     0.70         1.07
+        1.5       2.59     3.49         2.61
+        3.0       9.97     7.67         9.92
+  OLS predicts -0.69 signups at zero spend; a count cannot be negative.
+```
+
+> Key Takeaways
+> - A problem is regression when differences between target values are
+>   meaningful and proportional, not just because the target is stored as a
+>   number.
+> - A regression model predicts a summary of `P(y | x)`, and the loss picks
+>   the summary: squared error gives the mean, absolute error the median,
+>   pinball loss a quantile, and Huber a mean that resists outliers.
+> - On a skewed target these summaries are quite different, so choosing the
+>   loss is a business decision about what the number promises.
+> - With squared error, a few bad rows far from the centre can pull the whole
+>   fit. Absolute and Huber losses barely notice them.
+> - If the target is dirty and you cannot clean it first, use L1 or Huber
+>   loss.
+> - For limited targets such as counts, build the limit into the model with a
+>   link function and a matching loss. Do not clip a least-squares output.
+> - RMSE has a floor set by the noise, and `R²` depends on the spread of the
+>   test set, so neither means much on its own.
+
+> 🧪 Practice
+> 1. Simulate a right-skewed target, fit squared, absolute and pinball losses,
+>    and check that each one recovers the summary it should.
+> 2. For each of those fits, report the share of held-out rows that are above
+>    the prediction. Which one would you quote to a customer?
+> 3. Add a large error to 1% of the rows and record how far each loss moves.
+>    Repeat with the bad rows placed near the centre of the data and explain
+>    the difference.
+> 4. Fit a least-squares model to a count target and count the negative test
+>    predictions. Refit as a Poisson GLM and compare.
+> 5. Fit a model on `log(y)`, exponentiate the predictions, and show that they
+>    are too low on average compared with `y`. Measure the gap.
+> 6. Compute `R²` for one fixed model on a narrow and a wide slice of the same
+>    test set. Explain in one sentence why the two numbers differ.
+> 7. Interview: A pricing model has a good RMSE, but the business says it
+>    under-quotes expensive jobs. What do you check first? (Hint: which
+>    summary of the target did the loss estimate, and which one did the
+>    business want?)
+
+#### Regression Algorithms and the Bets They Make
+
+Every regression model family makes a guess about the shape of the
+relationship between features and target. That guess is what makes the family
+strong, and it is also how the family fails.
+
+| Family                          | The guess                                          | Extrapolates | Needs scaling   | Interactions | Covered in |
+| ------------------------------- | -------------------------------------------------- | ------------ | --------------- | ------------ | ---------- |
+| linear / GLM                    | a weighted sum, possibly through a link            | yes          | only for penalties | by hand   | 10.1       |
+| ridge / lasso / elastic net     | the same, with most coefficients small or zero     | yes          | **yes**         | by hand      | 10.1       |
+| polynomial and splines          | a smooth curve of limited flexibility              | badly        | for penalties   | by hand      | 10.1       |
+| decision tree                   | the target is constant inside boxes                | **no**       | no              | automatic    | 10.1       |
+| random forest                   | many noisy box surfaces, averaged                  | **no**       | no              | automatic    | 10.1       |
+| gradient boosting               | a sum of many small box-shaped corrections         | **no**       | no              | automatic    | 10.1       |
+| k-nearest neighbours            | nearby rows have similar targets                   | **no**       | **yes**         | automatic    | 10.2       |
+| SVR / kernel methods            | smooth, under a similarity measure you choose      | weakly       | **yes**         | automatic    | 10.2       |
+| gaussian process                | a distribution over smooth functions               | weakly, and says it is unsure | **yes** | automatic | 10.1 |
+
+The **extrapolation** column surprises people. Trees, forests, boosted
+ensembles and k-NN all predict by *averaging training targets*. So their
+predictions can never go outside the range of targets seen in training. This
+is simple arithmetic, not a quirk of any library. When the input moves past
+the edge of the training data, the prediction becomes a flat line at whatever
+value the last leaf held. A linear model keeps going instead. That is either
+exactly right or confidently wrong, but at least it is a line you can
+question.
+
+The **scaling** column describes the same idea as a preprocessing rule. Any
+model that computes distances or dot products compares features with each
+other: k-NN, SVR, kernel methods, Gaussian processes, and every penalised
+linear model. A column measured in square centimetres then outweighs one
+measured in years, without any warning. Trees split on one feature at a time,
+so rescaling a feature does not affect them.
+
+For tabular data, gradient boosting is the usual default. The useful question
+is not "can anything beat it?" but "what do I need that it cannot give me?":
+
+- Coefficients you can explain in a meeting: use a linear model.
+- Predictions outside the training range: use a parametric model.
+- Reliable uncertainty from a few hundred rows: use a Gaussian process.
+
+```python
+import numpy as np
+from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, WhiteKernel
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from sklearn.svm import SVR
+from sklearn.tree import DecisionTreeRegressor
+
+rng = np.random.default_rng(3)
+
+# Energy use against outdoor temperature and floor area. The temperature
+# response is U-shaped -- heating below, cooling above -- and the two
+# predictors interact, which is the bet each family gets right or wrong.
+def truth(temp, area):
+    return 40 + 0.9 * (temp - 18) ** 2 + 0.06 * area + 0.004 * area * np.abs(temp - 18)
+
+n = 1200
+temp = rng.uniform(2, 30, n)
+area = rng.uniform(50, 400, n)
+y = truth(temp, area) + rng.normal(0, 8, n)
+X = np.column_stack([temp, area])
+
+# Test sets: one INSIDE the training range, one OUTSIDE it. The second is
+# where the families stop agreeing.
+t_in = rng.uniform(2, 30, 600)
+a_in = rng.uniform(50, 400, 600)
+X_in = np.column_stack([t_in, a_in])
+y_in = truth(t_in, a_in) + rng.normal(0, 8, 600)
+
+t_out = rng.uniform(30, 38, 400)                    # hotter than anything seen
+a_out = rng.uniform(50, 400, 400)
+X_out = np.column_stack([t_out, a_out])
+y_out = truth(t_out, a_out) + rng.normal(0, 8, 400)
+
+models = {
+    "linear (OLS)": LinearRegression(),
+    "polynomial deg 2": make_pipeline(PolynomialFeatures(2), Ridge(alpha=1.0)),
+    "decision tree": DecisionTreeRegressor(min_samples_leaf=15, random_state=0),
+    "random forest": RandomForestRegressor(n_estimators=300, min_samples_leaf=2,
+                                           random_state=0),
+    "gradient boosting": HistGradientBoostingRegressor(max_iter=400, random_state=0),
+    "k-NN (k=10)": make_pipeline(StandardScaler(), KNeighborsRegressor(10)),
+    "SVR (RBF)": make_pipeline(StandardScaler(), SVR(C=300, epsilon=2.0)),
+    "gaussian process": make_pipeline(
+        StandardScaler(),
+        GaussianProcessRegressor(kernel=RBF(2.0) + WhiteKernel(1.0),
+                                 normalize_y=True, random_state=0)),
+}
+
+print("IN-RANGE ACCURACY vs EXTRAPOLATION (irreducible noise sd = 8.0)")
+print(f"  {'family':19s} {'RMSE in':>8s} {'RMSE out':>9s} {'pred @ 35C/200sqm':>18s}")
+probe = np.array([[35.0, 200.0]])
+true_probe = truth(35.0, 200.0)
+for name, m in models.items():
+    m.fit(X, y)
+    r_in = root_mean_squared_error(y_in, m.predict(X_in))
+    r_out = root_mean_squared_error(y_out, m.predict(X_out))
+    p = m.predict(probe)[0]
+    print(f"  {name:19s} {r_in:8.2f} {r_out:9.2f} {p:18.1f}")
+print(f"  {'TRUTH':19s} {'':8s} {'':9s} {true_probe:18.1f}")
+
+# --- What the tree families actually do beyond the edge of the data. ---
+print("\nWHY THE TREES FAIL OUTSIDE THE RANGE (area fixed at 200 sqm)")
+print(f"  {'temp':>5s} {'truth':>8s} {'forest':>8s} {'poly deg 2':>11s}")
+rf = models["random forest"]
+poly = models["polynomial deg 2"]
+for t in [26, 29, 30, 32, 35, 38]:
+    q = np.array([[float(t), 200.0]])
+    flag = "" if t <= 30 else "   <- outside training range"
+    print(f"  {t:5d} {truth(t, 200.0):8.1f} {rf.predict(q)[0]:8.1f}"
+          f" {poly.predict(q)[0]:11.1f}{flag}")
+print("  A tree's prediction is an average of training rows, so it is bounded")
+print("  by what it has already seen. It cannot rise past its largest leaf.")
+
+# --- Scaling: the same bet, stated as a preprocessing requirement. ---
+print("\nSENSITIVITY TO FEATURE SCALING (area in sqm vs in sq cm)")
+X_cm = np.column_stack([temp, area * 10000])
+X_in_cm = np.column_stack([t_in, a_in * 10000])
+for name in ["random forest", "k-NN (k=10)", "SVR (RBF)"]:
+    base = models[name]
+    a = root_mean_squared_error(y_in, base.predict(X_in))
+    if name == "random forest":
+        alt = RandomForestRegressor(n_estimators=300, min_samples_leaf=2,
+                                    random_state=0)
+    elif name.startswith("k-NN"):
+        alt = KNeighborsRegressor(10)                # deliberately unscaled
+    else:
+        alt = SVR(C=300, epsilon=2.0)                # deliberately unscaled
+    alt.fit(X_cm, y)
+    b = root_mean_squared_error(y_in, alt.predict(X_in_cm))
+    note = "scale-free" if abs(b - a) < 1.0 else "SCALE-DEPENDENT"
+    print(f"  {name:19s} RMSE {a:7.2f} -> {b:7.2f}   {note}")
+```
+
+```text
+IN-RANGE ACCURACY vs EXTRAPOLATION (irreducible noise sd = 8.0)
+  family               RMSE in  RMSE out  pred @ 35C/200sqm
+  linear (OLS)           57.60    269.81               44.2
+  polynomial deg 2        8.13     10.12              329.8
+  decision tree          11.24    138.53              188.4
+  random forest           9.05    136.68              187.6
+  gradient boosting       9.62    140.24              186.5
+  k-NN (k=10)            10.50    146.26              180.2
+  SVR (RBF)               8.28     67.19              280.1
+  gaussian process        8.26     61.78              282.2
+  TRUTH                                               325.7
+
+WHY THE TREES FAIL OUTSIDE THE RANGE (area fixed at 200 sqm)
+   temp    truth   forest  poly deg 2
+     26    116.0    119.8       114.6
+     29    169.7    172.2       169.1
+     30    191.2    187.6       191.1
+     32    239.6    187.6       240.8   <- outside training range
+     35    325.7    187.6       329.8   <- outside training range
+     38    428.0    187.6       435.9   <- outside training range
+  A tree's prediction is an average of training rows, so it is bounded
+  by what it has already seen. It cannot rise past its largest leaf.
+
+SENSITIVITY TO FEATURE SCALING (area in sqm vs in sq cm)
+  random forest       RMSE    9.05 ->    9.05   scale-free
+  k-NN (k=10)         RMSE   10.50 ->   68.40   SCALE-DEPENDENT
+  SVR (RBF)           RMSE    8.28 ->   69.07   SCALE-DEPENDENT
+```
+
+> Key Takeaways
+> - Each regression family assumes a shape for the relationship. That
+>   assumption is both its strength and how it fails.
+> - Trees, forests, boosting and k-NN predict by averaging training targets,
+>   so their predictions stay inside the training target range and go flat
+>   outside the training inputs.
+> - Linear and polynomial models always extrapolate. That helps when the trend
+>   is real and hurts when it is not.
+> - Distance-based models, kernel models and penalised linear models need
+>   features on similar scales. Trees do not, because they split one feature
+>   at a time.
+> - A linear model can lose clearly inside the training range and still be
+>   the right choice if new data goes beyond it.
+> - Gradient boosting is a good default for tabular data. Move away from it
+>   when you need something specific: interpretability, extrapolation or
+>   uncertainty.
+
+> 🧪 Practice
+> 1. Fit a forest and a quadratic model on a limited input range, predict well
+>    beyond it, and plot both. Find the exact value where the forest stops
+>    changing.
+> 2. Show that a forest never predicts outside `[min(y), max(y)]` of the
+>    training set, and explain why in one sentence about leaves.
+> 3. Multiply one feature by 10,000 and refit k-NN, SVR and a random forest.
+>    Report which RMSEs change.
+> 4. On data with a known interaction, compare a linear model without an
+>    interaction term against a depth-3 tree. Then add the interaction by hand
+>    and compare again.
+> 5. Fit a Gaussian process on 200 rows and plot its prediction interval
+>    inside and outside the training range. Describe what happens at the edge.
+> 6. Build a time-ordered dataset with a trend, fit a forest and a linear
+>    model, and test on a later time window. Explain the result to someone who
+>    thinks boosting always wins.
+> 7. Interview: A demand model does very well in backtests but under-predicts
+>    every month of an unusually hot summer. It is a gradient-boosted
+>    ensemble. What is happening, and what is the smallest fix? (Hint: what
+>    can a boosted tree output when the input is beyond every split it
+>    learned?)
 
 #### Simple and Multiple Linear Regression
 
-Suppose you want to predict house prices from square footage. You plot the
-points, see a broadly upward trend, and want the line that best summarises it.
-"Best" needs a definition, and the one that has dominated for two centuries is
-**least squares**: choose the line that minimises the sum of squared vertical
-distances from the points to the line.
+Say you want to predict house prices from floor area. You plot the points, see
+a general upward trend, and want the line that best summarises it. "Best"
+needs a definition. The standard one, used for two centuries, is **least
+squares**: pick the line that makes the sum of squared vertical distances
+from the points to the line as small as possible.
 
-Why squared distances and not absolute ones? Three reasons, in descending
-order of honesty. Squared error is differentiable everywhere, so the minimum
-has a closed-form solution instead of requiring an iterative search. It is the
-maximum-likelihood estimate when errors are normally distributed. And it
-predicts the **conditional mean** of the target, which is usually the summary
-people want. The cost is sensitivity to outliers, since squaring makes one
-point ten units away matter as much as a hundred points one unit away.
+Why squared distances rather than plain distances? Three reasons:
+
+- Squared error is smooth everywhere, so the best line can be found with a
+  formula instead of a search.
+- It is the maximum-likelihood answer when the errors are normally
+  distributed.
+- It predicts the **mean** of the target for each input, which is usually
+  what people want.
+
+The downside is sensitivity to outliers. Squaring means one point 10 units
+away counts as much as a hundred points 1 unit away.
 
 **Simple** regression has one predictor: `y = b0 + b1*x`. **Multiple**
-regression has several: `y = b0 + b1*x1 + b2*x2 + ... + bp*xp`. The word
-"linear" refers to linearity in the *parameters*, not the features. Adding
-`x^2` as a column keeps the model linear, because it is still a weighted sum;
-what you cannot do and stay linear is write `x^b1`.
+regression has several: `y = b0 + b1*x1 + b2*x2 + ... + bp*xp`. "Linear" means
+linear in the *coefficients*, not in the features. Adding `x^2` as a column
+keeps the model linear, because the prediction is still a weighted sum. What
+you cannot do and stay linear is something like `x^b1`.
 
-The extension from one predictor to many is where the interesting thing
-happens. In simple regression, `b1` is the average change in `y` per unit of
-`x`. In multiple regression, `b1` is the average change in `y` per unit of
-`x1` **with every other predictor held fixed**. That qualifier is the entire
-difference, and it is why the same predictor can have wildly different
-coefficients in the two models. Bigger houses sit on bigger plots; regress
-price on square footage alone and the slope quietly includes the value of the
-extra land, because land rides along with floor space. Add plot size to the
-model and square footage is left with only the part of the effect that is
-genuinely its own.
+The key change happens when you go from one predictor to several. In simple
+regression, `b1` is the average change in `y` for one more unit of `x`. In
+multiple regression, `b1` is the average change in `y` for one more unit of
+`x1` **while all the other predictors stay the same**. That condition is the
+whole difference, and it is why the same predictor can get very different
+coefficients in the two models.
 
-Geometrically, fitting is **projection**. Think of the observed target `y` as
-a single vector in n-dimensional space, one dimension per row. The predictors
-span a lower-dimensional subspace: every possible prediction the model can
-make lives in there. Least squares finds the point in that subspace closest to
-`y`, which is its perpendicular projection. The residual vector is what is
-left over, and it is orthogonal to every predictor by construction. That is
-not a coincidence to be verified; it is what "closest" means.
+Example: bigger houses tend to sit on bigger plots. If you regress price on
+floor area alone, the slope also includes the value of the extra land, because
+land comes along with floor area. Add plot size to the model, and floor area
+keeps only the part of the effect that really belongs to it.
+
+There is also a geometric view: fitting is **projection**. Treat the target
+`y` as one vector with one entry per row. All the predictions the model could
+possibly make form a flat subspace spanned by the predictor columns. Least
+squares picks the point in that subspace closest to `y`, which is the
+perpendicular projection of `y` onto it. The residuals are what is left over,
+and they are always at right angles (orthogonal) to every predictor. You do
+not need to check this; it is what "closest" means.
 
 ```python
 import numpy as np
@@ -48872,106 +49327,100 @@ print(f"\n||y_hat|| via beta {np.linalg.norm(X @ beta):.3f}"
 ```
 
 > Key Takeaways
-> - Least squares minimises squared vertical distance, which yields a
->   closed-form solution and predicts the conditional mean, at the cost of
->   outlier sensitivity.
-> - "Linear" means linear in the parameters, so `x^2` and `log(x)` columns are
->   perfectly legal predictors.
-> - A simple-regression slope answers "what do houses with more space cost"; a
->   multiple-regression slope answers "what does more space cost, holding
->   everything else fixed". These are different questions with different
->   answers.
-> - The difference between the two is exactly the omitted path through the
->   left-out variable, which is why the gap is predictable rather than
->   mysterious.
-> - Fitting is orthogonal projection onto the column space of the design
->   matrix, and residuals orthogonal to the predictors are a property of the
->   solution, not a diagnostic to check.
-> - R^2 never falls when you add predictors, including pure noise, so it
->   describes fit and can never justify a model choice.
+> - Least squares minimises squared vertical distance. This has a direct
+>   formula and predicts the mean, but it is sensitive to outliers.
+> - "Linear" means linear in the coefficients, so columns like `x^2` and
+>   `log(x)` are allowed.
+> - A simple-regression slope answers "how much more do bigger houses cost?".
+>   A multiple-regression slope answers "how much does extra space cost when
+>   everything else stays the same?". These are different questions with
+>   different answers.
+> - The gap between the two slopes is exactly the effect that flows through
+>   the variable you left out, so it can be predicted.
+> - Fitting is a perpendicular projection onto the space of the predictor
+>   columns, so residuals are always orthogonal to the predictors.
+> - R^2 never goes down when you add predictors, even pure noise, so it
+>   describes fit and cannot be used to choose a model.
 
 > 🧪 Practice
 > 1. Fit a two-predictor regression with the normal equations using
->    `np.linalg.solve` and confirm your coefficients match `LinearRegression`.
-> 2. Generate data where two predictors are correlated, then verify
->    numerically that the simple slope equals the partial slope plus the
->    omitted path.
-> 3. Add ten columns of pure noise to a regression and report R^2, adjusted
->    R^2, and cross-validated R^2 before and after. Explain why only one of
->    the three behaves sensibly.
-> 4. Confirm that the residual vector is orthogonal to every column of the
->    design matrix, and explain what breaks if you forget the intercept
->    column.
-> 5. Interview: A colleague reports that square footage has a coefficient of
->    153 in one model and 119 in another, on the same data, and asks which one
->    is the bug. What do you tell them? (Hint: nothing is a bug. Ask what else
->    is in each model and what question each coefficient answers.)
+>    `np.linalg.solve` and check that the coefficients match
+>    `LinearRegression`.
+> 2. Generate two correlated predictors and check numerically that the simple
+>    slope equals the multiple-regression slope plus the effect through the
+>    left-out variable.
+> 3. Add ten columns of pure noise and report R^2, adjusted R^2 and
+>    cross-validated R^2 before and after. Explain why only one of the three
+>    behaves sensibly.
+> 4. Check that the residuals are orthogonal to every column of the design
+>    matrix, and explain what breaks if you forget the intercept column.
+> 5. Interview: A colleague finds that floor area has a coefficient of 153 in
+>    one model and 119 in another, on the same data, and asks which one is the
+>    bug. What do you say? (Hint: neither is a bug. Ask what else is in each
+>    model and what question each coefficient answers.)
 
 
 #### Assumptions and Diagnostics
 
-Least squares will return coefficients for any data you feed it. Whether those
-coefficients mean anything depends on assumptions that the fitting procedure
-never checks. The single most useful thing to internalise is that **the
-assumptions serve different purposes, and violating one costs you something
-specific**. People memorise the list and then treat all five as equally fatal,
-which is both wrong and paralysing.
+Least squares returns coefficients for any data you give it. Whether they mean
+anything depends on assumptions that the fitting never checks. The key point
+is that **each assumption protects something different, and breaking it costs
+you something specific**. People often memorise the list and then treat all
+five as equally fatal. That is wrong, and it stops them from making progress.
 
-| Assumption                  | What it buys                 | What a violation costs                                       |
+| Assumption                  | What it gives you            | What breaking it costs                                       |
 | --------------------------- | ---------------------------- | ------------------------------------------------------------ |
-| Linearity in parameters     | Correct functional form      | Biased coefficients and biased predictions                   |
-| Independent errors          | Valid standard errors        | Intervals far too narrow; point estimates survive            |
-| Constant error variance     | Valid standard errors        | Intervals wrong in both directions; estimates survive        |
-| Normally distributed errors | Exact small-sample inference | Almost nothing at large n, by the CLT                        |
-| No perfect collinearity     | A unique solution            | No solution at all; near-violation destabilises coefficients |
+| Linearity in coefficients   | The right shape of model     | Wrong coefficients and wrong predictions                     |
+| Independent errors          | Correct standard errors      | Intervals far too narrow; the estimates are still fine       |
+| Constant error variance     | Correct standard errors      | Intervals wrong in either direction; the estimates are still fine |
+| Normally distributed errors | Exact results on small samples | Almost nothing once n is large                             |
+| No perfect collinearity     | One unique answer            | No answer at all; near-collinearity makes coefficients unstable |
 
-Read the right-hand column carefully. Only **linearity** biases the
-coefficients. Independence and homoscedasticity corrupt the *uncertainty*
-around them, which matters enormously if you are doing inference and not at
-all if you only need predictions ranked. Normality is the assumption people
+Look at the last column. Only **linearity** makes the coefficients wrong.
+Independence and constant variance damage the *uncertainty* around the
+coefficients. That matters a lot if you want confidence intervals and p-values,
+and not at all if you only need predictions. Normality is the assumption people
 worry about most and the one that matters least in practice.
 
-**Linearity** is checked with residuals against fitted values. If the model
-has captured the shape, the residuals are a structureless band around zero. A
-U-shape means a missing quadratic term; a fan means something else. This is
-the plot to look at first, every time.
+**Linearity**: plot residuals against fitted values. If the model has the
+right shape, the residuals form a flat band around zero with no pattern. A
+U-shape means a squared term is missing. A fan shape points to a different
+problem (see constant variance below). Always look at this plot first.
 
-**Independence** is usually violated by structure you already know about: time
-ordering, repeated measurements on the same person, observations clustered
-within stores or schools. A Durbin-Watson statistic detects serial
-correlation, but the honest check is to ask what generated the rows. If the
-same customer appears eleven times, the errors are not independent no matter
-what the statistic says.
+**Independence** usually breaks because of structure you already know about:
+rows ordered in time, the same person measured several times, or rows grouped
+by store or school. The Durbin-Watson statistic detects correlation between
+neighbouring errors, but the better check is to ask how the rows were
+produced. If the same customer appears eleven times, the errors are not
+independent, whatever the statistic says.
 
-**Homoscedasticity** means constant error variance. Spending data violates it
-routinely: rich customers vary more in absolute terms than poor ones. The
-Breusch-Pagan test formalises the residuals-vs-fitted fan by regressing
-squared residuals on the predictors. The fix is usually not to abandon the
-model but to use **heteroscedasticity-robust standard errors**, which keep the
-coefficients and repair only the inference.
+**Constant variance** (homoscedasticity) means the errors have the same spread
+everywhere. Spending data often breaks it: rich customers vary more, in
+absolute terms, than poor ones. The Breusch-Pagan test checks the fan shape
+formally by regressing squared residuals on the predictors. The usual fix is
+not to drop the model but to use **heteroscedasticity-robust standard
+errors**. They keep the coefficients and only correct the uncertainty.
 
-**Normality of errors** is needed for exact t and F distributions in small
-samples. With a few hundred rows the central limit theorem takes over and the
-intervals are approximately right regardless. Check it with a quantile
-comparison against a normal, and care about it only when n is small or the
-tails are extreme.
+**Normal errors** are needed for exact t and F tests on small samples. With a
+few hundred rows, the central limit theorem takes over and the intervals are
+about right anyway. Check it with a Q-Q plot against a normal distribution,
+and only worry when n is small or the tails are extreme.
 
-**Multicollinearity** is the one that surprises people. Perfectly correlated
-predictors make the normal equations singular and there is no unique answer.
-*Nearly* correlated predictors are worse, because you get an answer with no
-warning at all: the fit is fine, the predictions are fine, and the individual
-coefficients swing wildly with tiny changes in the data. The **variance
-inflation factor** quantifies it: VIF for a predictor is `1/(1-R^2)` from
-regressing that predictor on all the others. Above 5 is worth a look, above 10
-conventionally signals trouble. Crucially, collinearity is a problem for
-*interpretation*, not for prediction.
+**Multicollinearity** is the one that surprises people. If two predictors are
+perfectly correlated, there is no unique answer. If they are *nearly*
+correlated, it is worse, because you get an answer with no warning. The fit is
+good and the predictions are good, but the individual coefficients jump around
+with tiny changes in the data. The **variance inflation factor (VIF)** measures
+this: regress one predictor on all the others, and VIF = `1/(1-R^2)`. Above 5
+is worth a look; above 10 is usually a problem. Collinearity hurts
+*interpretation*, not prediction.
 
-Finally, **influence**. A single row can move a coefficient more than the
-other thousand combined. **Leverage** measures how unusual a row's predictor
-values are; **Cook's distance** combines leverage with the size of the
-residual to measure how much the fitted model would move if the row were
-deleted. High leverage alone is harmless if the point sits on the trend.
-Leverage plus a big residual is the dangerous combination.
+Finally, **influence**. One row can move a coefficient more than a thousand
+others put together. **Leverage** measures how unusual a row's predictor values
+are. **Cook's distance** combines leverage with the size of the residual, and
+estimates how much the fit would change if that row were removed. High
+leverage alone is harmless if the point lies on the trend. High leverage plus a
+big residual is the dangerous combination.
 
 ```python
 import numpy as np
@@ -49156,92 +49605,89 @@ for name, s_cl, s_rb in zip(["const", "x1", "x2", "x1^2"],
 ```
 
 > Key Takeaways
-> - Only the linearity assumption biases coefficients; independence and
->   constant variance corrupt standard errors while leaving the estimates
+> - Only the linearity assumption makes coefficients wrong. Independence and
+>   constant variance break the standard errors but leave the estimates
 >   usable.
-> - Residuals versus fitted values is the first plot to draw, and a systematic
->   curve in it means the functional form is wrong.
-> - Heteroscedasticity is fixed with robust standard errors rather than by
->   abandoning the model, and robust errors can be smaller as well as larger.
-> - Near-collinearity gives you an answer with no warning: the fit stays good
->   while individual coefficients become unstable and uninterpretable.
-> - Collinearity harms interpretation, not prediction, so it is only a problem
->   when you intend to read the coefficients.
-> - High leverage matters only when paired with a large residual, which is
->   what Cook's distance combines into one number.
-> - Normality of errors is the least important assumption at realistic sample
->   sizes and the one most often over-tested.
+> - Plot residuals against fitted values first. A curve in that plot means
+>   the model has the wrong shape.
+> - Fix non-constant variance with robust standard errors, not by dropping the
+>   model. Robust errors can be smaller as well as larger.
+> - Near-collinearity gives no warning: the fit stays good while individual
+>   coefficients become unstable and meaningless.
+> - Collinearity hurts interpretation, not prediction, so it only matters if
+>   you plan to read the coefficients.
+> - High leverage only matters together with a large residual. Cook's
+>   distance combines the two into one number.
+> - Normal errors are the least important assumption at realistic sample
+>   sizes, and the one people test most.
 
 > 🧪 Practice
-> 1. Simulate data with a genuine quadratic relationship, fit a linear model,
->    and produce the binned residual table that reveals the curve.
-> 2. Compute variance inflation factors for a design where one column is a
->    near-copy of another, then show that predictions are unharmed while the
->    two coefficients explode in opposite directions.
+> 1. Simulate data with a real quadratic relationship, fit a straight line,
+>    and build the binned residual table that shows the curve.
+> 2. Compute VIFs for a design where one column is almost a copy of another.
+>    Show that predictions are fine while the two coefficients blow up in
+>    opposite directions.
 > 3. Implement HC0 robust standard errors from the sandwich formula and
->    compare them with classical ones on heteroscedastic data.
-> 4. Compute leverage and Cook's distance by hand, delete the
->    highest-influence row, and report how far each coefficient moves.
+>    compare them with the classical ones on data with non-constant variance.
+> 4. Compute leverage and Cook's distance by hand, remove the most
+>    influential row, and report how far each coefficient moves.
 > 5. Interview: Your model has an R^2 of 0.94 and a residual plot that fans
->    out to the right. Your manager wants to know whether the reported 95%
->    confidence interval on the key coefficient can be trusted. What do you
->    say? (Hint: separate what the violation does to the estimate from what it
->    does to the interval around it.)
+>    out to the right. Your manager asks whether the 95% confidence interval
+>    on the key coefficient can be trusted. What do you say? (Hint: separate
+>    what the problem does to the estimate from what it does to the interval.)
 
 
 #### Ridge and Lasso Regression
 
-Least squares has one objective: make the training residuals small. When you
-have sixty features and a hundred and twenty rows, it can make them very small
-indeed, by contorting itself to fit noise. The model has more freedom than the
-data can discipline.
+Least squares has one goal: make the training residuals small. With sixty
+features and only a hundred and twenty rows, it can make them very small by
+bending itself to fit the noise. The model has more freedom than the data can
+control.
 
-**Regularisation** adds a second term to the objective that penalises large
-coefficients. The model now has to justify every unit of coefficient magnitude
-with a matching reduction in error, and features that only help by fitting
-noise cannot pay the toll. This is the bias-variance trade-off of chapter 9.2
-made explicit and tunable: you accept a little bias in exchange for a large
-reduction in variance.
+**Regularisation** adds a second term that penalises large coefficients. Now
+every bit of coefficient size has to be paid for with a real drop in error.
+Features that only help by fitting noise cannot pay. This is the bias-variance
+trade-off from chapter 9.2, made explicit and adjustable: you accept a little
+bias to get a big drop in variance.
 
-Two penalties dominate, and their difference is entirely in the shape.
+There are two main penalties. The only difference between them is their shape.
 
-**Ridge** (L2) penalises the sum of squared coefficients: `minimise ||y -
-Xb||^2 + alpha * sum(b_j^2)`. The derivative of `b^2` is `2b`, which shrinks
-toward zero proportionally and therefore never reaches it. Ridge shrinks all
-coefficients smoothly and keeps every feature.
+**Ridge** (L2) penalises the sum of squared coefficients:
+`minimise ||y - Xb||^2 + alpha * sum(b_j^2)`. The pull towards zero is
+proportional to the coefficient's size, so it gets weaker as the coefficient
+shrinks and never reaches zero. Ridge shrinks all coefficients smoothly and
+keeps every feature.
 
-**Lasso** (L1) penalises the sum of absolute values: `minimise ||y - Xb||^2 +
-alpha * sum(|b_j|)`. The derivative of `|b|` is a constant `sign(b)`, so the
-pull toward zero does not weaken as the coefficient gets small. Coefficients
-hit exactly zero and stay there. Lasso performs **feature selection** as a
-side effect of its penalty shape.
+**Lasso** (L1) penalises the sum of absolute values:
+`minimise ||y - Xb||^2 + alpha * sum(|b_j|)`. The pull towards zero has the
+same strength no matter how small the coefficient is. So coefficients reach
+exactly zero and stay there. As a side effect, lasso does **feature
+selection**.
 
-The geometric picture is the standard one and it is genuinely illuminating.
-Draw the contours of the squared-error surface as ellipses around the
-unpenalised solution, and draw the constraint region the penalty implies. For
-L2 the region is a circle; for L1, a diamond with corners on the axes. The
-penalised solution is where the expanding ellipse first touches the region. A
-circle has no corners, so contact happens at a generic point with all
-coordinates non-zero. A diamond's corners sit exactly on the axes, and
-touching at a corner means some coefficient is exactly zero.
+A picture helps. Draw the squared-error surface as ellipses around the
+unpenalised answer, and draw the region the penalty allows. For L2, that region
+is a circle. For L1, it is a diamond with its corners on the axes. The
+penalised answer is where the growing ellipse first touches the region. A
+circle has no corners, so the touch point usually has every coordinate
+non-zero. A diamond's corners lie on the axes, and touching a corner means some
+coefficient is exactly zero.
 
-Three practical rules follow.
+Three practical rules:
 
-**Standardise first, always.** The penalty is expressed in coefficient units.
-A feature measured in cents has coefficients a hundred times smaller than the
-same feature in dollars, and would be penalised a hundred times less. Put the
-scaler inside your pipeline so it is refitted on each cross-validation fold.
+**Always standardise first.** The penalty is measured in coefficient units. A
+feature in cents has coefficients a hundred times smaller than the same feature
+in dollars, so it gets penalised a hundred times less. Put the scaler inside
+your pipeline so it is refitted on every cross-validation fold.
 
-**Do not penalise the intercept.** It shifts the whole prediction and
-shrinking it toward zero just biases predictions toward zero.
+**Do not penalise the intercept.** It shifts every prediction, and shrinking it
+towards zero just pulls all predictions towards zero.
 
-**Lasso is unstable when features are correlated.** If two predictors are
-near-duplicates carrying one shared effect, lasso picks one of them
-arbitrarily, and *which* one flips with the sample. Ridge splits the effect
-between them and reports the same split every time. This is why a lasso's
-selected feature set is not a discovery about the world, and why **elastic
-net** exists: it mixes both penalties, so correlated features enter or leave
-as a group.
+**Lasso is unstable when features are correlated.** If two predictors are near
+copies that share one effect, lasso picks one of them more or less at random,
+and *which* one changes from sample to sample. Ridge splits the effect between
+them and gives the same split each time. So a lasso's chosen features are not a
+discovery about the world. **Elastic net** exists for this reason: it mixes
+both penalties, so correlated features enter or leave the model together.
 
 ```python
 import numpy as np
@@ -49399,597 +49845,104 @@ print("lasso kept:", [int(i) for i in np.flatnonzero(np.abs(lcv[-1].coef_) > 1e-
 | ----------------------- | -------------------------------- | ------------------------------- | -------------------------------- |
 | Coefficients reach zero | Never                            | Yes                             | Yes                              |
 | Selects features        | No                               | Yes                             | Yes, in groups                   |
-| Handles p > n           | Yes                              | Yes, keeps at most n            | Yes                              |
-| Correlated predictors   | Splits the effect                | Picks one arbitrarily           | Keeps them together              |
+| Works with p > n        | Yes                              | Yes, keeps at most n            | Yes                              |
+| Correlated predictors   | Splits the effect                | Picks one at random             | Keeps them together              |
 | Stable selection        | N/A                              | No                              | Better                           |
-| Closed-form solution    | Yes                              | No, needs coordinate descent    | No                               |
+| Direct formula          | Yes                              | No, needs coordinate descent    | No                               |
 | Use when                | Many small effects, collinearity | Few real effects, want sparsity | Correlated groups, want sparsity |
 
 > Key Takeaways
-> - Regularisation buys a large variance reduction with a small bias increase,
->   which is why a penalised model can fit the training set worse and the test
->   set better.
-> - Ridge shrinks proportionally and never reaches zero; lasso's constant pull
->   drives coefficients to exactly zero, which is feature selection as a
->   by-product.
-> - The L1 constraint region has corners on the axes and the L2 region does
->   not, which is the whole geometric explanation of sparsity.
-> - Standardise inside the pipeline before penalising, because the penalty is
->   in coefficient units and therefore unit-dependent.
-> - Lasso's choice among correlated predictors is arbitrary and flips with the
->   sample, so never present a lasso's selected set as a discovery.
-> - Elastic net exists to keep correlated features together, and alpha is
->   always chosen by cross-validation rather than by rule of thumb.
+> - Regularisation trades a small increase in bias for a large drop in
+>   variance. That is why a penalised model can fit the training set worse
+>   and the test set better.
+> - Ridge shrinks coefficients in proportion and never reaches zero. Lasso's
+>   constant pull sets some coefficients to exactly zero, which selects
+>   features.
+> - The L1 region has corners on the axes and the L2 region does not. That is
+>   the whole geometric reason lasso produces zeros.
+> - Standardise inside the pipeline before penalising, because the penalty
+>   depends on the units of each feature.
+> - Among correlated predictors, lasso's choice is random and changes with
+>   the sample, so never present lasso's selected features as a discovery.
+> - Elastic net keeps correlated features together. Always choose alpha by
+>   cross-validation, not by rule of thumb.
 
 > 🧪 Practice
-> 1. Fit ridge with alphas spanning six orders of magnitude and plot or
->    tabulate the coefficient path, confirming nothing reaches zero.
+> 1. Fit ridge with alphas across six orders of magnitude and plot or
+>    tabulate the coefficient paths. Confirm that none reaches zero.
 > 2. Do the same for lasso and report the alpha at which each feature drops
 >    out.
-> 3. Fit lasso with and without a preceding `StandardScaler` on data where one
->    feature is multiplied by a thousand, and explain the difference in the
->    selected set.
-> 4. Construct two features with correlation 0.99 sharing one true effect,
->    bootstrap the fit fifty times, and report how often lasso picks each one.
-> 5. Compare `RidgeCV` with 5-fold cross-validation against its leave-one-out
->    default on a small noisy dataset, and explain why they can disagree.
-> 6. Interview: A stakeholder wants "the ten features that drive churn" and
->    you have fitted a lasso that selected exactly ten. What caveat do you
->    attach before they act on it? (Hint: refit on a bootstrap resample and
->    see whether the same ten come back.)
-
-
-#### Logistic Regression
-
-The target is now a yes or no: did the customer churn, is the transaction
-fraudulent, did the patient relapse. The obvious move is to code it as 0 and 1
-and run least squares. That fails for a reason worth stating precisely: a
-straight line is unbounded, so it will predict 1.3 and -0.2, and those are not
-probabilities. Clipping them does not help, because a clipped line still
-implies a constant effect per unit of `x`, and a constant effect is impossible
-near a boundary -- you cannot increase a probability of 0.98 by 0.1.
-
-What you want is a function that is roughly linear in the middle and flattens
-as it approaches 0 and 1. **Logistic regression** gets there by changing what
-is modelled as linear. Instead of the probability, model the **log-odds**:
-
-```text
-odds  = p / (1 - p)             ranges over (0, infinity)
-logit = log(p / (1 - p))        ranges over (-infinity, +infinity)
-```
-
-The logit takes a probability confined to the unit interval and stretches it
-over the whole real line, which is exactly where a linear function is free to
-live. So the model is `logit(p) = b0 + b1*x1 + ... + bp*xp`, and inverting the
-logit gives the prediction: `p = 1 / (1 + exp(-z))`, the **sigmoid**.
-
-The consequences of that choice run through everything else.
-
-**Interpretation is multiplicative on the odds.** A coefficient of 0.56 means
-one more unit multiplies the odds by `exp(0.56) = 1.76`, a 76% increase in the
-odds. It does *not* mean a 76% increase in probability, and it does not mean a
-fixed number of percentage points. The same coefficient moves probability by
-14 points starting from 0.50 and by 1.5 points starting from 0.02, because the
-sigmoid is steep in the middle and flat at the ends. This trips people up
-constantly.
-
-**There is no closed-form solution.** Least squares has one because the
-objective is quadratic. The logistic likelihood is not, so fitting is
-iterative --  Newton's method, which in this context is called **iteratively
-reweighted least squares**. The good news is the log-likelihood is concave, so
-there is one global optimum and convergence is reliable.
-
-**The decision boundary is linear.** The model is linear in log-odds, and the
-boundary is where `p = 0.5`, meaning `z = 0`, which is a hyperplane in feature
-space. Logistic regression cannot separate classes that are not linearly
-separable in the features you gave it. If the boundary is a circle, you need
-`x1^2 + x2^2` as a column.
-
-**Perfect separation breaks the fit.** If some feature splits the classes with
-no overlap, the likelihood increases without bound as the coefficient grows:
-steeper is always better, forever. There is no maximum, so the unpenalised
-estimate does not exist. In practice you see enormous coefficients and a
-convergence warning. Regularisation solves it by making the objective bounded,
-which is one reason sklearn regularises logistic regression by default.
-
-```python
-import numpy as np
-import pandas as pd
-from sklearn.linear_model import LinearRegression, LogisticRegression
-
-rng = np.random.default_rng(11)
-
-# --- WHY NOT LINEAR REGRESSION ON A 0/1 TARGET. ---
-x = np.r_[rng.normal(2, 1, 200), rng.normal(6, 1, 200)]
-y = np.r_[np.zeros(200), np.ones(200)].astype(int)
-lin = LinearRegression().fit(x.reshape(-1, 1), y)
-print("LINEAR REGRESSION ON A BINARY TARGET")
-for v in [-2, 0, 4, 8, 12]:
-    print(f"  x={v:3d} -> predicted 'probability' {lin.predict([[v]])[0]:+.3f}")
-print("Values outside [0, 1] are not probabilities, and no amount of clipping")
-print("makes the fitted line a model of a probability.")
-
-# --- THE LOGISTIC MODEL: linear in the LOG-ODDS, not in the probability. ---
-def sigmoid(z):
-    return 1.0 / (1.0 + np.exp(-z))
-
-print("\nTHE LINK  logit(p) = log(p / (1-p)) is linear; p is not")
-print(f"  {'log-odds':>9s} {'odds':>8s} {'p':>7s}")
-for z in [-3, -1, 0, 1, 3]:
-    print(f"  {z:9.1f} {np.exp(z):8.3f} {sigmoid(z):7.3f}")
-
-# --- FITTING BY MAXIMUM LIKELIHOOD: no closed form, so iterate. ---
-# Newton / IRLS by hand, to show there is no mystery inside `.fit()`.
-Xd = np.column_stack([np.ones(len(x)), x])
-beta = np.zeros(2)
-for it in range(8):
-    p = sigmoid(Xd @ beta)
-    W = p * (1 - p)                              # variance of each Bernoulli
-    grad = Xd.T @ (y - p)                        # score
-    H = -(Xd * W[:, None]).T @ Xd                # Hessian, negative definite
-    beta = beta - np.linalg.solve(H, grad)       # Newton step
-    ll = np.sum(y * np.log(p + 1e-12) + (1 - y) * np.log(1 - p + 1e-12))
-    print(f"  iter {it}: beta {np.round(beta, 4)}  log-likelihood {ll:9.4f}")
-
-sk = LogisticRegression(C=np.inf, max_iter=2000).fit(x.reshape(-1, 1), y)
-print(f"\nhand-rolled IRLS : {np.round(beta, 4)}")
-print(f"sklearn          : {np.round(np.r_[sk.intercept_, sk.coef_[0]], 4)}")
-
-# --- INTERPRETATION: exp(coefficient) is an ODDS RATIO, not a probability. ---
-df = pd.DataFrame({
-    "tenure_months": rng.integers(1, 60, 3000),
-    "monthly_spend": rng.gamma(4, 15, 3000),
-    "support_tickets": rng.poisson(1.2, 3000),
-})
-logit = (-1.0 - 0.045 * df["tenure_months"] + 0.010 * df["monthly_spend"]
-         + 0.55 * df["support_tickets"])
-df["churn"] = (rng.random(3000) < sigmoid(logit)).astype(int)
-
-feats = ["tenure_months", "monthly_spend", "support_tickets"]
-m = LogisticRegression(C=np.inf, max_iter=4000).fit(df[feats], df["churn"])
-print(f"\nchurn base rate {df['churn'].mean():.3f}")
-print(f"{'feature':18s} {'coef':>8s} {'odds ratio':>11s}  reading")
-for f, c in zip(feats, m.coef_[0]):
-    direction = "increases" if c > 0 else "decreases"
-    print(f"  {f:16s} {c:+8.4f} {np.exp(c):11.3f}  one more unit {direction}"
-          f" the odds by {abs(np.exp(c) - 1) * 100:.1f}%")
-
-# The same coefficient means different things in probability terms depending on
-# where you start, which is why "marginal effect" is not one number.
-print("\nTHE SAME COEFFICIENT, DIFFERENT PROBABILITY EFFECTS")
-coef = m.coef_[0][2]                             # support_tickets
-for base_p in [0.02, 0.10, 0.50, 0.90]:
-    base_logit = np.log(base_p / (1 - base_p))
-    new_p = sigmoid(base_logit + coef)
-    print(f"  p={base_p:.2f} -> {new_p:.3f}  (+{(new_p-base_p)*100:5.2f} pp)")
-print("Constant on the log-odds scale is NOT constant on the probability")
-print("scale. The effect is largest near p = 0.5 and vanishes at the extremes.")
-
-# --- PERFECT SEPARATION: the likelihood has no maximum. ---
-xs = np.array([1., 2., 3., 4., 6., 7., 8., 9.])
-ys = np.array([0, 0, 0, 0, 1, 1, 1, 1])
-print("\nPERFECT SEPARATION (classes never overlap)")
-for C in [0.1, 1.0, 1e4, 1e6]:
-    ms = LogisticRegression(C=C, max_iter=200000).fit(xs.reshape(-1, 1), ys)
-    print(f"  C={C:<8g} slope {ms.coef_[0][0]:12.4f}"
-          f"  P(y=1 | x=5) {ms.predict_proba([[5.]])[0,1]:.4f}")
-print("With no penalty the slope diverges: pushing it higher always improves")
-print("the likelihood. Regularisation is what makes the estimate exist.")
-```
-
-```text
-  WHY NOT A STRAIGHT LINE ON A 0/1 TARGET
-
-    x=-2 -> "probability" -0.716      Values outside [0,1] are not
-    x= 0 -> "probability" -0.314      probabilities, and clipping them
-    x= 4 -> "probability" +0.491      does not repair the constant-effect
-    x= 8 -> "probability" +1.296      assumption that produced them.
-    x=12 -> "probability" +2.100
-
-  THE SIGMOID: LINEAR IN LOG-ODDS, SATURATING IN PROBABILITY
-
-    p
-  1.0 |                        _____---------
-      |                  ___--
-      |               _--                      flat: a big change in z
-  0.5 +- - - - - - -*- - - - - - - - - - -     barely moves p
-      |          _--   steep: small changes
-      |    ___--       in z move p a lot
-  0.0 |----                                    flat again
-      +----------------------------------> z = b0 + b1*x
-     -6      -3       0       3       6
-
-    log-odds     odds        p
-        -3.0    0.050    0.047
-        -1.0    0.368    0.269
-         0.0    1.000    0.500
-        +1.0    2.718    0.731
-        +3.0   20.086    0.953
-
-  FITTING: NEWTON / IRLS CONVERGES IN A HANDFUL OF STEPS
-
-    iter 0: beta [ -3.25  0.80]  log-likelihood -277.2589
-    iter 3: beta [-10.35  2.61]  log-likelihood  -32.6223
-    iter 6: beta [-14.60  3.73]  log-likelihood  -23.7191
-    iter 7: beta [-14.63  3.73]  log-likelihood  -23.6975
-
-    hand-rolled IRLS [-14.6308  3.7335]
-    sklearn          [-14.6326  3.7339]
-
-  READING THE COEFFICIENTS (churn base rate 0.299)
-
-    feature            coef   odds ratio   reading
-    tenure_months   -0.0405        0.960   4.0% lower odds per month
-    monthly_spend   +0.0078        1.008   0.8% higher odds per dollar
-    support_tickets +0.5645        1.759   75.9% higher odds per ticket
-
-  THE TRAP: CONSTANT ON THE ODDS SCALE IS NOT CONSTANT IN PROBABILITY
-  (one extra support ticket, coefficient +0.5645)
-
-    starting p     new p     change
-        0.02       0.035    + 1.46 pp
-        0.10       0.163    + 6.35 pp
-        0.50       0.637    +13.75 pp     <- largest effect near 0.5
-        0.90       0.941    + 4.06 pp
-
-  PERFECT SEPARATION: THE LIKELIHOOD HAS NO MAXIMUM
-
-    C=0.1      slope   0.4398
-    C=1        slope   1.1364
-    C=1e4      slope   6.9256      weaker penalty -> steeper slope,
-    C=1e6      slope   7.8370      with no limit. the unpenalised
-                                   estimate does not exist.
-```
-
-> Key Takeaways
-> - Linear regression on a binary target predicts impossible values because an
->   unbounded line cannot model a bounded probability.
-> - Logistic regression is linear in the log-odds, and the sigmoid is just the
->   inverse of that link.
-> - `exp(coefficient)` is an odds ratio: a multiplicative effect on the odds,
->   never an additive effect on the probability.
-> - The same coefficient produces its largest probability change near p = 0.5
->   and almost none near 0 or 1, so marginal effects are not a single number.
-> - Fitting is iterative because the likelihood is not quadratic, but it is
->   concave, so the optimum is unique.
-> - The decision boundary is a hyperplane, so non-linear boundaries require
->   engineered features.
-> - Perfect separation makes the unpenalised estimate diverge, and
->   regularisation is what makes it exist.
-
-> 🧪 Practice
-> 1. Fit least squares to a binary target and report how many predictions fall
->    outside [0, 1].
-> 2. Implement IRLS from the gradient and Hessian and confirm your
->    coefficients match `LogisticRegression` to four decimals.
-> 3. Take a fitted coefficient and compute the probability change it implies
->    starting from base rates of 0.01, 0.1, 0.5, and 0.9. Write one sentence
->    explaining the pattern.
-> 4. Build a dataset whose true boundary is a circle, show logistic regression
->    fails on the raw features, then add squared terms and show it succeeds.
-> 5. Construct perfectly separable data and report the fitted slope at C =
->    0.01, 1, 100, and 10000.
-> 6. Interview: A model reports an odds ratio of 3.0 for a rare outcome with a
->    1% base rate, and a product manager concludes the feature "triples the
->    risk". Are they right? (Hint: work out the probability implied by
->    tripling the odds when p = 0.01, then try it when p = 0.4.)
-
-
-#### Multinomial and Ordinal Regression
-
-Binary logistic regression handles two outcomes. Real targets often have more:
-which of three plans a visitor chooses, which of five stars a reviewer awards,
-which of forty products a customer buys. The crucial distinction is whether
-the classes have an **order**, because order is information and throwing it
-away costs accuracy.
-
-**Multinomial (softmax) regression** handles unordered classes. Give each
-class its own linear score and convert the scores to probabilities that sum to
-one:
-
-```text
-P(y = k | x) = exp(z_k) / sum over all j of exp(z_j)     where z_k = b_k . x
-```
-
-Only *differences* between the score vectors are identified -- add the same
-constant to every `z_k` and the probabilities are unchanged -- so one class is
-conventionally fixed as the **reference** and the others read as comparisons
-against it. A coefficient of +0.80 for "referred" in the "pro" row means being
-referred multiplies the odds of pro *relative to free* by `exp(0.80)`. There
-is no such thing as an absolute class coefficient.
-
-The alternative is **one-vs-rest**: train K independent binary classifiers,
-each asking "class k or not". It is simpler and parallelises trivially, and it
-works well in practice, but its probabilities come from separate fits and do
-not sum to one, so they must be renormalised after the fact. Softmax couples
-the classes in a single likelihood and gets coherent probabilities by
-construction. Use softmax when you need calibrated multi-class probabilities;
-one-vs-rest is fine when you need a ranking or a top-1 label, and it is the
-only option for some base learners.
-
-**Ordinal regression** handles ordered classes, and this is where the
-interesting modelling decision lives. Given satisfaction ratings 1 to 5, you
-have three choices, two of which are wrong.
-
-Treating them as **unordered** classes works but wastes information. You
-estimate four separate slope vectors when one would do, and nothing prevents
-the fitted model from saying that quality raises P(rating=5) and P(rating=2)
-while lowering P(rating=4) -- an incoherent pattern the data would never
-support if the ordering were enforced.
-
-Treating the codes as **numbers** and running linear regression assumes the
-gap from 1 to 2 equals the gap from 4 to 5, which is an assumption about the
-respondents' psychology that you have no basis for. It also predicts 4.3 and
-5.7, which are not ratings.
-
-The right model is the **proportional odds** (ordered logit) model. Posit a
-latent continuous score `z = b.x + error` and a set of thresholds. You observe
-rating `k` when `z` falls between threshold `k-1` and threshold `k`. This
-implies cumulative logits with **one shared slope** and **one intercept per
-threshold**:
-
-```text
-logit P(Y <= k | x) = alpha_k - b . x        for k = 1 .. K-1
-```
-
-The shared `b` is what encodes the ordering: a feature that pushes the latent
-score up shifts probability toward higher categories at every cut
-simultaneously. The name "proportional odds" comes from that sharing -- the
-odds ratio for a feature is the same at every threshold. That is a real
-assumption and it is checkable: fit the K-1 cumulative logits separately and
-see whether their slopes agree. If they diverge sharply, you need a
-partial-proportional- odds model or should fall back to nominal.
-
-```python
-import numpy as np
-import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from sklearn.multiclass import OneVsRestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, confusion_matrix
-
-rng = np.random.default_rng(5)
-
-# --- THREE UNORDERED CLASSES: which plan does a visitor pick? ---
-n = 3000
-visits = rng.gamma(3, 4, n)
-referred = rng.integers(0, 2, n)
-# Utility of each class; the chosen class is the argmax plus noise (a logit model
-# in disguise -- this is exactly the story softmax regression tells).
-util = np.column_stack([
-    np.zeros(n),                                  # free, the reference class
-    -2.0 + 0.16 * visits + 0.8 * referred,        # pro
-    -4.5 + 0.22 * visits + 0.3 * referred,        # premium
-])
-plan = np.argmax(util + rng.gumbel(0, 1, util.shape), axis=1)  # Gumbel -> softmax
-X = np.column_stack([visits, referred])
-names = ["free", "pro", "premium"]
-print("class counts:", {k: int(v) for k, v in zip(names, np.bincount(plan))})
-
-Xtr, Xte, ytr, yte = train_test_split(X, plan, test_size=0.3, random_state=0,
-                                      stratify=plan)
-
-# --- MULTINOMIAL (softmax) VS ONE-VS-REST. ---
-multi = LogisticRegression(C=np.inf, max_iter=5000).fit(Xtr, ytr)
-ovr = OneVsRestClassifier(LogisticRegression(C=np.inf, max_iter=5000)).fit(Xtr, ytr)
-print(f"\nmultinomial accuracy  {accuracy_score(yte, multi.predict(Xte)):.4f}")
-print(f"one-vs-rest accuracy  {accuracy_score(yte, ovr.predict(Xte)):.4f}")
-
-# The structural difference: softmax probabilities sum to 1 by construction,
-# OvR probabilities do not, so they must be renormalised after the fact.
-raw_ovr = np.column_stack([e.predict_proba(Xte[:3])[:, 1]
-                           for e in ovr.estimators_])
-print("\nprobabilities for three test rows")
-print("  multinomial (sums to 1 by construction)")
-for row in multi.predict_proba(Xte[:3]):
-    print(f"    {np.round(row, 3)}  sum {row.sum():.3f}")
-print("  one-vs-rest (three independent fits, sum is whatever it is)")
-for row in raw_ovr:
-    print(f"    {np.round(row, 3)}  sum {row.sum():.3f}")
-
-# Coefficients in a softmax model are read RELATIVE TO A REFERENCE class.
-# sklearn returns one row per class, which is over-parameterised: only the
-# DIFFERENCES between rows are identified. Subtract the reference row to read.
-coef = multi.coef_ - multi.coef_[0]
-print("\nsoftmax coefficients, expressed against 'free' as the reference")
-print(f"  {'class':10s} {'visits':>9s} {'referred':>10s}")
-for i, nm in enumerate(names):
-    print(f"  {nm:10s} {coef[i][0]:+9.4f} {coef[i][1]:+10.4f}")
-print("  true values: pro +0.160 / +0.800, premium +0.220 / +0.300")
-
-# --- ORDERED CLASSES: satisfaction 1..5. Order is information. ---
-m2 = 4000
-quality = rng.normal(0, 1, m2)
-latent = 1.1 * quality + rng.logistic(0, 1, m2)   # a latent continuous score
-cuts = np.array([-2.0, -0.7, 0.6, 2.1])           # four thresholds -> five levels
-rating = np.searchsorted(cuts, latent)            # 0..4, an ORDERED outcome
-print("\nrating counts:", np.bincount(rating))
-
-# WRONG OPTION 1: treat it as nominal. Throws the ordering away, and pays for it
-# by estimating 4 slopes where the ordinal model estimates 1.
-nominal = LogisticRegression(C=np.inf, max_iter=5000).fit(
-    quality.reshape(-1, 1), rating)
-print("\nnominal multinomial: one slope per class, order ignored")
-print("  slopes:", np.round(nominal.coef_.ravel(), 3),
-      "<- monotone here only by luck, nothing enforces it")
-
-# WRONG OPTION 2: treat it as a number. Assumes the gap 1->2 equals 4->5.
-from sklearn.linear_model import LinearRegression
-lin = LinearRegression().fit(quality.reshape(-1, 1), rating)
-print(f"\nlinear on the codes: slope {lin.coef_[0]:.3f}")
-print(f"  predicts {lin.predict([[3.0]])[0]:.2f} for quality=3.0,"
-      " but the scale stops at 4")
-
-# RIGHT: PROPORTIONAL ODDS. Model P(Y <= k) with a SHARED slope and one
-# intercept per threshold. Fit it as K-1 binary logits, tied by construction.
-print("\nPROPORTIONAL ODDS  fit K-1 cumulative logits, check the shared slope")
-print(f"  {'cut':14s} {'intercept':>10s} {'slope':>8s}")
-slopes = []
-for k in range(4):
-    binary = (rating > k).astype(int)             # P(Y > k)
-    b = LogisticRegression(C=np.inf, max_iter=5000).fit(
-        quality.reshape(-1, 1), binary)
-    slopes.append(b.coef_[0][0])
-    print(f"  P(Y > {k})       {b.intercept_[0]:+10.4f} {b.coef_[0][0]:+8.4f}")
-print(f"  slopes are {np.round(slopes, 3)}: close together, which is the")
-print(f"  proportional-odds assumption HOLDING. Pooled slope {np.mean(slopes):.3f}"
-      f" vs true 1.100")
-print("  If these slopes differed sharply, the assumption would be violated and")
-print("  a partial-proportional-odds or nominal model would be needed.")
-```
-
-```text
-  UNORDERED CLASSES: SOFTMAX VS ONE-VS-REST
-
-    class counts: free 1254, pro 1516, premium 230
-
-    multinomial accuracy  0.6467
-    one-vs-rest accuracy  0.6500      accuracy is essentially tied
-
-    probabilities for three test rows
-      multinomial                       one-vs-rest
-      [0.634 0.317 0.049]  sum 1.000    [0.633 0.324 0.057]  sum 1.013
-      [0.567 0.401 0.033]  sum 1.000    [0.569 0.431 0.035]  sum 1.035
-      [0.100 0.699 0.202]  sum 1.000    [0.102 0.721 0.185]  sum 1.008
-                           ^^^^^^^^^                         ^^^^^^^^^
-                    coherent by construction          needs renormalising
-
-  SOFTMAX COEFFICIENTS ARE ONLY MEANINGFUL AGAINST A REFERENCE
-
-    class       visits   referred
-    free       +0.0000    +0.0000     <- the reference, fixed at zero
-    pro        +0.1559    +0.7965        (true +0.160 / +0.800)
-    premium    +0.1926    +0.2548        (true +0.220 / +0.300)
-
-  ORDERED CLASSES: THE LATENT-SCORE PICTURE
-
-    latent z = b.x + error, cut by thresholds into observed categories
-
-      rating 1  |  rating 2  |  rating 3  |  rating 4  |  rating 5
-    ------------+------------+------------+------------+------------> z
-             a_1          a_2          a_3          a_4
-
-    Raising b.x slides the whole distribution RIGHT, so probability
-    moves toward higher ratings at every cut at once. One slope, four
-    intercepts. That is the entire model.
-
-  THE THREE OPTIONS, ON THE SAME DATA (true slope 1.100)
-
-    nominal multinomial   slopes [-1.064 -0.597 -0.035 +0.618 +1.079]
-                          4 free slope vectors; monotone here by luck only
-
-    linear on the codes   slope 0.674, predicts 4.03 at quality=3.0
-                          but the scale stops at 4, and 1->2 is assumed
-                          to equal 4->5
-
-    proportional odds     cut        intercept    slope
-                          P(Y > 0)     +1.9677   +1.0713
-                          P(Y > 1)     +0.7052   +1.1586
-                          P(Y > 2)     -0.6073   +1.1809
-                          P(Y > 3)     -2.0902   +1.0432
-
-                          slopes agree (1.04 to 1.18) -> the proportional
-                          odds assumption HOLDS. pooled 1.114 vs true 1.100
-```
-
-|                                  | Nominal multinomial         | Proportional odds            | Linear on codes                  |
-| -------------------------------- | --------------------------- | ---------------------------- | -------------------------------- |
-| Uses the ordering                | No                          | Yes                          | Yes, plus more                   |
-| Parameters per feature           | K-1                         | 1                            | 1                                |
-| Assumes equal spacing            | No                          | No                           | Yes                              |
-| Predictions are valid categories | Yes                         | Yes                          | No                               |
-| Extra assumption to check        | None                        | Proportional odds            | Equal interval spacing           |
-| Use when                         | Classes genuinely unordered | Ordered with a shared effect | Rarely; only as a rough baseline |
-
-> Key Takeaways
-> - Whether the classes are ordered is the first question, and getting it
->   wrong either wastes information or invents an assumption.
-> - Softmax probabilities sum to one by construction; one-vs-rest
->   probabilities come from independent fits and must be renormalised.
-> - Only differences between softmax coefficient vectors are identified, so
->   every multi-class coefficient is a comparison against a reference class.
-> - Treating ordered ratings as unordered costs K-1 times the parameters and
->   permits incoherent fitted patterns.
-> - Treating ordered ratings as numbers assumes equal spacing between adjacent
->   levels and predicts values that are not categories.
-> - Proportional odds uses one shared slope and one intercept per threshold,
->   which is exactly what encodes the ordering.
-> - The proportional-odds assumption is testable by fitting the cumulative
->   logits separately and comparing their slopes.
-
-> 🧪 Practice
-> 1. Fit softmax and one-vs-rest to the same three-class problem and report
->    both accuracy and the row sums of the predicted probabilities.
-> 2. Re-express a fitted softmax model's coefficients against a different
->    reference class and confirm the predicted probabilities are unchanged.
-> 3. Simulate ordinal data from a latent score with known thresholds, then fit
->    the K-1 cumulative logits and check whether the slopes agree.
-> 4. Simulate ordinal data that deliberately violates proportional odds by
->    giving one cut a different slope, and show your check detects it.
-> 5. Compare the accuracy of a nominal model against a proportional-odds model
->    on ordinal data with only 300 rows, and explain why the gap widens as n
->    shrinks.
-> 6. Interview: A survey team asks you to predict Net Promoter Score responses
->    on a 0-10 scale and suggests linear regression because "it is just a
->    number". What is your counter-proposal and why? (Hint: ask whether the
->    step from 6 to 7 means the same thing as the step from 9 to 10 in how NPS
->    is actually used.)
+> 3. Fit lasso with and without a `StandardScaler` on data where one feature
+>    is multiplied by a thousand. Explain why the selected features differ.
+> 4. Build two features with correlation 0.99 that share one true effect.
+>    Bootstrap the fit fifty times and report how often lasso picks each one.
+> 5. Compare `RidgeCV` with 5-fold cross-validation against its default
+>    leave-one-out on a small noisy dataset. Explain why they can disagree.
+> 6. Interview: A stakeholder wants "the ten features that drive churn", and
+>    your lasso selected exactly ten. What warning do you give before they act
+>    on it? (Hint: refit on a bootstrap sample and see whether the same ten
+>    come back.)
 
 
 #### Generalized Linear Models
 
-Linear regression, logistic regression, and Poisson regression look like three
-separate techniques. They are one technique with three settings, and seeing
-the unification makes each of them easier to use and tells you what to reach
-for when the target is none of the usual shapes.
+Linear regression, logistic regression and Poisson regression look like three
+different methods. They are really one method with three settings. Seeing this
+makes each one easier to use, and tells you what to do when the target does
+not fit the usual shapes. (Logistic regression is covered in detail in 10.2.)
 
-A **generalized linear model** has exactly three components.
+A **generalized linear model (GLM)** has three parts:
 
-1. A **linear predictor**: `z = b0 + b1*x1 + ... + bp*xp`. Identical in every
-GLM. This is the part you are fitting. 2. A **link function** `g`, which
-connects the mean of the target to the linear predictor: `g(mu) = z`. The
-link's job is to map the natural range of `mu` onto the whole real line, so
-the linear part is unconstrained. 3. A **distribution** from the exponential
-family, which specifies how the target varies around its mean. This sets the
-variance function and therefore how much weight each observation gets.
+1. A **linear predictor**: `z = b0 + b1*x1 + ... + bp*xp`. This is the same in
+   every GLM, and it is the part you fit.
+2. A **link function** `g` that connects the target's mean to the linear
+   predictor: `g(mu) = z`. Its job is to stretch the allowed range of `mu`
+   over the whole number line, so the linear part has no limits.
+3. A **distribution** that describes how the target varies around its mean.
+   It sets the variance function, which decides how much weight each row
+   gets.
 
-Fill in the three slots and you recover the familiar models. Gaussian
-distribution with an identity link is linear regression. Binomial with a logit
-link is logistic regression. Poisson with a log link is count regression.
-Nothing else changes: the same iteratively reweighted least squares fits all
-of them.
+Fill in the three parts and you get the familiar models:
 
-The **link** is chosen for the range of the target. Counts are non-negative,
-so a log link keeps predictions positive -- and makes coefficients
-multiplicative, so `exp(b)` is a rate ratio. Probabilities are in [0, 1], so a
-logit link maps to the reals. Positive skewed amounts want a log link for the
-same reason counts do.
+- Normal distribution + identity link = linear regression.
+- Binomial distribution + logit link = logistic regression.
+- Poisson distribution + log link = count regression.
 
-The **variance function** is the part people skip and should not. It is what
-makes a GLM different from just transforming the target and running least
-squares. A Poisson's variance equals its mean, so a row with an expected count
-of 10 is expected to vary far more than one with an expected count of 0.5. The
-GLM knows this and weights accordingly. Ordinary least squares assumes
-constant variance and misweights every row.
+Nothing else changes. The same algorithm (iteratively reweighted least squares)
+fits all of them.
 
-Two refinements matter constantly in practice.
+**Choose the link to match the target's range.** Counts cannot be negative, so
+a log link keeps predictions positive. It also makes coefficients
+multiplicative, so `exp(b)` is a rate ratio. Probabilities lie between 0 and 1,
+so a logit link maps them onto the whole number line. Positive, skewed amounts
+(such as spend) also use a log link, for the same reason as counts.
 
-**Offsets** handle exposure. If policies are observed for different lengths of
-time, the count of claims scales with the observation window, and you want
-coefficients that describe the *rate*. Put `log(exposure)` into the linear
-predictor with its coefficient fixed at 1 -- that is an offset, not a feature.
-Fitting it as a feature estimates a slope for exposure, which answers a
-different and usually wrong question.
+**The variance function** is the part people skip, and should not. It is what
+makes a GLM different from transforming the target and running least squares.
+In a Poisson model, the variance equals the mean. So a row expected to have 10
+events should vary much more than a row expected to have 0.5. The GLM knows
+this and weights rows to match. Ordinary least squares assumes every row has
+the same variance and gets the weights wrong.
 
-**Overdispersion** is the failure mode of Poisson models. The assumption
-variance = mean is strong, and real count data usually varies more than that
-because of unobserved heterogeneity. The diagnostic is the Pearson chi-squared
-statistic divided by residual degrees of freedom, which should sit near 1.
-When it comes back at 2, your standard errors are too small by roughly
-`sqrt(2)`, so a coefficient that looks significant at p = 0.01 may not be. The
-coefficients themselves stay approximately unbiased. Fix it with a
-quasi-Poisson scale correction or, better, a **negative binomial** model,
-which adds a dispersion parameter and models the extra variation explicitly.
+Two extras come up all the time.
+
+**Offsets handle exposure.** Suppose insurance policies are watched for
+different lengths of time. The number of claims grows with the length of the
+window, and you want coefficients that describe the claim *rate*. Add
+`log(exposure)` to the linear predictor with its coefficient fixed at 1. That
+is an offset, not a feature. If you add it as a feature, the model estimates
+its own slope for exposure, which answers a different (and usually wrong)
+question.
+
+**Overdispersion** is the common way Poisson models fail. "Variance equals
+mean" is a strong assumption. Real count data usually varies more, because of
+differences between rows that you did not measure. To check, divide the Pearson
+chi-squared statistic by the residual degrees of freedom; the result should be
+close to 1. If it is 2, your standard errors are too small by about `sqrt(2)`,
+so a coefficient that looks significant at p = 0.01 may not be. The
+coefficients themselves stay roughly correct. Fix it with a quasi-Poisson
+correction or, better, a **negative binomial** model, which adds a parameter
+for the extra variation.
 
 ```python
 import numpy as np
@@ -50171,108 +50124,105 @@ print("\n", table.to_string(index=False))
 ```
 
 > Key Takeaways
-> - A GLM is a linear predictor, a link function that fixes the range of the
->   mean, and a distribution that fixes the variance, and the familiar models
->   are just three fillings of those slots.
-> - The link is chosen for the range of the target; a log link additionally
->   makes coefficients multiplicative, so `exp(b)` is a rate or amount ratio.
-> - The variance function is what distinguishes a GLM from transforming the
->   target, because it decides how each row is weighted during fitting.
-> - Exposure belongs in the model as an offset with coefficient fixed at 1,
->   not as a feature with an estimated slope.
-> - Poisson assumes variance equals mean; check dispersion, and when it
->   exceeds 1 fix the standard errors or move to negative binomial.
-> - Overdispersion corrupts inference while leaving coefficients roughly
->   unbiased, so it is a p-value problem rather than an estimate problem.
-> - A Gamma GLM models `E[y]` while OLS on `log(y)` models `E[log y]`, whose
->   exponential is the geometric mean and is biased low for the expectation.
+> - A GLM is a linear predictor, a link function that sets the range of the
+>   mean, and a distribution that sets the variance. Linear, logistic and
+>   Poisson regression are three choices of those parts.
+> - Choose the link to match the target's range. A log link also makes
+>   coefficients multiplicative, so `exp(b)` is a ratio.
+> - The variance function is what separates a GLM from transforming the
+>   target, because it decides how much weight each row gets.
+> - Put exposure in the model as an offset with a coefficient fixed at 1, not
+>   as a feature with its own slope.
+> - Poisson assumes variance equals mean. Check the dispersion, and if it is
+>   above 1, correct the standard errors or switch to negative binomial.
+> - Overdispersion breaks p-values but leaves coefficients roughly correct.
+> - A Gamma GLM models `E[y]`, while least squares on `log(y)` models
+>   `E[log y]`. Exponentiating that gives the geometric mean, which is too low
+>   as an estimate of the mean.
 
 > 🧪 Practice
 > 1. Fit a Poisson GLM with varying exposure, once with exposure as an offset
->    and once as an ordinary feature, and compare the recovered coefficients
->    against the truth.
+>    and once as a normal feature. Compare the coefficients with the true
+>    values.
 > 2. Compute the dispersion statistic on clean Poisson data and on data with
->    injected heterogeneity, and report the implied correction factor for the
->    standard errors.
-> 3. Simulate right-skewed positive amounts, fit both a Gamma GLM and OLS on
->    the log, and compare the mean of each model's predictions against the
->    actual mean.
-> 4. Fit ordinary least squares to a low-rate count target and report the
->    fraction of negative predictions plus the residual variance by fitted
->    quintile.
+>    added variation between rows. Report how much the standard errors need
+>    to be corrected.
+> 3. Simulate right-skewed positive amounts, fit a Gamma GLM and least squares
+>    on the log, and compare each model's average prediction with the true
+>    average.
+> 4. Fit least squares to a count target with low rates. Report the share of
+>    negative predictions and the residual variance in each fifth of the
+>    fitted values.
 > 5. Fit a Tweedie model to a target that is exactly zero for most rows and
->    continuous above zero, and explain why neither Poisson nor Gamma alone
->    would fit.
-> 6. Interview: Your Poisson model of support tickets per account reports that
->    a feature is significant at p = 0.001, and the dispersion statistic is
->    3.4. What do you do before reporting it? (Hint: what does dispersion do
->    to the standard error, and what does that do to the p-value?)
+>    positive otherwise. Explain why neither Poisson nor Gamma alone would fit.
+> 6. Interview: Your Poisson model of support tickets per account says a
+>    feature is significant at p = 0.001, and the dispersion statistic is 3.4.
+>    What do you do before reporting it? (Hint: what does dispersion do to the
+>    standard error, and what does that do to the p-value?)
 
 
 #### Interpreting Coefficients
 
-A fitted linear model hands you a table of numbers, and almost every way of
-reading that table is wrong in some specific way. This topic is a catalogue of
-the mistakes, because interpretation is where linear models earn their keep
-and where they are most often misused.
+A fitted linear model gives you a table of numbers, and there are many ways to
+read that table wrongly. This topic lists the common mistakes. Interpretation
+is the main reason to use a linear model, and also where it is most often
+misused.
 
-**Start with the units.** A coefficient is the change in `y` per one-unit
-change in `x`. Express education in months instead of years and the
-coefficient divides by twelve. Nothing about the model changed. It follows
-that the *size* of a coefficient says nothing about the importance of a
-feature until you know both the unit and the spread of the column.
+**Start with the units.** A coefficient is the change in `y` for one more unit
+of `x`. Measure education in months instead of years and the coefficient
+becomes twelve times smaller, even though nothing about the model changed. So
+the *size* of a coefficient tells you nothing about how important a feature is
+until you know the unit and the spread of that column.
 
-**Log transforms change the reading.** This is the highest-value thing on the
-list because log targets and log features are everywhere.
+**Logs change how you read coefficients.** This matters most, because log
+targets and log features are everywhere.
 
 | Form        | Regression         | Read the coefficient as | Meaning                            |
 | ----------- | ------------------ | ----------------------- | ---------------------------------- |
 | level-level | `y` on `x`         | `b`                     | units of y per unit of x           |
 | log-level   | `log y` on `x`     | `100*b` percent         | percent change in y per unit of x  |
 | level-log   | `y` on `log x`     | `b/100`                 | units of y per 1% change in x      |
-| log-log     | `log y` on `log x` | `b`                     | percent per percent, an elasticity |
+| log-log     | `log y` on `log x` | `b`                     | percent per percent (an elasticity) |
 
-The log-level percentage reading is an approximation. The exact figure is
-`exp(b) - 1`, and the two agree to within a rounding error below about 0.10
-and diverge sharply above it: a coefficient of 0.50 is a 65% increase, not
-50%.
+The log-level percentage is an approximation. The exact figure is
+`exp(b) - 1`. The two agree closely when `b` is below about 0.10 and differ a
+lot above that: a coefficient of 0.50 means a 65% increase, not 50%.
 
-**Standardising makes magnitudes comparable.** Divide each predictor by its
-standard deviation and the coefficient becomes "the effect of a one-SD move",
-which puts predictors measured in dollars and years on the same footing. Two
-caveats. It makes magnitudes comparable, not causal -- a bigger standardised
-coefficient is not a stronger cause. And do not standardise binary predictors,
-because "a one-SD change in being female" is not something that can happen to
-a person; leave dummies in their natural 0/1 units.
+**Standardising makes sizes comparable.** Divide each predictor by its standard
+deviation, and each coefficient becomes "the effect of a one-standard-deviation
+change". Predictors in dollars and in years can then be compared. Two
+warnings. Comparable does not mean causal: a bigger standardised coefficient
+is not a stronger cause. And do not standardise binary predictors, because "a
+one-SD change in being female" cannot happen to anyone. Leave 0/1 columns as
+they are.
 
-**Every categorical coefficient is a comparison.** With one level dropped as
-the baseline, each dummy coefficient is the difference from *that* level.
-There is no coefficient for the baseline because it is the zero point. Drop a
-different level and every number in the table changes while the model's
-predictions do not, so always state which level is the reference.
+**Every categorical coefficient is a comparison.** One level is dropped as the
+baseline, and each dummy coefficient is the difference from *that* level. The
+baseline has no coefficient because it is the zero point. Drop a different
+level and every number in the table changes, while the predictions stay the
+same. Always say which level is the baseline.
 
-**Interactions and polynomials do not have "a" coefficient.** Once the model
-contains `exper` and `exper^2`, the effect of one more year of experience is
-`b_exper + 2*b_exper_sq*exper`, which depends on where you are. Reporting the
-`exper` coefficient alone reports the slope at zero experience, which is
-usually the least interesting point on the curve. Report marginal effects at
-meaningful values instead.
+**Interactions and polynomials do not have a single coefficient.** If the model
+has `exper` and `exper^2`, the effect of one more year of experience is
+`b_exper + 2*b_exper_sq*exper`, which depends on how much experience someone
+already has. The `exper` coefficient alone is the slope at zero experience,
+usually the least interesting point. Report the effect at meaningful values
+instead.
 
-**The Table 2 fallacy** is the most consequential error and the least known.
-Suppose you fit one regression and read every row as a causal effect. That
-cannot be right, because the set of controls that identifies the effect of one
-variable will generally *break* the identification of another. If occupation
-mediates the effect of education on wages, then the education coefficient with
-occupation in the model is a **direct** effect and without it is a **total**
-effect. Both are legitimate; neither is "the" effect. A regression table is
-built to answer one causal question, and the other rows are adjustments, not
-findings. Chapter 3.5 covers the machinery; the discipline here is to name the
-one coefficient you are interpreting causally and to treat the rest as
-nuisance parameters.
+**The Table 2 fallacy** is the most damaging mistake and the least known. It
+means fitting one regression and reading every row as a causal effect. That
+cannot work, because the controls needed to measure one variable's effect
+correctly often *break* the measurement of another. Suppose education affects
+wages partly through occupation. With occupation in the model, the education
+coefficient is the **direct** effect. Without it, it is the **total** effect.
+Both are valid, but neither is "the" effect. A regression table is designed to
+answer one causal question; the other rows are adjustments, not findings.
+Chapter 3.5 covers the theory. The practical rule here: name the one
+coefficient you are reading causally, and treat the rest as controls.
 
 **A coefficient without an interval is not a finding.** Report standard errors
-and confidence intervals, and remember that with near-collinear predictors the
-interval can be enormous even when the model predicts well.
+and confidence intervals. Remember that with nearly collinear predictors, the
+interval can be huge even when the model predicts well.
 
 ```python
 import numpy as np
@@ -50481,99 +50431,95 @@ for name, bb, ss in zip(["const", "educ", "exper", "female"], beta, se):
 ```
 
 > Key Takeaways
-> - A coefficient's magnitude is uninterpretable without the column's unit and
->   spread, since rescaling a predictor rescales its coefficient exactly.
-> - On a log target, `100*b` is a percentage change and the exact figure is
->   `exp(b)-1`, which diverges from the approximation above roughly 0.10.
-> - A log-log coefficient is an elasticity: percent per percent, and
->   unit-free.
-> - Standardised coefficients make magnitudes comparable but say nothing about
->   causality, and binary predictors should be left unstandardised.
+> - The size of a coefficient means nothing without the column's unit and
+>   spread, because rescaling a predictor rescales its coefficient.
+> - With a log target, `100*b` is roughly a percentage change. The exact
+>   figure is `exp(b)-1`, and the two differ noticeably above about 0.10.
+> - A log-log coefficient is an elasticity: percent change per percent
+>   change, with no units.
+> - Standardised coefficients make sizes comparable but say nothing about
+>   cause. Leave binary predictors unstandardised.
 > - Every dummy coefficient is a difference from the dropped baseline level,
->   which must be stated for the table to mean anything.
-> - With polynomials or interactions the marginal effect varies with the
->   predictor, so report effects at meaningful values rather than one number.
-> - The Table 2 fallacy is reading every row of one regression as causal; the
->   control set that identifies one effect generally invalidates another.
-> - Controlling for a mediator changes a total effect into a direct effect,
->   and both are correct answers to different questions.
+>   and you must state which level that is.
+> - With polynomials or interactions, the effect of a predictor changes with
+>   its value, so report effects at meaningful values rather than one number.
+> - The Table 2 fallacy is reading every row of one regression as causal. The
+>   controls that are right for one effect are usually wrong for another.
+> - Controlling for a mediator turns a total effect into a direct effect.
+>   Both are correct answers to different questions.
 
 > 🧪 Practice
-> 1. Fit the same model with a predictor in two different units and confirm
->    the coefficient changes by exactly the conversion factor.
+> 1. Fit the same model with one predictor in two different units and check
+>    that the coefficient changes by exactly the conversion factor.
 > 2. Tabulate the approximate and exact percentage readings of a log-level
->    coefficient for `b` from 0.01 to 1.0 and state where you would stop using
->    the approximation.
-> 3. Fit a model with a categorical predictor twice, dropping a different
->    baseline each time, and verify the predictions are identical while every
+>    coefficient for `b` from 0.01 to 1.0. Where would you stop using the
+>    approximation?
+> 3. Fit a model with a categorical predictor twice, with a different
+>    baseline each time. Check that the predictions are identical while every
 >    coefficient differs.
-> 4. Fit a quadratic in one predictor and report the marginal effect at the
->    10th, 50th, and 90th percentiles of that predictor.
-> 5. Construct a dataset with a known mediator, fit the model with and without
->    it, and write two sentences stating what each education coefficient
->    means.
-> 6. Compute classical standard errors from the design matrix by hand and
->    confirm them against `statsmodels` or an equivalent.
-> 7. Interview: A report states that "controlling for hospital, the treatment
->    reduces mortality by 8%", and hospital assignment was itself influenced
->    by how sick each patient was. What is your concern? (Hint: ask whether
->    the control sits before or after the treatment in the causal chain.)
-
-
-<a id="102-tree-based-models"></a>
-### 10.2 Tree-Based Models
-
-Trees replace the linear model's global weighted sum with a sequence of local
-yes-or-no questions, which buys automatic interaction detection and immunity
-to feature scaling at the cost of a jagged, non-extrapolating fit; this
-section builds a tree from scratch, controls its complexity, and then shows
-how averaging and boosting turn a mediocre model into the default choice for
-tabular data.
+> 4. Fit a quadratic in one predictor and report its effect at the 10th, 50th
+>    and 90th percentiles of that predictor.
+> 5. Build a dataset with a known mediator, fit the model with and without it,
+>    and write two sentences saying what each education coefficient means.
+> 6. Compute classical standard errors by hand from the design matrix and
+>    check them against `statsmodels` or a similar library.
+> 7. Interview: A report says "controlling for hospital, the treatment reduces
+>    mortality by 8%", but which hospital a patient went to depended on how
+>    sick they were. What is your concern? (Hint: does the control come before
+>    or after the treatment in the causal chain?)
 
 #### Decision Tree Construction
 
-A decision tree is a sequence of questions. Is income above 60? If yes, is the
-debt ratio below 0.45? If yes, approve. Each question splits the data in two,
-and the tree keeps splitting until it decides to stop. The prediction in a
-final region -- a **leaf** -- is just the majority class or the mean of the
-training rows that landed there.
+Linear models use one weighted sum for the whole dataset. Trees work
+differently: they ask a series of yes-or-no questions, each about one feature.
+Trees work for both regression and classification. This topic and the next use
+a classification example because it is the easiest to picture. The tree
+ensembles after them return to regression.
 
-The appeal is that this is how people already reason, and the fitted model can
-be printed and read. The deeper appeal is what the structure gets for free.
+A decision tree is a chain of questions. Is income above 60? If yes, is the
+debt ratio below 0.45? If yes, approve. Each question splits the data in two,
+and the tree keeps splitting until it decides to stop. Each final region is
+called a **leaf**. The prediction in a leaf is the most common class (for
+classification) or the average target (for regression) of the training rows
+that ended up there.
+
+Trees are popular because this is how people already reason, and you can print
+the fitted model and read it. The structure also gives you two things for free.
 
 **Interactions are automatic.** In a linear model, "high income helps unless
-debt is also high" must be written by hand as a product term. A tree splits on
-debt ratio, then splits on income *inside* each branch, and has thereby
-represented the interaction without being told it existed. Every path from
-root to leaf is a conjunction of conditions, which is exactly what an
-interaction is.
+debt is also high" must be added by hand as a product term. A tree splits on
+debt ratio and then splits on income *inside* each branch, so it captures the
+interaction without being told. Every path from the root to a leaf is a
+combination of conditions, which is exactly what an interaction is.
 
-**Monotone transformations of features do not matter.** A split at income > 60
-and a split at log(income) > log(60) partition the data identically. Trees are
-invariant to any order-preserving rescaling, so standardising,
-log-transforming, and clipping at percentiles all change nothing. This is
-genuinely liberating after the care that penalised linear models require.
+**Rescaling features does not matter.** A split at income > 60 and a split at
+log(income) > log(60) divide the data in exactly the same way. Any
+transformation that keeps the order of values (standardising, taking logs,
+clipping at percentiles) changes nothing. After all the care that penalised
+linear models need, this is a relief.
 
-So how is a split chosen? **Greedily and exhaustively.** For every feature and
-every candidate threshold, compute how much the split reduces impurity, and
-keep the best one. Then recurse into each child. The search is exhaustive at
-each step but greedy across steps: the algorithm never revisits an earlier
-split in light of what it later found. Finding the globally optimal tree is
-NP-hard, so greedy is what everyone does.
+How does the tree pick a split? **It tries every option at each step and keeps
+the best.** For every feature and every possible threshold, it measures how
+much the split reduces impurity (how mixed the classes are), and keeps the
+best one. Then it repeats inside each child. Within one step the search is
+complete, but across steps it is greedy: it never goes back to change an
+earlier split based on what it found later. Finding the best possible tree
+overall is computationally infeasible (NP-hard), so every library uses this
+greedy approach.
 
-The cost of the structure is equally important.
+The structure also has costs.
 
-**Boundaries are axis-aligned.** Every split is of the form "feature <=
-threshold", so the regions are rectangles. A truly diagonal boundary has to be
-approximated by a staircase, and a single line that logistic regression
-represents with two parameters may take a tree dozens of leaves to imitate
-badly.
+**Boundaries are made of straight, axis-aligned cuts.** Every split has the
+form "feature <= threshold", so the regions are rectangles. A diagonal
+boundary has to be approximated by a staircase. A line that logistic
+regression describes with two parameters may take a tree dozens of leaves to
+copy, and still poorly.
 
-**Trees have high variance.** Because each split is chosen greedily, a small
-change in the data can flip an early split and rearrange the whole tree below
-it. Two samples from the same process can produce structurally unrecognisable
-trees with similar accuracy. This instability is the flaw that ensembles exist
-to fix, and it is why a single tree is rarely the final model.
+**Trees are unstable (high variance).** Because each split is chosen greedily,
+a small change in the data can change an early split and rearrange everything
+below it. Two samples from the same data source can produce completely
+different-looking trees with similar accuracy. Ensembles exist to fix this
+weakness, which is why a single tree is rarely the final model.
 
 ```python
 import numpy as np
@@ -50744,97 +50690,107 @@ print("exactly. Trees are not universally better; they are differently biased.")
 ```
 
 > Key Takeaways
-> - A tree is a sequence of axis-aligned splits, and a leaf predicts the
->   majority class or mean of the training rows that reach it.
-> - Interactions come free, because every root-to-leaf path is a conjunction
->   of conditions.
-> - Trees are invariant to any monotone transformation of a feature, so
->   scaling and log transforms change nothing.
-> - Splits are chosen exhaustively within a step and greedily across steps,
->   because the globally optimal tree is NP-hard to find.
-> - Axis-aligned rectangles approximate a diagonal boundary badly, which is a
->   case where a two-parameter linear model beats a forty-leaf tree.
-> - Fully grown trees reach perfect training accuracy by isolating noisy rows,
->   so depth must be controlled.
-> - Greedy splitting makes trees high-variance and structurally unstable,
->   which is precisely the flaw that ensembles fix.
+> - A tree is a series of splits on one feature at a time. A leaf predicts the
+>   most common class or the average target of the training rows that reach
+>   it.
+> - Interactions come for free, because every path from root to leaf is a
+>   combination of conditions.
+> - Trees are not affected by any order-preserving change to a feature, so
+>   scaling and log transforms make no difference.
+> - At each step the tree tries every split and keeps the best, but it never
+>   revisits earlier steps, because finding the best tree overall is
+>   infeasible.
+> - Rectangular regions approximate a diagonal boundary badly. Here a
+>   two-parameter linear model can beat a forty-leaf tree.
+> - A fully grown tree reaches perfect training accuracy by isolating noisy
+>   rows, so its depth must be limited.
+> - Greedy splitting makes trees unstable, and that is exactly what ensembles
+>   fix.
 
 > 🧪 Practice
-> 1. Implement the exhaustive split search for a single node using Gini
->    impurity and confirm it picks the same first split as sklearn's
+> 1. Implement the full split search for one node using Gini impurity and
+>    check that it picks the same first split as sklearn's
 >    `DecisionTreeClassifier`.
-> 2. Print the gain for every candidate threshold on two features and identify
+> 2. Print the gain for every candidate threshold on two features and explain
 >    why one feature wins the root.
-> 3. Generate data whose true rule is a conjunction of two conditions and
->    verify that a depth-2 tree recovers both thresholds.
-> 4. Multiply one feature by 1000 and take the log of another, then confirm
->    the fitted tree is unchanged while a penalised linear model's is not.
+> 3. Generate data whose true rule combines two conditions and check that a
+>    depth-2 tree finds both thresholds.
+> 4. Multiply one feature by 1000 and take the log of another. Check that the
+>    tree does not change while a penalised linear model does.
 > 5. Build data with a diagonal boundary and report how many leaves a tree
 >    needs to match logistic regression's test accuracy.
 > 6. Interview: A colleague says trees do not need feature scaling, so they
 >    are always the safer default on unfamiliar tabular data. Where does that
->    argument break down? (Hint: think about what the decision boundary can
->    and cannot be shaped like, and what happens outside the training range.)
+>    argument fail? (Hint: what shapes can the boundary take, and what happens
+>    outside the training range?)
 
 
 #### Splitting Criteria and Pruning
 
-Two decisions define a tree algorithm: how it scores a candidate split, and
-when it stops. The first turns out to matter less than people expect; the
-second matters enormously.
+A tree algorithm is defined by two choices: how it scores a possible split, and
+when it stops splitting. The first matters less than people expect. The second
+matters a lot.
 
-**Impurity measures** answer "how mixed is this node". For classification
-there are three candidates. **Gini impurity** is `1 - sum(p_k^2)`, the
-probability that two randomly drawn members of the node have different labels.
-**Entropy** is `-sum(p_k * log2(p_k))`, the bits needed to encode a label
-drawn from the node. **Misclassification rate** is `1 - max(p_k)`, the error
-you would make predicting the majority.
+**Impurity measures** score how mixed a node is. For classification there are
+three options, where `p_k` is the share of class `k` in the node:
 
-Gini and entropy give nearly identical trees in practice -- entropy is
-slightly more sensitive to changes near the extremes, Gini is cheaper because
-it avoids logarithms, and the resulting accuracy difference is almost always
-smaller than the noise in your evaluation. This is not the knob to tune.
+- **Gini impurity**, `1 - sum(p_k^2)`: the chance that two rows picked at
+  random from the node have different labels.
+- **Entropy**, `-sum(p_k * log2(p_k))`: the number of bits needed to describe
+  a label picked from the node.
+- **Misclassification rate**, `1 - max(p_k)`: the error you make by always
+  predicting the majority class.
 
-Misclassification rate is different, and instructive. It is the metric you
-actually care about, and it is a *bad splitting criterion*. The reason is
-concavity. Gini and entropy are strictly concave in the class proportion, so
-any split that moves probability mass toward purity registers a gain.
-Misclassification is only piecewise linear, so it cannot distinguish a split
-that makes one child perfectly pure from one that merely shifts both
-children's majorities. The greedy search stalls where the other two make
-progress. Split on Gini or entropy; evaluate with the metric you care about.
+Gini and entropy give almost the same trees in practice. Entropy reacts a
+little more near the extremes, and Gini is slightly faster because it needs no
+logarithms. The difference in accuracy is almost always smaller than the noise
+in your evaluation. This is not a setting worth tuning.
 
-For **regression** the criterion is variance reduction: choose the split
-minimising the sum of squared deviations within the children, which is the
-same greedy idea with squared error in place of impurity. Absolute-error
-splitting exists and produces median-predicting leaves, at higher
-computational cost.
+Misclassification rate is different, and the reason is useful to understand.
+It is the metric you actually care about, yet it is a *poor way to choose
+splits*. Gini and entropy are curved (strictly concave), so any split that
+makes the children purer earns some credit. Misclassification rate is made of
+straight pieces, so it cannot tell apart a split that makes one child
+perfectly pure from one that only shifts the majorities a little. The greedy
+search gets stuck where the other two keep improving. So: split using Gini or
+entropy, and evaluate using the metric you care about.
 
-**Stopping** is where trees live or die, and there are two philosophies.
+For **regression**, the tree uses variance reduction: pick the split that
+minimises the sum of squared differences from the mean inside each child. It
+is the same greedy idea with squared error in place of impurity. Splitting on
+absolute error also exists; it gives leaves that predict the median, but it is
+slower.
 
-**Pre-pruning** (early stopping) prevents splits from happening. `max_depth`
-caps the number of questions; `min_samples_leaf` refuses leaves below a size;
-`min_samples_split` refuses to split small nodes; `max_leaf_nodes` caps total
-complexity; `min_impurity_decrease` requires each split to earn its place.
-This is cheap and it is what people reach for first. Its weakness is the
-**horizon effect**: a split that looks worthless may be the necessary setup
-for a tremendously valuable split just beneath it, and pre-pruning cuts it
-before the payoff is visible. The classic case is an exclusive-or
-relationship, where neither feature alone reduces impurity at all.
+**Stopping** is what makes or breaks a tree. There are two approaches.
 
-**Post-pruning** grows the tree fully, then collapses subtrees that do not pay
-their way. **Cost-complexity pruning** formalises "pay their way": minimise
-`error + alpha * (number of leaves)`. As `alpha` rises from zero, the tree
-collapses in a predictable nested sequence, and only finitely many `alpha`
-values produce distinct trees. Compute that sequence, cross-validate over it,
-and pick the winner. Post-pruning sidesteps the horizon effect entirely
-because it has already seen what lies beneath every split. The price is
-fitting a large tree first.
+**Pre-pruning** (early stopping) prevents splits from happening:
 
-In practice, boosted ensembles are pre-pruned with shallow depth limits and do
-not need post-pruning, because the ensemble handles complexity control. For a
-single interpretable tree, cost-complexity pruning with cross-validated
-`alpha` is the right procedure.
+- `max_depth` limits the number of questions in a row;
+- `min_samples_leaf` refuses leaves below a minimum size;
+- `min_samples_split` refuses to split small nodes;
+- `max_leaf_nodes` limits the total number of leaves;
+- `min_impurity_decrease` requires each split to improve impurity by a
+  minimum amount.
+
+Pre-pruning is cheap and is what people try first. Its weakness is the
+**horizon effect**: a split that looks useless on its own may set up a very
+useful split just below it, and pre-pruning cuts it off before the benefit is
+visible. The classic example is an exclusive-or (XOR) pattern, where neither
+feature on its own reduces impurity at all.
+
+**Post-pruning** grows the full tree first, then removes branches that are not
+worth keeping. **Cost-complexity pruning** makes "worth keeping" precise: it
+minimises `error + alpha * (number of leaves)`. As `alpha` grows from zero,
+the tree shrinks in a fixed sequence of steps, and only a limited number of
+`alpha` values give different trees. Compute that sequence, cross-validate
+over it, and pick the best. Post-pruning avoids the horizon effect completely,
+because it has already seen what lies below every split. The price is growing
+a large tree first.
+
+In practice, trees inside boosted ensembles are pre-pruned to a shallow depth
+and do not need post-pruning, because the ensemble controls complexity. For a
+single tree that people will read, use cost-complexity pruning with `alpha`
+chosen by cross-validation.
 
 ```python
 import numpy as np
@@ -51006,105 +50962,112 @@ print("the weak split and never discovered the strong one -- the horizon effect.
     181 leaves -> 5 leaves, and the held-out score IMPROVES by 7 points.
 ```
 
-|                | Pre-pruning                      | Post-pruning                  |
-| -------------- | -------------------------------- | ----------------------------- |
-| When it acts   | Before a split is made           | After the tree is grown       |
-| Cost           | Cheap; never builds the big tree | Must fit the full tree first  |
-| Horizon effect | Vulnerable                       | Immune                        |
-| Main knobs     | `max_depth`, `min_samples_leaf`  | `ccp_alpha`                   |
-| How to choose  | Grid search the knobs            | Cross-validate the alpha path |
-| Typical use    | Base learners inside ensembles   | A single interpretable tree   |
+|                 | Pre-pruning                      | Post-pruning                  |
+| --------------- | -------------------------------- | ----------------------------- |
+| When it acts    | Before a split is made           | After the tree is grown       |
+| Cost            | Cheap; never builds the big tree | Must grow the full tree first |
+| Horizon effect  | Affected                         | Not affected                  |
+| Main settings   | `max_depth`, `min_samples_leaf`  | `ccp_alpha`                   |
+| How to choose   | Grid search the settings         | Cross-validate the alpha path |
+| Typical use     | Trees inside ensembles           | A single readable tree        |
 
 > Key Takeaways
-> - Gini and entropy produce nearly identical trees, so the choice between
->   them is not a meaningful tuning decision.
-> - Misclassification rate is the metric you care about and a poor splitting
->   criterion, because it is not strictly concave and cannot reward a split
->   that purifies one child.
-> - Regression trees split to minimise within-child squared error, which is
->   the same greedy procedure with a different objective.
-> - Pre-pruning is cheap but suffers the horizon effect: it can cut a
->   worthless split that was the setup for a valuable one.
-> - Post-pruning by cost complexity grows the tree first and therefore cannot
->   be fooled by the horizon effect.
-> - Only finitely many alpha values give distinct pruned trees, so the whole
->   sequence can be enumerated and cross-validated.
-> - Base learners inside an ensemble are pre-pruned shallow; a standalone
->   interpretable tree deserves cost-complexity pruning.
+> - Gini and entropy give almost the same trees, so choosing between them is
+>   not a meaningful tuning decision.
+> - Misclassification rate is the metric you care about but a poor splitting
+>   rule, because it is not curved and cannot reward a split that purifies
+>   one child.
+> - Regression trees split to minimise squared error inside the children,
+>   using the same greedy method.
+> - Pre-pruning is cheap but suffers from the horizon effect: it can block a
+>   useless-looking split that sets up a valuable one.
+> - Cost-complexity post-pruning grows the tree first, so the horizon effect
+>   cannot fool it.
+> - Only a limited number of alpha values give different pruned trees, so you
+>   can list them all and cross-validate.
+> - Trees inside an ensemble are kept shallow with pre-pruning. A single
+>   readable tree should use cost-complexity pruning.
 
 > 🧪 Practice
-> 1. Tabulate Gini, entropy, and misclassification rate across class
->    proportions and confirm all three peak at 0.5 while only two are strictly
->    concave.
-> 2. Construct the split pair from the example above and verify that
->    misclassification rate scores them identically while Gini prefers one.
+> 1. Tabulate Gini, entropy and misclassification rate across class shares.
+>    Check that all three peak at 0.5 but only two are strictly curved.
+> 2. Rebuild the pair of splits from the example above and check that
+>    misclassification rate scores them the same while Gini prefers one.
 > 3. Fit trees with `criterion="gini"` and `criterion="entropy"` on one
->    dataset and compare test accuracy across ten random seeds. Is the
->    difference larger than the seed-to-seed noise?
-> 4. Build an exclusive-or dataset and show that `min_impurity_decrease` set
->    too high prevents the tree from learning it at all.
+>    dataset and compare test accuracy over ten random seeds. Is the
+>    difference bigger than the seed-to-seed noise?
+> 4. Build an XOR dataset and show that setting `min_impurity_decrease` too
+>    high stops the tree from learning it at all.
 > 5. Compute the full cost-complexity pruning path, cross-validate over it,
->    and plot leaves against both training and validation score.
+>    and plot the number of leaves against training and validation score.
 > 6. Interview: Your single decision tree has 400 leaves and 100% training
->    accuracy. Your manager asks whether you should cap the depth at 5 or
->    prune afterwards. Which do you recommend and why? (Hint: consider what
->    happens to a valuable split that sits beneath a worthless one.)
+>    accuracy. Your manager asks whether to cap the depth at 5 or prune
+>    afterwards. Which do you recommend and why? (Hint: what happens to a
+>    valuable split that sits below a useless-looking one?)
 
 
 #### Bagging and Random Forests
 
-A single deep tree has low bias and high variance: it can represent almost any
-function, and it will represent a slightly different one each time you
-resample the data. That combination is exactly what averaging fixes.
+A single deep tree has low bias and high variance. It can fit almost any
+shape, but it fits a slightly different one every time the data changes.
+Averaging is the fix for exactly this situation.
 
-The reason is elementary. If you average `k` independent estimators each with
-variance `v`, the average has variance `v/k`. The bias is unchanged, because
-the average of unbiased things is unbiased. So averaging a collection of
-low-bias, high-variance models gives you a low-bias, low-variance model -- a
-free lunch, if you can get the independence.
+Here is why. If you average `k` independent models that each have variance
+`v`, the average has variance `v/k`. The bias stays the same, because the
+average of unbiased things is unbiased. So averaging many low-bias,
+high-variance models gives a model with low bias *and* low variance, as long as
+the models are independent.
 
-You cannot get true independence from one dataset, but you can approximate it.
-**Bagging** (bootstrap aggregating) draws a bootstrap sample -- `n` rows
-sampled with replacement -- fits a tree on it, and repeats. Predictions are
-averaged for regression or voted for classification. Each tree sees a slightly
-different dataset and therefore makes different mistakes, and the mistakes
-partially cancel.
+You cannot get truly independent models from one dataset, but you can get
+close. **Bagging** (bootstrap aggregating) works like this:
 
-Bagging has a useful accident built in. Sampling `n` rows with replacement
-leaves out `(1 - 1/n)^n` of them, which converges to `1/e` or about 36.8%.
-Those **out-of-bag** rows were never seen by that tree, so they can score it.
-Collect OOB predictions across the ensemble and you get a validation estimate
-for free, without holding anything back.
+1. Draw a bootstrap sample: `n` rows picked at random *with replacement*.
+2. Fit a tree on it.
+3. Repeat many times.
+4. Average the trees' predictions (regression) or take a vote
+   (classification).
 
-The limitation of bagging is that the trees are not as different as you would
-like. They all see roughly the same data, so they all find the same dominant
-split at the root, and their errors are correlated. The variance of an average
-of `k` estimators with pairwise correlation `rho` is not `v/k` but `rho*v +
-(1-rho)*v/k`. The second term vanishes with more trees; **the first does
-not**. Correlation puts a floor on how much averaging can help.
+Each tree sees a slightly different dataset, so each makes different mistakes,
+and the mistakes partly cancel out.
 
-**Random forests** attack that floor directly. In addition to bootstrapping
-the rows, at *every split* the tree is only allowed to consider a random
-subset of features. If the dominant feature is not in the candidate set, the
-tree is forced to find a different split, and the trees decorrelate.
+Bagging comes with a handy bonus. Sampling `n` rows with replacement leaves out
+a fraction `(1 - 1/n)^n` of them, which approaches `1/e`, about 36.8%. That
+tree never saw these **out-of-bag (OOB)** rows, so they can be used to test
+it. Collect the OOB predictions across all trees and you get a validation
+score without holding out any data.
 
-The subtlety -- widely glossed over -- is that this is a trade, not a gift.
-Restricting the candidate features makes each individual tree worse, so you
-are paying bias to buy decorrelation. The optimum is interior and
-problem-dependent, which is why `max_features` is a hyperparameter and why
-scikit-learn's regressor default is *all* features (plain bagging) while its
-classifier default is `sqrt(p)`. If you have internalised "random forests
-always beat bagging", the demonstration below is worth reading carefully.
+The weakness of bagging is that the trees are not different enough. They all
+see roughly the same data, so they all pick the same strong split at the root,
+and their errors are correlated. If `k` models each have variance `v` and
+pairwise correlation `rho`, the average has variance `rho*v + (1-rho)*v/k`,
+not `v/k`. The second term shrinks as you add trees; **the first term does
+not**. Correlation sets a floor on how much averaging can help.
 
-**Extremely randomised trees** push further: thresholds are chosen at random
-rather than optimised, which decorrelates more and fits much faster.
+**Random forests** lower that floor. On top of bootstrapping the rows, at
+*every split* each tree may only look at a random subset of the features. If
+the strongest feature is not in the subset, the tree has to find a different
+split, so the trees become less alike.
 
-Two properties of forests deserve emphasis. They are **very hard to overfit by
-adding trees** -- more trees monotonically reduce variance and never increase
-it, so `n_estimators` is a compute budget rather than a risk. And they
-**cannot extrapolate**: a prediction is an average of leaf means, and a leaf
-can only report the mean of rows it has seen, so beyond the training range the
-prediction flattens into a constant.
+This is a trade, not a free gain, and that is often missed. Limiting the
+features makes each single tree worse. You pay some bias to buy less
+correlation. The best setting is somewhere in the middle and depends on the
+problem. That is why `max_features` is a hyperparameter, and why scikit-learn's
+default for regression is *all* features (plain bagging) while its default for
+classification is `sqrt(p)`. If you believe "random forests always beat
+bagging", read the example below carefully.
+
+**Extremely randomised trees** (Extra Trees) go further: they pick thresholds
+at random instead of searching for the best one. This makes the trees even
+less alike and much faster to fit.
+
+Two properties of forests are worth stressing:
+
+- **Adding trees almost never causes overfitting.** More trees only reduce
+  variance; they never increase it. So `n_estimators` is a question of
+  compute time, not of risk.
+- **Forests cannot extrapolate.** A prediction is an average of leaf values,
+  and a leaf can only report the average of rows it has seen. Beyond the
+  training range the prediction goes flat.
 
 ```python
 import numpy as np
@@ -51309,97 +51272,103 @@ print("  extrapolate (sometimes wrongly); trees refuse to.")
 ```
 
 > Key Takeaways
-> - Averaging `k` independent estimators divides variance by `k` and leaves
->   bias alone, which is why it rescues high-variance low-bias trees.
-> - Bagging approximates independence with bootstrap resampling, and each
->   bootstrap leaves about 36.8% of rows out of bag for free validation.
-> - Correlated trees put a floor of `rho * variance` on the average, which
->   more trees cannot remove.
-> - Random forests lower that floor by restricting the candidate features at
->   every split, which decorrelates trees at the cost of making each one
->   worse.
-> - `max_features` therefore has an interior optimum and must be tuned; there
->   is no rule guaranteeing forests beat bagging.
-> - More trees never hurt a bagged or forest model, so `n_estimators` is a
->   compute budget rather than an overfitting risk.
-> - Forests cannot extrapolate, because a leaf can only report the mean of
->   rows it saw during training.
+> - Averaging `k` independent models divides the variance by `k` and leaves
+>   the bias unchanged. That is why averaging rescues unstable trees.
+> - Bagging imitates independence with bootstrap samples. Each sample leaves
+>   about 36.8% of rows out of bag, which gives free validation.
+> - Correlated trees leave a floor of `rho * variance` that more trees cannot
+>   remove.
+> - Random forests lower that floor by limiting the features each split may
+>   use. The trees become less alike, but each one gets worse.
+> - So `max_features` has a best value in the middle and must be tuned.
+>   Forests do not always beat bagging.
+> - More trees never hurt a bagged model or a forest, so `n_estimators` is a
+>   compute budget, not an overfitting risk.
+> - Forests cannot extrapolate, because a leaf can only report the average of
+>   rows it saw in training.
 
 > 🧪 Practice
-> 1. Fit one deep tree on forty independent samples from the same process and
->    compare the mean squared error of a single fit against the average fit.
-> 2. Verify numerically that `(1 - 1/n)^n` approaches `1/e`, then compare a
->    forest's out-of-bag score against a held-out test score.
-> 3. Sweep `max_features` from 1 to all features, recording both test error
->    and the mean pairwise correlation between member trees' predictions.
-> 4. Find a dataset where plain bagging beats the default random forest and
->    explain the feature structure that causes it.
-> 5. Train a forest on `x` in [0, 10] and predict at `x = 20`, then do the
->    same with linear regression and comment on which failure mode you prefer.
-> 6. Compare `ExtraTreesRegressor` against `RandomForestRegressor` on fit time
->    and accuracy at matched `n_estimators`.
-> 7. Interview: You increase `n_estimators` from 100 to 2000 in a random
->    forest and the test score does not move. What does that tell you, and
->    what would you change next? (Hint: which of the two variance terms have
->    you already exhausted, and which one is left?)
+> 1. Fit one deep tree on forty independent samples from the same source.
+>    Compare the mean squared error of a single fit with that of the average
+>    fit.
+> 2. Check numerically that `(1 - 1/n)^n` approaches `1/e`. Then compare a
+>    forest's out-of-bag score with a held-out test score.
+> 3. Vary `max_features` from 1 to all features. Record test error and the
+>    average correlation between the trees' predictions.
+> 4. Find a dataset where plain bagging beats the default random forest, and
+>    explain which feature structure causes it.
+> 5. Train a forest on `x` in [0, 10] and predict at `x = 20`. Do the same
+>    with linear regression. Which kind of failure would you rather have?
+> 6. Compare `ExtraTreesRegressor` with `RandomForestRegressor` on fit time and
+>    accuracy using the same `n_estimators`.
+> 7. Interview: You raise `n_estimators` from 100 to 2000 in a random forest
+>    and the test score does not move. What does that tell you, and what
+>    would you change next? (Hint: which of the two variance terms is already
+>    used up, and which one is left?)
 
 
 #### Gradient Boosted Trees
 
 Bagging starts with models that are too flexible and averages away their
-variance. Boosting starts from the opposite end: begin with something far too
-simple, then repeatedly add a small correction aimed at whatever the current
-model gets wrong. Bagging fits its members in parallel and independently;
-boosting fits them in sequence, each one looking at the previous ones'
-failures.
+variance. Boosting starts at the other end. It begins with a model that is far
+too simple, then keeps adding small corrections aimed at whatever the current
+model gets wrong. Bagging fits its trees separately and in parallel. Boosting
+fits them one after another, and each new tree looks at the mistakes of the
+ones before it.
 
-The clearest way in is squared-error regression. Start by predicting the mean.
-Compute the residuals. Fit a shallow tree to the *residuals*. Add a fraction
-of that tree's predictions to your running model. Recompute residuals. Repeat.
-Each tree is a patch on the current model's mistakes, and the sum of many
-small patches is a flexible fit built out of stumps.
+The easiest way to see it is with squared-error regression:
 
-The reason it is called **gradient** boosting is that fitting the residual is
-a special case of something more general. The negative gradient of squared
-error `0.5*(y - F)^2` with respect to the prediction `F` is exactly the
-residual `y - F`. So "fit the residual" is "fit the negative gradient", and
-once you phrase it that way you can boost *any* differentiable loss: log loss
-for classification, Poisson deviance for counts, quantile loss for asymmetric
-costs. Each stage fits a tree to the negative gradient and takes a step. It is
-gradient descent, performed in the space of functions rather than the space of
-parameters -- chapter 2.2's machinery, applied one tree at a time.
+1. Start by predicting the mean.
+2. Compute the residuals (actual minus predicted).
+3. Fit a small tree to the *residuals*.
+4. Add a small fraction of that tree's predictions to the model.
+5. Recompute the residuals and repeat.
 
-Three hyperparameters carry most of the weight.
+Each tree patches the current model's mistakes. Adding up many small patches
+gives a flexible model built from simple trees.
 
-**Learning rate** (shrinkage) scales each tree's contribution. Smaller steps
-mean no individual tree dominates, and the ensemble converges to a smoother
-fit. This is the single most important regularisation knob.
+It is called **gradient** boosting because fitting the residual is a special
+case of a more general idea. For squared error `0.5*(y - F)^2`, the negative
+gradient with respect to the prediction `F` is exactly the residual `y - F`.
+So "fit the residual" is the same as "fit the negative gradient". Once you see
+it that way, you can boost *any* loss that has a gradient: log loss for
+classification, Poisson deviance for counts, quantile loss for uneven costs.
+Each round fits a tree to the negative gradient and takes a step. It is
+gradient descent (chapter 2.2), but each step adds a tree instead of changing
+a parameter.
 
-**Number of rounds** multiplies against the learning rate: halve the rate and
-you need roughly twice the rounds for the same fit. Tune them together, or fix
-a small rate and let early stopping choose the count.
+Three hyperparameters do most of the work.
 
-**Tree depth** controls the highest-order interaction the model can represent.
-A stump can capture no interactions at all; depth 3 can capture three-way
-ones. Depths of 3 to 8 are typical, far shallower than a forest's fully grown
-trees.
+**Learning rate** (shrinkage) scales how much each tree contributes. Smaller
+steps mean no single tree dominates, and the final fit is smoother. This is the
+most important regularisation setting.
 
-The critical practical difference from bagging: **boosting can overfit by
-adding more trees**. A forest's extra trees only average; a boosted model's
-extra trees keep chasing residuals, including residuals that are pure noise.
-So the held-out curve can turn upward, and `n_estimators` needs early stopping
-rather than "as many as I can afford".
+**Number of rounds** works together with the learning rate. Halve the rate and
+you need about twice as many rounds for the same fit. Tune them together, or
+fix a small rate and let early stopping choose the number of rounds.
 
-That said, the textbook U-shaped curve deserves calibration. With a small
-learning rate, boosting overfits *slowly*: the held-out curve usually has a
-shallow minimum and then a long plateau, and training error goes to zero long
-before held-out error meaningfully degrades. With a large learning rate it
-overfits within a dozen rounds. The demonstration below shows both, because
-knowing which regime you are in tells you how much care early stopping
-deserves.
+**Tree depth** sets the most complex interaction the model can learn. A stump
+(depth 1) cannot capture interactions at all; depth 3 can capture three-way
+ones. Depths of 3 to 8 are typical, much shallower than the fully grown trees
+in a forest.
 
-**Stochastic gradient boosting** subsamples rows for each tree, which adds
-regularisation and speed for free and is usually worth turning on.
+The key practical difference from bagging: **boosting can overfit when you add
+more trees**. In a forest, extra trees only average. In boosting, extra trees
+keep chasing the remaining residuals, including residuals that are just noise.
+So the held-out error can start rising, and the number of trees needs early
+stopping rather than "as many as I can afford".
+
+That said, the classic U-shaped curve needs some nuance. With a small learning
+rate, boosting overfits *slowly*. The held-out error usually reaches a shallow
+minimum and then stays almost flat for a long time, and training error reaches
+zero long before held-out error gets noticeably worse. With a large learning
+rate, it overfits within a dozen rounds. The example below shows both cases.
+Knowing which case you are in tells you how careful you need to be with early
+stopping.
+
+**Stochastic gradient boosting** fits each tree on a random subset of the rows.
+This adds regularisation and speed at no cost, and is usually worth turning
+on.
 
 ```python
 import numpy as np
@@ -51604,106 +51573,111 @@ for ss in [1.0, 0.8, 0.5]:
 
 |                       | Random forest                  | Gradient boosting              |
 | --------------------- | ------------------------------ | ------------------------------ |
-| Members fitted        | In parallel, independently     | Sequentially, on residuals     |
-| Base learner          | Deep, low bias                 | Shallow, high bias             |
-| What averaging fixes  | Variance                       | Bias                           |
-| More members          | Never hurts                    | Can overfit                    |
+| How trees are fitted  | Separately, in parallel        | One after another, on residuals |
+| Kind of tree          | Deep, low bias                 | Shallow, high bias             |
+| What combining fixes  | Variance                       | Bias                           |
+| More trees            | Never hurts                    | Can overfit                    |
 | Needs early stopping  | No                             | Yes                            |
-| Main knobs            | `max_features`, `n_estimators` | `learning_rate`, depth, rounds |
+| Main settings         | `max_features`, `n_estimators` | `learning_rate`, depth, rounds |
 | Sensitivity to tuning | Low; good out of the box       | High; rewards careful tuning   |
 | Free validation       | Out-of-bag score               | None; hold out a slice         |
 
 > Key Takeaways
 > - Boosting fits each new tree to the current model's errors and adds a
->   shrunken fraction of it, so the ensemble is a sum of small corrections.
-> - Fitting the residual is fitting the negative gradient of squared error,
->   which is why the method generalises to any differentiable loss.
-> - Learning rate and number of rounds trade off against each other, and the
->   learning rate is the primary regulariser.
-> - Tree depth caps the highest-order interaction the model can express, and
->   boosted trees are far shallower than a forest's.
-> - Unlike bagging, adding rounds can degrade held-out performance, so early
+>   small fraction of it, so the final model is a sum of small corrections.
+> - Fitting the residual is the same as fitting the negative gradient of
+>   squared error, which is why boosting works with any loss that has a
+>   gradient.
+> - Learning rate and number of rounds trade off against each other. The
+>   learning rate is the main regularisation setting.
+> - Tree depth limits the most complex interaction the model can learn, and
+>   boosted trees are much shallower than forest trees.
+> - Unlike bagging, adding rounds can make held-out results worse, so early
 >   stopping on a validation slice is standard.
-> - With a small learning rate that degradation is slow and the curve
->   plateaus; with a large one it appears within a dozen rounds.
-> - Training error reaching zero says nothing about whether to stop, so the
->   decision must come from held-out data.
-> - Row subsampling usually improves both speed and accuracy and is worth
->   enabling by default.
+> - With a small learning rate, overfitting is slow and the curve flattens.
+>   With a large one, it shows up within a dozen rounds.
+> - Zero training error does not tell you when to stop. Only held-out data
+>   can.
+> - Fitting each tree on a sample of rows usually improves both speed and
+>   accuracy, so turn it on by default.
 
 > 🧪 Practice
 > 1. Implement squared-error boosting by hand with depth-2 trees and a
 >    learning rate of 0.1, and match `GradientBoostingRegressor` on training
 >    RMSE.
-> 2. Show empirically that halving the learning rate requires roughly doubling
->    the rounds to reach the same training error.
+> 2. Show that halving the learning rate needs roughly twice the rounds to
+>    reach the same training error.
 > 3. Use `staged_predict` to plot training and held-out error against the
->    round count at learning rates of 0.03, 0.1, and 0.5, and describe how the
+>    number of rounds at learning rates of 0.03, 0.1 and 0.5. Describe how the
 >    shape changes.
-> 4. Enable `validation_fraction` and `n_iter_no_change` and report where
->    early stopping fires compared with the true held-out minimum.
-> 5. Compare `subsample` values of 1.0, 0.8, and 0.5 on both accuracy and fit
->    time.
-> 6. Boost with a quantile loss at the 0.9 quantile and confirm roughly 90% of
->    held-out targets fall below the prediction.
-> 7. Interview: Your boosted model's training error is 0.001 and your
->    colleague says that proves it has converged and you should stop adding
->    trees. What is wrong with the reasoning? (Hint: which curve decides when
->    to stop, and what is the other one actually measuring?)
+> 4. Turn on `validation_fraction` and `n_iter_no_change`, and compare where
+>    early stopping fires with the true held-out minimum.
+> 5. Compare `subsample` values of 1.0, 0.8 and 0.5 on accuracy and fit time.
+> 6. Boost with a quantile loss at the 0.9 quantile and check that about 90%
+>    of held-out targets fall below the prediction.
+> 7. Interview: Your boosted model's training error is 0.001, and a colleague
+>    says this proves it has converged and you should stop adding trees. What
+>    is wrong with this reasoning? (Hint: which curve decides when to stop,
+>    and what does the other curve actually measure?)
 
 
 #### XGBoost, LightGBM, CatBoost
 
 Gradient boosting as described so far is slow, because finding the best split
-means sorting every feature at every node. Three libraries rebuilt it for
-speed and for the realities of tabular data, and between them they account for
-most production tabular models. The shared innovation is **histogram-based
-splitting**: bin each continuous feature into 256 or so buckets once, then
-search over bucket boundaries instead of every distinct value. The gradient
-sums per bucket are all the split search needs, which turns the cost from
-sorting per node into a cheap histogram scan.
+means sorting every feature at every node. Three libraries rebuilt it to be
+fast and to handle real tabular data well. Together they power most production
+models on tabular data. The example in this topic is a classification task,
+but everything here applies to regression too.
 
-**XGBoost** came first and popularised two ideas beyond speed. It adds
-explicit L1 and L2 penalties on leaf weights to the boosting objective, so
-regularisation is part of the split-gain formula rather than an afterthought.
-And it handles missing values by learning a **default direction** per split:
-rows with a missing value go left or right depending on which side reduces
-loss more, so missingness becomes a learned feature rather than something to
-impute. Its trees grow **level-wise** -- every node at the current depth is
-considered before going deeper -- giving balanced trees and making `max_depth`
-a meaningful budget.
+The idea all three share is **histogram-based splitting**. Each continuous
+feature is grouped into about 256 bins once, at the start. The split search
+then only checks bin boundaries instead of every distinct value. It only needs
+the sum of gradients in each bin, so instead of sorting at every node it does a
+quick scan over the bins.
 
-**LightGBM** grows **leaf-wise** instead: at each step it splits whichever
-leaf promises the largest loss reduction, anywhere in the tree. The trees
-become deep and asymmetric, spending complexity where the loss actually is.
-This is usually faster and more accurate at a fixed leaf count, and it
-overfits sooner, so `num_leaves` must be paired with `min_child_samples`. The
-trap to know: with leaf-wise growth `num_leaves = 2^max_depth` is *not*
-equivalent to a level-wise tree of that depth, because the budget is spent
-unevenly. LightGBM also bundles two further tricks, gradient-based one-side
-sampling and exclusive feature bundling, which mostly matter on very wide
-sparse data.
+**XGBoost** came first and made two more ideas popular:
 
-**CatBoost** targets the categorical problem. Instead of one-hot encoding a
-300-level column into 300 sparse columns, it replaces the level with a
-statistic computed from the target -- a target encoding. Done naively that
-leaks: a level's own row contributes to its own encoding, and the model learns
-the leak. CatBoost computes **ordered target statistics**, where each row's
-encoding uses only rows that came earlier in a random permutation, which
-removes the leak. It also uses **symmetric (oblivious) trees**, where every
-node at a given depth shares one split, making the tree a lookup table and
-prediction extremely fast.
+- It adds L1 and L2 penalties on the leaf values directly into the boosting
+  objective, so regularisation is part of how splits are scored.
+- It handles missing values by learning a **default direction** for each
+  split. Rows with a missing value go left or right, whichever reduces the
+  loss more. Missingness becomes something the model learns from, instead of
+  something you have to fill in.
 
-**Scikit-learn's `HistGradientBoosting*`** implements the same histogram
-algorithm with no extra dependency and is a perfectly reasonable default. Its
-limits are real, though: it caps native categorical cardinality at 255 levels,
-which the demonstration below runs straight into.
+XGBoost grows trees **level by level**: it splits every node at the current
+depth before going deeper. This gives balanced trees and makes `max_depth` a
+meaningful limit.
 
-The honest summary is that on most tabular problems the accuracy differences
-are small, and the choice is driven by fit time, categorical handling, and
-which library your team already knows. The one reliable exception is
-high-cardinality categoricals, where CatBoost's target statistics earn a real
-margin.
+**LightGBM** grows trees **leaf by leaf** instead: at each step it splits
+whichever leaf would reduce the loss the most, anywhere in the tree. The trees
+become deep and lopsided, spending their complexity where the errors are. This
+is usually faster and more accurate for the same number of leaves, but it
+overfits sooner, so `num_leaves` must be paired with `min_child_samples`. One
+trap: with leaf-wise growth, `num_leaves = 2^max_depth` is *not* the same as a
+level-wise tree of that depth, because the leaves are spent unevenly. LightGBM
+also has two more tricks (gradient-based one-side sampling and exclusive
+feature bundling) that mainly help on very wide, sparse data.
+
+**CatBoost** focuses on categorical features. Instead of one-hot encoding a
+column with 300 levels into 300 sparse columns, it replaces each level with a
+number computed from the target. This is called target encoding. Done naively,
+it leaks: a row's own target goes into its own encoding, and the model learns
+that leak. CatBoost uses **ordered target statistics**: rows are put in a
+random order, and each row's encoding only uses rows that come before it. That
+removes the leak. CatBoost also uses **symmetric (oblivious) trees**, where
+every node at the same depth uses the same split. The tree then works like a
+lookup table, which makes prediction very fast.
+
+**Scikit-learn's `HistGradientBoosting*`** uses the same histogram method,
+needs no extra library, and is a perfectly good default. It has real limits,
+though: native categorical features can have at most 255 levels, which the
+example below runs into.
+
+In honest terms: on most tabular problems the accuracy differences between
+these libraries are small. The choice comes down to fit time, how categorical
+features are handled, and which library your team already knows. The one clear
+exception is categorical features with many levels, where CatBoost's ordered
+target statistics give a real advantage.
 
 ```python
 import time
@@ -51924,105 +51898,101 @@ print("  place where the library choice made a real difference on this data.")
 
 |                         | XGBoost                         | LightGBM                  | CatBoost                           | sklearn HistGB         |
 | ----------------------- | ------------------------------- | ------------------------- | ---------------------------------- | ---------------------- |
-| Tree growth             | Level-wise                      | Leaf-wise                 | Symmetric / oblivious              | Leaf-wise              |
-| Primary complexity knob | `max_depth`                     | `num_leaves`              | `depth`                            | `max_leaf_nodes`       |
-| Categoricals            | Native, optional                | Native, by index          | Ordered target statistics          | Native, max 255 levels |
+| Tree growth             | Level by level                  | Leaf by leaf              | Symmetric / oblivious              | Leaf by leaf           |
+| Main complexity setting | `max_depth`                     | `num_leaves`              | `depth`                            | `max_leaf_nodes`       |
+| Categorical features    | Native, optional                | Native, by index          | Ordered target statistics          | Native, max 255 levels |
 | Missing values          | Learned default direction       | Learned                   | Learned                            | Learned                |
-| Relative fit speed      | Moderate                        | Fastest                   | Slowest here                       | Fast                   |
-| Best fit for            | A safe, well-documented default | Large data, tight budgets | Many high-cardinality categoricals | No extra dependency    |
+| Relative fit speed      | Medium                          | Fastest                   | Slowest here                       | Fast                   |
+| Best for                | A safe, well-documented default | Large data, tight budgets | Many high-cardinality categoricals | No extra library       |
 
 > Key Takeaways
-> - All three libraries bin continuous features into histograms once, which
->   replaces per-node sorting with a cheap bucket scan.
-> - XGBoost puts L1 and L2 penalties on leaf weights directly into the
->   split-gain formula and grows level-wise.
-> - LightGBM grows leaf-wise, which is more expressive per leaf and overfits
->   sooner, so `num_leaves` must be paired with `min_child_samples`.
-> - `num_leaves = 2^max_depth` is not an equivalence between the two growth
->   strategies, because leaf-wise growth spends its budget unevenly.
-> - CatBoost's ordered target statistics encode high-cardinality categoricals
->   without the target leakage a naive target encoding introduces.
-> - Every library learns a default direction for missing values, which is
->   strictly more expressive than imputing a mean.
-> - Accuracy differences between libraries are usually small; fit time,
->   categorical handling, and team familiarity decide the choice.
-> - scikit-learn's histogram booster needs no extra dependency but caps native
->   categorical cardinality at 255 levels.
+> - All three libraries group continuous features into bins once, which
+>   replaces sorting at every node with a quick scan over bins.
+> - XGBoost puts L1 and L2 penalties on leaf values into the split scoring and
+>   grows trees level by level.
+> - LightGBM grows trees leaf by leaf. This is more powerful per leaf but
+>   overfits sooner, so pair `num_leaves` with `min_child_samples`.
+> - `num_leaves = 2^max_depth` does not make the two growth styles
+>   equivalent, because leaf-wise growth spends its leaves unevenly.
+> - CatBoost's ordered target statistics encode categorical features with
+>   many levels without the leak that naive target encoding causes.
+> - Every library learns where to send missing values, which is more flexible
+>   than filling them with the mean.
+> - Accuracy differences between libraries are usually small. Fit time,
+>   categorical handling and team experience decide the choice.
+> - scikit-learn's histogram booster needs no extra library but allows at
+>   most 255 levels per native categorical feature.
 
 > 🧪 Practice
-> 1. Fit XGBoost, LightGBM, and CatBoost on the same dataset with matched
->    learning rate and round count, and report fit time alongside test AUC.
-> 2. Compare LightGBM at `num_leaves = 2^d` against XGBoost at `max_depth = d`
->    for d in 3, 5, 7, and explain why the two are not equivalent.
-> 3. Introduce 20% missing values into your strongest feature, fit without an
->    imputer, and compare test performance against mean imputation.
-> 4. Build a 500-level categorical feature and compare one-hot encoding,
->    XGBoost's native handling, and CatBoost on both accuracy and memory.
+> 1. Fit XGBoost, LightGBM and CatBoost on the same dataset with the same
+>    learning rate and number of rounds. Report fit time and test AUC.
+> 2. Compare LightGBM with `num_leaves = 2^d` against XGBoost with
+>    `max_depth = d` for d = 3, 5 and 7. Explain why they are not equivalent.
+> 3. Make 20% of your strongest feature missing, fit without filling the
+>    gaps, and compare test performance with mean imputation.
+> 4. Build a categorical feature with 500 levels and compare one-hot
+>    encoding, XGBoost's native handling and CatBoost on accuracy and memory.
 > 5. Implement a naive target encoding that uses each row's own target, and
->    demonstrate the leakage by comparing training and held-out scores.
-> 6. Interview: A teammate reports that switching from XGBoost to LightGBM
->    improved validation AUC from 0.81 to 0.86 with default settings. What is
->    your first question? (Hint: think about what defaults differ, and whether
->    the comparison held the effective model capacity fixed.)
+>    show the leak by comparing training and held-out scores.
+> 6. Interview: A teammate says that switching from XGBoost to LightGBM
+>    raised validation AUC from 0.81 to 0.86 with default settings. What is
+>    your first question? (Hint: which defaults differ, and did the comparison
+>    keep the model's effective size the same?)
 
 
 #### Feature Importance from Trees
 
-Every tree library exposes a `feature_importances_` attribute, it takes one
-line to print, and it is the single most misread number in applied machine
-learning. The problem is not that it is meaningless -- it is that it answers a
-narrower question than the one people ask of it, and it has specific,
-predictable biases.
+Every tree library has a `feature_importances_` attribute. It takes one line to
+print, and it is one of the most misread numbers in applied machine learning.
+It is not meaningless. The problem is that it answers a narrower question than
+people think, and it has specific, predictable biases.
 
 **Impurity importance** (also called Gini importance or mean decrease in
-impurity) sums, over every split on a feature, the impurity reduction that
-split achieved, weighted by how many rows passed through. It is free, because
-the numbers were already computed during training. It has two serious flaws.
+impurity, MDI) adds up, over every split on a feature, how much that split
+reduced impurity, weighted by how many rows passed through it. It costs
+nothing, because these numbers were already computed during training. It has
+two serious flaws:
 
-It is computed on **training data**, so a feature that only helped by fitting
-noise is credited for having done so. And it is **biased toward
-high-cardinality features**. A continuous feature with three thousand distinct
-values offers three thousand candidate thresholds, and with that many chances
-one of them will reduce impurity somewhat even if the feature is pure noise. A
-binary feature gets one chance. In the demonstration below, a useless
-continuous feature scores over six times a useless binary one, purely for
-having more split points.
+- It is computed on **training data**, so a feature that only helped by
+  fitting noise still gets credit.
+- It **favours features with many distinct values**. A continuous feature with
+  three thousand distinct values offers three thousand possible thresholds.
+  With that many tries, one of them will reduce impurity a bit even if the
+  feature is pure noise. A binary feature gets only one try. In the example
+  below, a useless continuous feature scores more than six times higher than
+  a useless binary one, just because it has more possible split points.
 
-**Permutation importance** fixes both. Take the fitted model, shuffle one
-column of the *held-out* set, and measure how much your chosen metric
-degrades. Shuffling breaks the column's relationship with the target while
-leaving its marginal distribution intact, so the drop measures how much the
-model was relying on that column. It is evaluated on data the model never saw,
-against the metric you actually care about, and it works for any model, not
-just trees. The costs are compute -- one prediction pass per feature per
-repeat -- and that it must be repeated to get an error bar.
+**Permutation importance** fixes both flaws. Take the fitted model, shuffle one
+column of the *held-out* data, and measure how much your chosen metric gets
+worse. Shuffling breaks the link between that column and the target but keeps
+the column's values, so the drop shows how much the model relied on it. It
+uses data the model never saw, uses the metric you care about, and works for
+any model, not only trees. The costs: it needs one prediction pass per feature
+per repeat, and it must be repeated to get an error bar.
 
-**Drop-column importance** refits the model without each feature. This is the
-most direct reading of "how much does this feature contribute", and it is
-expensive: one full refit per feature.
+**Drop-column importance** refits the model without each feature in turn. This
+answers "how much does this feature add?" most directly, but it is expensive:
+one full refit per feature.
 
-Now the failure that all three share, and that no amount of cleverness
-removes. **Correlated features split their credit.** If two near-duplicate
-columns carry one signal, each individually looks half as important as the
-signal is, because the model can lean on either one. Shuffle one and the other
-covers for it. Drop one and the other absorbs its whole role. The
-demonstration below shows a feature whose permutation importance nearly
-quadruples the moment its twin is removed, while held-out accuracy barely
-moves. The conclusion is not that importance is broken; it is that
-**importance is a statement about the fitted model, not about the world**. If
-you want to know what the underlying signal is worth, you must drop or permute
-the correlated *group*.
+All three share one problem that no trick can remove: **correlated features
+split their credit**. If two near-identical columns carry one signal, each one
+looks about half as important as the signal really is, because the model can
+use either. Shuffle one and the other covers for it. Drop one and the other
+takes over its whole role. In the example below, one feature's permutation
+importance almost quadruples when its twin is removed, while held-out accuracy
+barely changes. This does not mean importance is broken. It means **importance
+describes the fitted model, not the world**. To measure what an underlying
+signal is worth, shuffle or drop the whole correlated *group*.
 
-One habit is worth adopting: **calibrate against a null**. Shuffle the target,
-refit, and look at the importance scores that pure noise produces. In the
-example below the largest impurity importance from a shuffled target is 0.27
--- higher than several "real" features scored in the genuine model. "This
-feature has non-zero importance" is not a finding until you know what zero
-looks like.
+One habit worth adopting: **compare against a noise baseline**. Shuffle the
+target, refit, and look at the importance scores that pure noise produces. In
+the example below, the largest impurity importance with a shuffled target is
+0.27, higher than several "real" features in the real model. "This feature has
+non-zero importance" means nothing until you know what zero looks like.
 
-Finally, note what none of these measure: **causality**. A feature can be
-important to a model because it is a proxy, a leak, or a downstream
-consequence of the target. Importance ranks reliance, not mechanism.
+Finally, none of these measure **cause**. A feature can be important to a model
+because it is a proxy, a leak, or a consequence of the target. Importance shows
+what the model relies on, not how the world works.
 
 ```python
 import numpy as np
@@ -52206,1287 +52176,107 @@ print("   not evidence of anything. Compare against this band.")
 | --------------------------- | -------------- | ------------------------------- | --------------------- |
 | Data used                   | Training       | Held-out                        | Held-out, after refit |
 | Cost                        | Free           | One pass per feature per repeat | One refit per feature |
-| Cardinality bias            | Yes, strong    | No                              | No                    |
+| Favours many distinct values | Yes, strongly | No                              | No                    |
 | Rewards overfitting         | Yes            | No                              | No                    |
 | Works for any model         | No, trees only | Yes                             | Yes                   |
 | Handles correlated features | No             | No                              | No                    |
-| Measures causality          | No             | No                              | No                    |
+| Measures cause              | No             | No                              | No                    |
 
 > Key Takeaways
-> - Impurity importance is free but computed on training data and biased
->   toward features with many distinct values, so a useless continuous column
->   outscores a useless binary one.
-> - Permutation importance measures held-out degradation under your real
->   metric and is model-agnostic, at the cost of one prediction pass per
+> - Impurity importance is free, but it uses training data and favours
+>   features with many distinct values, so a useless continuous column beats
+>   a useless binary one.
+> - Permutation importance measures how much your real metric drops on
+>   held-out data and works for any model. It costs one prediction pass per
 >   feature per repeat.
-> - Drop-column importance is the most direct reading and requires a refit per
+> - Drop-column importance is the most direct measure and needs one refit per
 >   feature.
-> - All three split credit between correlated features, so an individual score
->   can be near zero for a column carrying a genuinely important signal.
-> - Importance describes the fitted model's reliance, not the world's
->   structure; to value a signal spread across columns, permute or drop the
+> - All three split credit between correlated features, so a column carrying
+>   an important signal can score close to zero.
+> - Importance describes what the fitted model relies on, not how the world
+>   works. To value a signal spread across columns, shuffle or drop the whole
 >   group.
-> - Calibrate against a shuffled-target null before treating any non-zero
+> - Compare against a shuffled-target baseline before treating any non-zero
 >   importance as a finding.
-> - No importance measure implies causality, since proxies, leaks, and
->   downstream consequences of the target all score highly.
+> - No importance measure shows cause. Proxies, leaks and consequences of the
+>   target can all score highly.
 
 > 🧪 Practice
 > 1. Add a pure-noise continuous column and a pure-noise binary column to a
 >    dataset, fit a forest, and compare their impurity importances.
-> 2. Compute permutation importance on both the training and the test set and
->    explain any features whose rank changes between them.
-> 3. Duplicate your strongest feature with small added noise, then report
->    permutation importance for the pair before and after dropping one.
-> 4. Implement drop-column importance and compare its ranking against
->    permutation importance, noting where they disagree.
+> 2. Compute permutation importance on the training set and on the test set.
+>    Explain any features whose rank changes.
+> 3. Copy your strongest feature with a little noise added, then report
+>    permutation importance for both copies before and after dropping one.
+> 4. Implement drop-column importance and compare its ranking with
+>    permutation importance. Note where they disagree.
 > 5. Shuffle the target, refit, and report the largest importance any feature
->    achieves. Use it as a threshold on your real model.
-> 6. Interview: A stakeholder wants to cut the two lowest-importance features
->    from a model to simplify a pipeline, and those two features happen to be
->    highly correlated with each other. What do you check first? (Hint: what
->    happens to each one's score when the other is present?)
-
-
-<a id="103-instance-and-kernel-methods"></a>
-### 10.3 Instance and Kernel Methods
-
-The models in this section make no attempt to summarise the training data into
-parameters: they keep it, or keep the part of it that matters, and answer new
-questions by comparing against what they have stored. That shift moves the
-computational cost from training to inference and makes the definition of
-"similar" the central modelling decision.
-
-#### k-Nearest Neighbors
-
-Almost every model so far compresses the training data into parameters and
-then discards it. k-nearest-neighbours does the opposite: it keeps every row,
-and to predict for a new point it finds the k closest stored rows and lets
-them vote. That is the whole algorithm. There is no training step -- fitting
-is literally storing the data.
-
-This is worth taking seriously rather than treating as a toy. k-NN is a
-**non-parametric** model in the strict sense: it makes no assumption about the
-functional form of the relationship. Give it enough data and it converges to
-the optimal decision boundary whatever shape that boundary has. It handles
-multi-class problems with no modification and it is trivially explainable --
-"we predicted churn because these fifteen most similar customers churned" is a
-better explanation than most models can offer.
-
-**k is the bias-variance trade-off with nothing hidden.** At k=1 each point is
-its own nearest neighbour, so training accuracy is exactly 1.0 by construction
-and the boundary wraps around every noisy label: maximum variance, minimum
-bias. As k grows the prediction averages over a wider neighbourhood and
-smooths out; at k=n every prediction is the global majority, which is maximum
-bias and zero variance. Note the immediate consequence: **training accuracy is
-meaningless for k-NN**, and k must be chosen by cross-validation.
-
-Three practical facts determine whether k-NN will work at all.
-
-**Scaling is mandatory.** Distance is computed in the raw units of the
-columns. If income ranges over 100,000 and age over 50, then income
-contributes roughly two thousand times more to squared distance, and age is
-effectively invisible. The demonstration below shows unscaled k-NN scoring
-*below chance* on a problem where the scaled version reaches 98%.
-
-**The curse of dimensionality is fatal, not inconvenient.** In high
-dimensions, all pairwise distances converge toward each other. With 500
-features, the farthest of a thousand random points is only about 1.2 times as
-far as the nearest. When every point is roughly equidistant, "nearest" carries
-almost no information. A related way to see it: to capture 10% of the data
-range along each of 10 dimensions you need a cube covering 79% of each axis,
-which is not a neighbourhood in any meaningful sense. Reduce dimensions first,
-or use a model that does not rely on distance.
-
-**The cost lands at inference time.** Fitting is O(1) storage; predicting
-requires comparing against every stored row. Tree-based spatial indices (k-d
-trees, ball trees) help in low dimensions and degrade to brute force in high
-ones. This is exactly backwards from every parametric model, and it is why
-k-NN is awkward in latency-sensitive production systems -- though the same
-nearest-neighbour machinery, backed by an approximate index, is what powers
-modern vector search.
-
-Two refinements are worth knowing. **Distance weighting** lets closer
-neighbours vote more loudly, which matters most at large k where you want
-smoothing without letting distant points count equally. And for regression,
-the prediction is the mean (or weighted mean) of the neighbours' targets
-rather than a vote.
-
-```python
-import numpy as np
-import pandas as pd
-from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
-from sklearn.datasets import make_moons
-
-rng = np.random.default_rng(31)
-
-# --- THE ALGORITHM: there is no training. Store the data, and at predict time
-# find the k closest rows and vote.
-X, y = make_moons(n_samples=1200, noise=0.28, random_state=0)
-Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3, random_state=0,
-                                      stratify=y)
-
-def knn_predict(Xq, Xtr, ytr, k):
-    """k-NN from scratch, to show there is nothing hidden in the library."""
-    d = np.sqrt(((Xq[:, None, :] - Xtr[None, :, :]) ** 2).sum(-1))  # all pairs
-    idx = np.argsort(d, axis=1)[:, :k]                              # k closest
-    return (ytr[idx].mean(axis=1) > 0.5).astype(int)                # majority
-
-hand = knn_predict(Xte, Xtr, ytr, 15)
-lib = KNeighborsClassifier(n_neighbors=15).fit(Xtr, ytr).predict(Xte)
-print(f"hand-rolled agrees with sklearn on {np.mean(hand == lib):.1%} of rows")
-print(f"test accuracy {np.mean(hand == yte):.4f}")
-
-# --- K IS THE SMOOTHNESS DIAL: it IS the bias-variance trade-off, visibly. ---
-print(f"\n{'k':>5s} {'train':>7s} {'test':>7s} {'5-fold cv':>10s}  behaviour")
-notes = {1: "memorises every point, incl. noise", 5: "still jagged",
-         15: "about right here", 51: "smooth", 201: "over-smoothed",
-         len(Xtr): "predicts the global majority, always"}
-for k in [1, 5, 15, 51, 201, len(Xtr)]:
-    m = KNeighborsClassifier(n_neighbors=k).fit(Xtr, ytr)
-    # k larger than a CV fold's training size cannot be cross-validated at all,
-    # which is itself a hint that k=n is a degenerate setting.
-    cv = (cross_val_score(KNeighborsClassifier(n_neighbors=k), Xtr, ytr,
-                          cv=5).mean() if k <= 4 * len(Xtr) // 5 else float("nan"))
-    cv_s = f"{cv:10.4f}" if cv == cv else f"{'n/a':>10s}"
-    print(f"{k:5d} {m.score(Xtr, ytr):7.4f} {m.score(Xte, yte):7.4f}"
-          f" {cv_s}  {notes[k]}")
-print("k=1 has training accuracy 1.0 BY CONSTRUCTION: every point is its own")
-print("nearest neighbour. Training accuracy is meaningless for k-NN.")
-
-# --- SCALING IS NOT OPTIONAL: distance is in the units of the columns. ---
-df = pd.DataFrame({
-    "age": rng.integers(20, 70, 2000).astype(float),        # range ~50
-    "income": rng.normal(60_000, 20_000, 2000),             # range ~100,000
-})
-target = ((df["age"] > 45) ^ (df["income"] > 60_000)).astype(int)
-Atr, Ate, btr, bte = train_test_split(df, target, test_size=0.3, random_state=0)
-raw = KNeighborsClassifier(15).fit(Atr, btr)
-scaled = make_pipeline(StandardScaler(), KNeighborsClassifier(15)).fit(Atr, btr)
-print(f"\nSCALING  age spans ~50 units, income spans ~100,000")
-print(f"  unscaled k-NN test accuracy {raw.score(Ate, bte):.4f}")
-print(f"  scaled   k-NN test accuracy {scaled.score(Ate, bte):.4f}")
-print("  Unscaled, a 1-year age difference contributes 1 to squared distance")
-print("  while a $1 income difference contributes 1 as well -- so income, with")
-print("  its far larger numeric range, dominates and age is invisible.")
-
-# --- THE CURSE OF DIMENSIONALITY: 'nearest' stops meaning anything. ---
-print("\nTHE CURSE OF DIMENSIONALITY")
-print(f"  {'dims':>5s} {'min dist':>9s} {'max dist':>9s} {'ratio':>7s}"
-      f" {'mean dist':>13s}")
-for d in [1, 2, 5, 10, 50, 500]:
-    P = rng.normal(0, 1, (1000, d))
-    q = rng.normal(0, 1, (1, d))
-    dist = np.sqrt(((P - q) ** 2).sum(1))
-    # the contrast between nearest and farthest is what k-NN relies on
-    print(f"  {d:5d} {dist.min():9.3f} {dist.max():9.3f}"
-          f" {dist.max()/dist.min():7.2f} {dist.mean():13.3f}")
-print("  In 500 dimensions the farthest point is barely 1.5x the distance of")
-print("  the nearest. When all distances are nearly equal, 'nearest neighbour'")
-print("  carries almost no information, and every distance-based method suffers.")
-
-# How many points you need to keep a neighbourhood locally dense:
-print("\n  to capture 10% of the data range in each dimension you need a cube")
-print("  of side 0.1^(1/d) in a unit hypercube:")
-for d in [1, 2, 10, 100]:
-    print(f"    d={d:4d}: side length {0.1 ** (1/d):.4f}"
-          f"  ({'a true neighbourhood' if d < 5 else 'nearly the whole range'})")
-
-# --- REGRESSION AND THE WEIGHTING CHOICE. ---
-xr = rng.uniform(0, 10, 800).reshape(-1, 1)
-yr = np.sin(xr[:, 0]) + rng.normal(0, 0.3, 800)
-# A RANDOM split, not a positional one: xr sorted plus a positional split would
-# put the whole test set outside the training range, which k-NN cannot do.
-Rtr, Rte, str_, ste = train_test_split(xr, yr, test_size=0.3, random_state=0)
-print(f"\n{'k':>4s} {'uniform RMSE':>13s} {'distance RMSE':>14s}")
-for k in [1, 5, 20, 60, 200]:
-    a = KNeighborsRegressor(k, weights="uniform").fit(Rtr, str_)
-    b = KNeighborsRegressor(k, weights="distance").fit(Rtr, str_)
-    ra = np.sqrt(np.mean((ste - a.predict(Rte)) ** 2))
-    rb = np.sqrt(np.mean((ste - b.predict(Rte)) ** 2))
-    print(f"{k:4d} {ra:13.4f} {rb:14.4f}")
-print("Distance weighting matters most at large k, where it lets you smooth")
-print("without letting far-away points vote as loudly as close ones.")
-
-# --- THE REAL COST IS AT PREDICT TIME, NOT FIT TIME. ---
-import time
-for n in [2000, 20_000, 100_000]:
-    Z = rng.normal(0, 1, (n, 20))
-    t = (rng.random(n) < 0.5).astype(int)
-    m = KNeighborsClassifier(15)
-    t0 = time.perf_counter(); m.fit(Z, t); fit = time.perf_counter() - t0
-    q = rng.normal(0, 1, (500, 20))
-    t0 = time.perf_counter(); m.predict(q); pred = time.perf_counter() - t0
-    print(f"  n={n:7,d}: fit {fit*1000:7.2f} ms   predict 500 rows"
-          f" {pred*1000:8.2f} ms")
-print("  Fitting is just storing the data. The cost moved to inference, which")
-print("  is the opposite of every model that trains parameters.")
-```
-
-```text
-  THE ALGORITHM
-
-    new point ?           find the k=5 nearest stored rows and vote
-                          
-        o   o   x         neighbours: o o x o o  ->  predict o
-          o ? x
-        o   x   x         no parameters were fitted. the data IS the model.
-
-  k IS THE BIAS-VARIANCE DIAL, WITH NOTHING HIDDEN
-
-      k   train    test  5-fold cv  behaviour
-      1  1.0000  0.9250     0.9024  memorises every point, incl. noise
-      5  0.9524  0.9333     0.9250  still jagged
-     15  0.9405  0.9361     0.9345  about right here
-     51  0.9369  0.9417     0.9381  smooth
-    201  0.9274  0.9194     0.9071  over-smoothed
-    840  0.5000  0.5000        n/a  predicts the global majority, always
-
-    k=1 train accuracy is 1.0 BY CONSTRUCTION -- every point is its own
-    nearest neighbour. Training accuracy tells you nothing here.
-
-    k=1 boundary            k=51 boundary
-      _/\_/\__/\_             ___________
-     /          \            /           \
-    |  jagged    |          |   smooth    |
-     \_/\__/\_/\_/           \___________/
-
-  SCALING IS NOT OPTIONAL
-  (age spans ~50 units, income spans ~100,000)
-
-    unscaled k-NN test accuracy 0.4867   <- WORSE THAN CHANCE
-    scaled   k-NN test accuracy 0.9783
-
-    Unscaled, one dollar of income counts the same as one year of age,
-    so income's larger numeric range swamps the distance entirely.
-
-  THE CURSE OF DIMENSIONALITY
-
-     dims  min dist  max dist   ratio     mean dist
-        1     0.001     4.447 5347.14         0.986
-        2     0.029     4.584  158.55         1.664
-        5     0.399     6.712   16.82         2.683
-       10     1.503     6.274    4.18         3.776
-       50     6.861    11.708    1.71         9.213
-      500    29.464    34.540    1.17        32.086
-                                 ^^^^
-                    farthest point is 1.17x the nearest.
-                    "nearest neighbour" has stopped meaning anything.
-
-    side of a cube capturing 10% of the range per dimension:
-      d=1    0.1000   a true neighbourhood
-      d=2    0.3162   a true neighbourhood
-      d=10   0.7943   nearly the whole range
-      d=100  0.9772   nearly the whole range
-
-  DISTANCE WEIGHTING MATTERS AT LARGE k
-
-      k  uniform RMSE  distance RMSE
-      1        0.4308         0.4308
-      5        0.3491         0.3638
-     20        0.3212         0.3462
-     60        0.3262         0.3390
-    200        0.4728         0.3455   <- weighting rescues heavy smoothing
-
-  THE COST IS AT INFERENCE, NOT TRAINING
-
-    n=  2,000: fit  0.81 ms   predict 500 rows    8.29 ms
-    n= 20,000: fit  3.40 ms   predict 500 rows   33.63 ms
-    n=100,000: fit  6.01 ms   predict 500 rows  113.64 ms
-```
-
-> Key Takeaways
-> - k-NN has no training step: fitting stores the data and all the work
->   happens at prediction time, which is the reverse of every parametric
->   model.
-> - It is genuinely non-parametric, converging to the optimal boundary of any
->   shape given enough data, and it explains its predictions naturally.
-> - k controls the bias-variance trade-off directly, and training accuracy is
->   exactly 1.0 at k=1, making it useless for choosing k.
-> - Features must be scaled, because distance is computed in raw column units
->   and a large-range column dominates.
-> - In high dimensions all distances converge, so "nearest" loses its meaning
->   and k-NN degrades badly; reduce dimensions first.
-> - Distance weighting lets you use a large k for smoothness without giving
->   distant points equal say.
-> - Inference cost grows with the training set, which makes plain k-NN awkward
->   in latency-sensitive systems and motivates approximate indices.
-
-> 🧪 Practice
-> 1. Implement k-NN classification from scratch with a full pairwise distance
->    matrix and confirm it matches `KNeighborsClassifier` exactly.
-> 2. Sweep k from 1 to n and plot training accuracy, test accuracy, and
->    cross-validated accuracy on one axis. Explain why one of the three is
->    flat.
-> 3. Build a dataset with two features on wildly different scales and report
->    k-NN accuracy with and without standardisation.
-> 4. For dimensions 1, 5, 20, 100, and 500, sample 1000 points and report the
->    ratio of the farthest to the nearest distance from a query point.
-> 5. Compare `weights="uniform"` against `weights="distance"` across k values
->    from 1 to 200 on a regression problem.
-> 6. Time prediction for 1000 query rows against training sets of 1000,
->    10,000, and 100,000 rows, and fit a curve to the growth.
-> 7. Interview: A team wants to use k-NN on 300-dimensional text embeddings
->    and asks whether they should standardise the features first. What do you
->    tell them, and what else concerns you? (Hint: consider what embedding
->    dimensions mean individually, and which distance metric the embeddings
->    were trained for.)
-
-
-#### Distance Metric Selection
-
-Every instance-based method, every kernel method, and every clustering
-algorithm rests on a definition of "close". That definition is a modelling
-assumption as substantive as choosing a functional form, and it is almost
-always left at the default. This topic is about what the defaults assume and
-when they are wrong.
-
-**Euclidean distance** (L2) is the straight-line distance,
-`sqrt(sum((a-b)^2))`. Squaring means one large per-axis gap dominates many
-small ones. It is the right default for genuinely geometric data where all
-dimensions are commensurable.
-
-**Manhattan distance** (L1) is `sum(|a-b|)`, the distance walking along the
-axes. It spreads blame evenly across dimensions and is more robust when one
-feature has an outlier. It also degrades more gracefully in high dimensions.
-
-**Chebyshev distance** (L-infinity) is `max(|a-b|)`, the single worst axis.
-Use it when a large difference in any one dimension is disqualifying
-regardless of the rest.
-
-These three are cases of the **Minkowski distance** with `p = 1, 2, infinity`,
-and `p` is a real dial: small `p` spreads blame across axes, large `p` is
-dominated by the worst one. Choosing `p` encodes which kind of difference you
-consider more significant.
-
-**Cosine distance** is `1 - (a.b)/(|a||b|)`: the angle between the vectors,
-ignoring their lengths entirely. This is the right choice whenever magnitude
-is a nuisance rather than a signal. A long document and a short one on the
-same topic have similar direction and very different length, so Euclidean
-distance calls the long version *farther* than an unrelated document while
-cosine calls them identical. Text, TF-IDF vectors, and embeddings are the
-standard cases. Note the useful equivalence: once rows are L2-normalised,
-Euclidean distance is a monotone function of cosine distance, so normalising
-the rows and using the default metric expresses the same intent more
-transparently.
-
-**Mahalanobis distance** accounts for correlation between features. Euclidean
-distance treats the axes as independent, so when two features are highly
-correlated it double-counts the shared direction. Mahalanobis distance divides
-out the covariance matrix, which is equivalent to whitening the data and then
-measuring Euclidean distance. The consequence is concrete: in a tightly
-correlated cloud, two points at identical Euclidean distance from the centre
-can be wildly different in how unusual they are, depending on whether they sit
-along or across the correlation.
-
-**Mixed types** need a metric that handles them. There is no meaningful
-subtraction between "Germany" and "Brazil", and one-hot encoding plus
-Euclidean distance silently asserts that every category mismatch costs
-`sqrt(2)` -- a number nobody chose deliberately, and one that changes as you
-add levels. **Gower distance** normalises each numeric column by its range,
-scores each categorical column 0 or 1, and averages, giving every column equal
-weight by construction.
-
-The rule underneath all of this: the metric encodes what you believe
-similarity means. Treat it as a hyperparameter to cross-validate, not a
-default to inherit.
-
-```python
-import numpy as np
-import pandas as pd
-from scipy.spatial.distance import cdist
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
-
-rng = np.random.default_rng(37)
-
-# --- THE SAME TWO POINTS, FIVE METRICS, FIVE DIFFERENT ANSWERS. ---
-a = np.array([1.0, 2.0, 3.0, 0.0])
-b = np.array([4.0, 0.0, 3.0, 1.0])
-print("a =", a, "\nb =", b)
-print(f"  euclidean (L2) {np.sqrt(((a-b)**2).sum()):.4f}"
-      "   straight line; dominated by the largest gap")
-print(f"  manhattan (L1) {np.abs(a-b).sum():.4f}"
-      "   sum of per-axis gaps; robust to one big one")
-print(f"  chebyshev (Linf) {np.abs(a-b).max():.4f}"
-      " the single worst axis")
-cos = 1 - a @ b / (np.linalg.norm(a) * np.linalg.norm(b))
-print(f"  cosine distance {cos:.4f}"
-      "  angle only; magnitude is discarded entirely")
-
-# --- WHY COSINE DOMINATES TEXT AND EMBEDDINGS: length should not matter. ---
-short_doc = np.array([2.0, 1.0, 0.0, 3.0])          # same topic mix...
-long_doc = short_doc * 10                            # ...ten times as long
-other = np.array([0.0, 3.0, 4.0, 0.0])
-print("\nA SHORT AND A LONG DOCUMENT ON THE SAME TOPIC")
-for name, v in [("long version of the same doc", long_doc),
-                ("a genuinely different doc", other)]:
-    e = np.sqrt(((short_doc - v) ** 2).sum())
-    c = 1 - short_doc @ v / (np.linalg.norm(short_doc) * np.linalg.norm(v))
-    print(f"  {name:30s} euclidean {e:7.3f}   cosine {c:.4f}")
-print("  Euclidean calls the long version FARTHER than an unrelated document.")
-print("  Cosine calls it identical, which is the right answer for topic.")
-
-# --- MINKOWSKI p INTERPOLATES, AND p CHANGES WHICH ERRORS DOMINATE. ---
-print("\nMINKOWSKI DISTANCE AS p VARIES  (one big gap vs many small ones)")
-spread = np.array([1.0, 1.0, 1.0, 1.0, 1.0])         # five small differences
-spike = np.array([2.3, 0.0, 0.0, 0.0, 0.0])          # one large difference
-print(f"  {'p':>5s} {'five gaps of 1':>15s} {'one gap of 2.3':>16s}  verdict")
-for p in [1, 2, 3, 10, np.inf]:
-    ds = np.linalg.norm(spread, p)
-    dk = np.linalg.norm(spike, p)
-    v = "spread is farther" if ds > dk else "spike is farther"
-    plabel = "inf" if p == np.inf else str(p)
-    print(f"  {plabel:>5s} {ds:15.4f} {dk:16.4f}  {v}")
-print("  Small p spreads blame across axes; large p is dominated by the worst")
-print("  axis. Your choice of p encodes which kind of difference you consider")
-print("  more significant, which is a modelling decision, not a default.")
-
-# --- MAHALANOBIS: the metric that accounts for CORRELATION. ---
-# When features are correlated, Euclidean distance double-counts the shared
-# direction. Mahalanobis divides out the covariance first.
-cov = np.array([[1.0, 0.92], [0.92, 1.0]])
-L = np.linalg.cholesky(cov)
-pts = rng.normal(0, 1, (800, 2)) @ L.T                # a tight diagonal cloud
-centre = np.zeros(2)
-inv = np.linalg.inv(np.cov(pts.T))
-cand = np.array([[2.0, 2.0],        # ALONG the correlation -> ordinary
-                 [2.0, -2.0]])      # ACROSS it -> genuinely unusual
-print("\nMAHALANOBIS  a 0.92-correlated cloud, two equally-Euclidean points")
-for pt in cand:
-    e = np.sqrt((pt ** 2).sum())
-    mh = float(np.sqrt(pt @ inv @ pt))
-    # empirical check: how many cloud points are at least this extreme?
-    md_all = np.sqrt(np.einsum("ij,jk,ik->i", pts, inv, pts))
-    print(f"  point {str(pt):12s} euclidean {e:.4f}  mahalanobis {mh:6.3f}"
-          f"  more extreme than {np.mean(md_all < mh):6.1%} of the cloud")
-print("  Identical Euclidean distance, very different meaning. Mahalanobis is")
-print("  Euclidean distance after whitening, which is also exactly what")
-print("  standardising does when the features are uncorrelated.")
-
-# --- MIXED TYPES: you cannot average a metre and a category. ---
-df = pd.DataFrame({
-    "age": [25, 40, 41, 62],
-    "plan": ["free", "pro", "pro", "free"],
-    "region": ["eu", "us", "eu", "us"],
-})
-def gower(frame):
-    """Gower distance: per-column normalised distance, then averaged.
-    Numeric columns use |a-b| / range; categorical columns use 0 or 1."""
-    n = len(frame)
-    D = np.zeros((n, n))
-    for col in frame.columns:
-        v = frame[col]
-        if pd.api.types.is_numeric_dtype(v):
-            rng_ = v.max() - v.min()
-            d = np.abs(v.to_numpy()[:, None] - v.to_numpy()[None, :]) / rng_
-        else:
-            d = (v.to_numpy()[:, None] != v.to_numpy()[None, :]).astype(float)
-        D += d
-    return D / len(frame.columns)
-
-print("\nGOWER DISTANCE ON MIXED TYPES")
-print(df.to_string(index=False))
-print("\n", pd.DataFrame(np.round(gower(df), 3)).to_string())
-print("Rows 1 and 2 (ages 40 and 41, both pro, different region) are closest.")
-print("One-hot encoding plus Euclidean distance would instead make the region")
-print("mismatch cost sqrt(2), an arbitrary number nobody chose deliberately.")
-
-# --- CHOOSING A METRIC IS A TUNING DECISION, WITH CONSEQUENCES. ---
-n = 2500
-# Sparse, high-dimensional, count-like data whose MAGNITUDE varies a lot:
-# the shape of text retrieval, where document length is a nuisance.
-V = rng.poisson(0.5, (n, 60)).astype(float)
-topic = rng.integers(0, 3, n)
-for t in range(3):
-    V[topic == t, t * 20:(t + 1) * 20] += rng.poisson(0.3,
-                                                     ((topic == t).sum(), 20))
-length = rng.gamma(1.0, 8.0, n)[:, None]              # documents vary in length
-V = V * length                                        # magnitude now dominates
-Vtr, Vte, ttr, tte = train_test_split(V, topic, test_size=0.3, random_state=0,
-                                      stratify=topic)
-print("\nSPARSE COUNT DATA WITH VARYING MAGNITUDE: the metric decides")
-for metric in ["euclidean", "manhattan", "chebyshev", "cosine"]:
-    m = KNeighborsClassifier(15, metric=metric).fit(Vtr, ttr)
-    print(f"  {metric:12s} test accuracy {m.score(Vte, tte):.4f}")
-
-# L2-normalising the rows makes Euclidean distance a monotone function of
-# cosine distance, so the two become the same ranking.
-Vn = V / np.linalg.norm(V, axis=1, keepdims=True)
-Ntr, Nte, ntr, nte = train_test_split(Vn, topic, test_size=0.3, random_state=0,
-                                      stratify=topic)
-m = KNeighborsClassifier(15).fit(Ntr, ntr)
-print(f"  {'euclidean':12s} after L2-normalising rows: {m.score(Nte, nte):.4f}")
-print("  Cosine wins because it discards the length nuisance. Normalising the")
-print("  rows first gets you the same thing with the default metric, which is")
-print("  usually the cleaner way to express the intent in a pipeline.")
-```
-
-```text
-  THE SAME TWO POINTS, FOUR METRICS
-  a = [1, 2, 3, 0]   b = [4, 0, 3, 1]
-
-    euclidean  (L2)     3.7417   straight line
-    manhattan  (L1)     6.0000   sum of per-axis gaps
-    chebyshev  (Linf)   3.0000   the single worst axis
-    cosine              0.3186   angle only, magnitude discarded
-
-    L1 vs L2 vs Linf, as unit balls:
-
-      L1: a diamond      L2: a circle       Linf: a square
-          /\                 ___                +----+
-         /  \               /   \               |    |
-         \  /               \___/               +----+
-          \/
-
-  WHY COSINE DOMINATES TEXT AND EMBEDDINGS
-
-    short_doc = [2, 1, 0, 3]
-    long_doc  = short_doc * 10      same topic mix, ten times as long
-    other     = [0, 3, 4, 0]        a genuinely different document
-
-                                     euclidean   cosine
-    long version of the same doc        33.675   0.0000
-    a genuinely different doc            5.745   0.8396
-                                        ^^^^^^
-    Euclidean calls the long version FARTHER than an unrelated document.
-
-  MINKOWSKI p DECIDES WHICH DIFFERENCES MATTER
-
-        p  five gaps of 1   one gap of 2.3  verdict
-        1          5.0000           2.3000  spread is farther
-        2          2.2361           2.3000  spike is farther
-        3          1.7100           2.3000  spike is farther
-       10          1.1746           2.3000  spike is farther
-      inf          1.0000           2.3000  spike is farther
-
-  MAHALANOBIS: DISTANCE THAT KNOWS ABOUT CORRELATION
-  (a 0.92-correlated cloud; both points are 2.83 away in Euclidean terms)
-
-    point [ 2,  2]  mahalanobis 2.025  more extreme than  87.0% of cloud
-    point [ 2, -2]  mahalanobis 9.903  more extreme than 100.0% of cloud
-
-       x2 |        . ::.                 [2,2] lies ALONG the cloud:
-          |     .:::::.                  ordinary.
-          |   .::::.        * [2,2]
-        --+--:::.--------------- x1      [2,-2] lies ACROSS it:
-          | ::.                          genuinely unusual, though
-          |                 * [2,-2]     equally far in Euclidean terms.
-
-  GOWER DISTANCE ON MIXED TYPES
-
-     age plan region
-      25 free     eu
-      40  pro     us
-      41  pro     eu
-      62 free     us
-
-           0      1      2      3
-    0  0.000  0.802  0.477  0.667
-    1  0.802  0.000  0.342  0.532     rows 1 and 2 are closest:
-    2  0.477  0.342  0.000  0.856     ages 40 and 41, both pro
-    3  0.667  0.532  0.856  0.000
-
-    Each column contributes at most 1, by construction. One-hot plus
-    Euclidean would instead price a region mismatch at sqrt(2).
-
-  THE METRIC CHANGES THE ANSWER
-  (sparse count data whose magnitude varies a lot)
-
-    euclidean                        0.6987
-    manhattan                        0.6187
-    chebyshev                        0.5693
-    cosine                           0.7387   <- length is a nuisance here
-    euclidean after L2-normalising   0.7400   <- the same idea, stated better
-```
-
-| Metric      | Formula                          | Ignores magnitude | Handles correlation | Typical use                          |
-| ----------- | -------------------------------- | ----------------- | ------------------- | ------------------------------------ |
-| Euclidean   | `sqrt(sum((a-b)^2))`             | No                | No                  | Geometric, commensurable features    |
-| Manhattan   | `sum(abs(a-b))`                  | No                | No                  | Outlier-prone, high-dimensional      |
-| Chebyshev   | `max(abs(a-b))`                  | No                | No                  | Any single axis is disqualifying     |
-| Cosine      | `1 - a.b/(norm a * norm b)`      | Yes               | No                  | Text, TF-IDF, embeddings             |
-| Mahalanobis | `sqrt(d' S^-1 d)`                | No                | Yes                 | Correlated features, outlier scoring |
-| Gower       | Per-column, normalised, averaged | Per column        | No                  | Mixed numeric and categorical        |
-
-> Key Takeaways
-> - The distance metric is a modelling assumption about what similarity means,
->   not a default to inherit.
-> - Euclidean distance is dominated by the largest per-axis gap; Manhattan
->   spreads blame evenly; Chebyshev looks only at the worst axis.
-> - Minkowski `p` interpolates between them, and choosing it declares which
->   kind of difference you consider more significant.
-> - Cosine distance discards magnitude, which is correct whenever length is a
->   nuisance, as with documents and embeddings.
-> - L2-normalising rows makes Euclidean distance monotone in cosine distance,
->   so normalising is usually the clearer way to express that intent.
-> - Mahalanobis distance whitens by the covariance, so it correctly treats a
->   point across a correlated cloud as more unusual than one along it.
-> - One-hot plus Euclidean silently prices every category mismatch at
->   `sqrt(2)`; Gower distance gives each column explicit equal weight instead.
-
-> 🧪 Practice
-> 1. Compute Euclidean, Manhattan, Chebyshev, and cosine distance between the
->    same pair of vectors and explain why the rankings differ.
-> 2. Scale one vector by a factor of ten and report which metrics change.
-> 3. Sweep Minkowski `p` from 1 to 20 for a pair where one axis differs
->    greatly and a pair where many axes differ slightly, and find the
->    crossover `p`.
-> 4. Generate a highly correlated two-dimensional cloud and compare Euclidean
->    against Mahalanobis distance for a point along and a point across the
->    correlation.
-> 5. Implement Gower distance for a table with numeric and categorical columns
->    and compare its nearest-neighbour rankings against one-hot plus
->    Euclidean.
-> 6. Cross-validate `metric` as a k-NN hyperparameter on sparse count data and
->    report how much the choice is worth in accuracy.
-> 7. Interview: Your recommender uses Euclidean distance on user-item
->    interaction counts, and heavy users are always returned as everyone's
->    nearest neighbour. What is happening and what would you change? (Hint:
->    what does a heavy user's vector look like in magnitude compared with
->    direction?)
-
-
-#### Support Vector Machines
-
-Take a linearly separable two-class problem. There are infinitely many lines
-that separate the classes perfectly, and logistic regression will pick one
-according to its likelihood, but it has no special preference for a line that
-sits comfortably between the classes rather than grazing one of them. A
-support vector machine does: it picks the line with the **widest margin**, the
-largest possible gap between the boundary and the nearest point of either
-class.
-
-The intuition for why that is a good idea is robustness. A boundary that
-barely clears a training point will be on the wrong side of a similar future
-point. A boundary centred in the gap has the most room for error in both
-directions. The margin turns out to have a formal generalisation story too,
-but the geometric intuition is the useful one.
-
-The consequence is striking and defines the method. Only the points *on* the
-margin determine the solution. These are the **support vectors**, and every
-other point can be deleted without changing the fitted model at all. In the
-demonstration below, four of two hundred rows carry the entire model.
-
-Why does that happen? Because of the loss function. An SVM minimises **hinge
-loss**, `max(0, 1 - y*f(x))`, which is exactly zero for any point correctly
-classified beyond the margin. A point contributing zero loss contributes zero
-gradient and so has zero influence. Contrast log loss, which is small but
-never zero, so logistic regression uses every row forever. The trade is
-direct: hinge loss buys sparsity and gives up calibrated probabilities,
-because no likelihood is being maximised. `predict_proba` on an SVM is a
-post-hoc logistic fit to the decision values (Platt scaling), not a model
-output.
-
-Real data is not separable, so the **soft margin** allows violations at a
-price. `C` is that price. Small `C` means violations are cheap, so the model
-prefers a wide margin and tolerates misclassified points: heavy
-regularisation, many support vectors. Large `C` means violations are
-expensive, so the margin narrows and bends to accommodate outliers: light
-regularisation, few support vectors. Note the direction carefully -- **`C` is
-inverse regularisation strength**, which is the opposite convention to `alpha`
-in ridge and lasso, and a reliable source of confusion.
-
-Two practical points. **Scaling is mandatory**, for the same reason as k-NN:
-the margin and the RBF kernel are both functions of distance, so an unscaled
-column swamps them. And **kernel SVMs do not scale**: fitting is between
-quadratic and cubic in the number of rows, because the algorithm works with
-the pairwise kernel matrix. Past roughly a hundred thousand rows a kernel SVM
-is impractical, which is the main reason gradient-boosted trees displaced SVMs
-as the default for tabular data. `LinearSVC` solves the linear case directly
-and scales to millions of rows.
-
-SVMs remain a strong choice in a specific regime: moderate `n`, high `p`,
-where the margin's robustness pays off and the quadratic cost is still
-affordable. Text classification with tens of thousands of features and a few
-thousand documents is the canonical example.
-
-```python
-import numpy as np
-import pandas as pd
-from sklearn.svm import SVC, LinearSVC, SVR
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
-from sklearn.model_selection import train_test_split
-from sklearn.datasets import make_blobs, make_classification
-
-rng = np.random.default_rng(41)
-
-# --- THE IDEA: of all separating lines, prefer the one with the widest MARGIN.
-X, y = make_blobs(n_samples=200, centers=2, cluster_std=1.1, random_state=6)
-svm = make_pipeline(StandardScaler(), SVC(kernel="linear", C=1e6)).fit(X, y)
-sv = svm[-1].support_vectors_
-w = svm[-1].coef_[0]
-margin = 2.0 / np.linalg.norm(w)
-print("MAXIMUM MARGIN ON SEPARABLE DATA")
-print(f"  training rows        {len(X)}")
-print(f"  support vectors      {len(sv)}  ({len(sv)/len(X):.1%} of the data)")
-print(f"  margin width         {margin:.4f} (= 2 / ||w||)")
-print("  Only the support vectors matter: delete every other row and refit.")
-mask = np.zeros(len(X), bool)
-mask[svm[-1].support_] = True
-svm2 = make_pipeline(StandardScaler(),
-                     SVC(kernel="linear", C=1e6)).fit(X[mask], y[mask])
-print(f"  refit on support vectors ONLY: predictions identical on"
-      f" {np.mean(svm.predict(X) == svm2.predict(X)):.1%} of rows")
-
-# --- C IS THE SOFT-MARGIN DIAL: how much violation you will tolerate. ---
-Xo, yo = make_classification(n_samples=600, n_features=2, n_redundant=0,
-                             n_informative=2, n_clusters_per_class=1,
-                             class_sep=0.9, flip_y=0.08, random_state=3)
-Atr, Ate, btr, bte = train_test_split(Xo, yo, test_size=0.3, random_state=0,
-                                      stratify=yo)
-print(f"\n{'C':>8s} {'support vecs':>13s} {'margin':>8s} {'train':>7s} {'test':>7s}")
-for C in [0.01, 0.1, 1.0, 10.0, 1000.0]:
-    m = make_pipeline(StandardScaler(), SVC(kernel="linear", C=C)).fit(Atr, btr)
-    wv = m[-1].coef_[0]
-    print(f"{C:8.2f} {len(m[-1].support_):13d} {2/np.linalg.norm(wv):8.4f}"
-          f" {m.score(Atr, btr):7.4f} {m.score(Ate, bte):7.4f}")
-print("Small C: a wide margin, many violations tolerated, many support vectors.")
-print("Large C: a narrow margin that bends to fit outliers. C is INVERSE")
-print("regularisation strength -- large C means LESS regularisation.")
-
-# --- HINGE LOSS IS WHAT MAKES AN SVM AN SVM. ---
-# It is exactly zero for points correctly classified beyond the margin, which is
-# why most rows have no influence at all on the solution.
-print("\nHINGE LOSS  max(0, 1 - y*f(x))  vs LOG LOSS")
-print(f"  {'y*f(x)':>8s} {'hinge':>7s} {'log loss':>9s}  reading")
-for margin_val in [-2.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0]:
-    hinge = max(0.0, 1 - margin_val)
-    ll = np.log1p(np.exp(-margin_val))
-    note = ("inside the margin or wrong" if margin_val < 1
-            else "outside the margin: ZERO influence")
-    print(f"  {margin_val:8.1f} {hinge:7.3f} {ll:9.3f}  {note}")
-print("  Log loss is never exactly zero, so logistic regression uses EVERY row.")
-print("  Hinge loss is, so an SVM's solution depends only on the support vectors.")
-print("  That also means an SVM gives you no calibrated probability: there is no")
-print("  likelihood being maximised.")
-
-# --- SVM VS LOGISTIC REGRESSION, ON THE SAME DATA. ---
-print(f"\n{'model':34s} {'test acc':>9s} {'probabilities':>14s}")
-for label, est in [
-    ("logistic regression", LogisticRegression(max_iter=2000)),
-    ("linear SVM (hinge loss)", SVC(kernel="linear", C=1.0)),
-    ("RBF SVM", SVC(kernel="rbf", C=1.0, gamma="scale")),
-]:
-    m = make_pipeline(StandardScaler(), est).fit(Atr, btr)
-    has_proba = hasattr(est, "predict_proba") and not isinstance(est, SVC)
-    print(f"  {label:32s} {m.score(Ate, bte):9.4f}"
-          f" {'yes, calibrated' if has_proba else 'no, needs Platt':>14s}")
-
-# --- SCALING IS MANDATORY, FOR THE SAME REASON AS k-NN. ---
-df = pd.DataFrame({"a": rng.normal(0, 1, 800),
-                   "b": rng.normal(0, 1, 800) * 1000})
-lbl = ((df["a"] + df["b"] / 1000) > 0).astype(int)
-Ctr, Cte, dtr, dte = train_test_split(df, lbl, test_size=0.3, random_state=0)
-raw = SVC(kernel="rbf").fit(Ctr, dtr)
-sc = make_pipeline(StandardScaler(), SVC(kernel="rbf")).fit(Ctr, dtr)
-print(f"\nSCALING  column b is 1000x the scale of column a")
-print(f"  unscaled RBF SVM test accuracy {raw.score(Cte, dte):.4f}"
-      f"  ({len(raw.support_)} support vectors)")
-print(f"  scaled   RBF SVM test accuracy {sc.score(Cte, dte):.4f}"
-      f"  ({len(sc[-1].support_)} support vectors)")
-print("  The RBF kernel is a function of squared distance, so an unscaled column")
-print("  swamps it exactly as it swamps k-NN.")
-
-# --- THE COST: SVMs DO NOT SCALE TO LARGE n. ---
-import time
-print("\nFIT TIME GROWS SUPERLINEARLY IN n (kernel SVMs are O(n^2) to O(n^3))")
-for n in [1000, 4000, 16_000]:
-    Zn = rng.normal(0, 1, (n, 20))
-    tn = (Zn[:, 0] + Zn[:, 1] ** 2 + rng.normal(0, 0.5, n) > 1).astype(int)
-    t0 = time.perf_counter(); SVC(kernel="rbf").fit(Zn, tn)
-    kt = time.perf_counter() - t0
-    t0 = time.perf_counter(); LinearSVC(max_iter=5000, dual="auto").fit(Zn, tn)
-    lt = time.perf_counter() - t0
-    print(f"  n={n:6,d}: kernel SVM {kt:7.3f}s   LinearSVC {lt:7.3f}s"
-          f"   ratio {kt/lt:6.1f}x")
-print("  Past roughly 100,000 rows a kernel SVM becomes impractical, which is")
-print("  the main reason boosted trees displaced it for tabular problems.")
-```
-
-```text
-  THE MAXIMUM MARGIN
-
-    class A  o  o                     both lines separate perfectly,
-          o    o     \  |             but only one is centred in the gap
-             o    o   \ |
-    ------------------  |  <- SVM: the widest margin
-             x     x   \|
-          x    x     x  \
-    class B  x    x      \  <- a line that barely clears a point
-
-    training rows        200
-    support vectors        4  (2.0% of the data)
-    margin width      0.5418  (= 2 / ||w||)
-    refit on the 4 support vectors ONLY: identical on 100.0% of rows
-
-  C IS THE SOFT-MARGIN PRICE (and INVERSE regularisation strength)
-
-           C  support vecs   margin   train    test
-        0.01           276   1.9872  0.8881  0.8556
-        0.10           172   1.2534  0.8786  0.8722
-        1.00           147   1.0224  0.8786  0.8722
-       10.00           144   0.9977  0.8810  0.8722
-     1000.00           143   0.9899  0.8810  0.8722
-
-    small C -> wide margin, violations tolerated, MANY support vectors
-    large C -> narrow margin that bends to outliers, FEW support vectors
-
-  HINGE LOSS IS WHY ONLY SOME POINTS MATTER
-
-     y*f(x)   hinge  log loss  reading
-       -2.0   3.000     2.127  wrong side, heavily penalised
-        0.0   1.000     0.693  on the boundary
-        0.5   0.500     0.474  inside the margin
-        1.0   0.000     0.313  ON the margin
-        2.0   0.000     0.127  outside: ZERO influence
-        5.0   0.000     0.007  outside: still zero, log loss still isn't
-
-    loss
-      |\  hinge                        log loss never reaches zero, so
-      | \                              logistic regression uses EVERY
-      |  \                             row. hinge loss does, so an SVM
-      |   \____________ 0              depends only on support vectors.
-      +----+-----------------> y*f(x)
-           1
-
-  SVM VS LOGISTIC REGRESSION
-
-    model                        test acc   probabilities
-    logistic regression            0.8667   yes, calibrated
-    linear SVM (hinge loss)        0.8722   no, needs Platt scaling
-    RBF SVM                        0.8722   no, needs Platt scaling
-
-  SCALING IS MANDATORY (column b is 1000x the scale of column a)
-
-    unscaled RBF SVM  0.7375   (330 support vectors)
-    scaled   RBF SVM  0.9875   ( 97 support vectors)
-
-  KERNEL SVMs DO NOT SCALE
-
-    n= 1,000: kernel SVM 0.031s   LinearSVC 0.003s   ratio   10.6x
-    n= 4,000: kernel SVM 0.404s   LinearSVC 0.007s   ratio   59.5x
-    n=16,000: kernel SVM 5.899s   LinearSVC 0.026s   ratio  226.1x
-
-    4x the rows -> roughly 13x the time. This is the reason boosted
-    trees replaced SVMs as the tabular default.
-```
-
-> Key Takeaways
-> - An SVM chooses the separating boundary with the widest margin, which is
->   the one with the most room for error on both sides.
-> - Only the support vectors determine the solution; every other training row
->   can be deleted without changing the model.
-> - That sparsity comes from hinge loss being exactly zero outside the margin,
->   whereas log loss is never zero and so uses every row.
-> - The same property costs you calibrated probabilities, since no likelihood
->   is maximised and `predict_proba` is a post-hoc Platt fit.
-> - `C` prices margin violations and is inverse regularisation strength, the
->   opposite convention to ridge's `alpha`.
-> - Features must be scaled, because both the margin and the RBF kernel are
->   functions of distance.
-> - Kernel SVMs cost between quadratic and cubic time in `n`, which rules them
->   out past roughly a hundred thousand rows; `LinearSVC` scales much further.
-> - The regime where SVMs still shine is moderate `n` with high `p`, such as
->   text classification.
-
-> 🧪 Practice
-> 1. Fit a linear SVM on separable data, refit using only the support vectors,
->    and confirm the predictions are identical.
-> 2. Sweep `C` over six orders of magnitude and tabulate margin width, support
->    vector count, and both training and test accuracy.
-> 3. Plot hinge loss and log loss against the margin `y*f(x)` and mark the
->    point where hinge loss reaches zero.
-> 4. Compare an SVM's `predict_proba` (with `probability=True`) against
->    logistic regression's on a reliability curve, and comment on which is
->    calibrated.
-> 5. Fit an RBF SVM with and without standardisation on data with one column
->    scaled by 1000, and report both accuracy and support vector count.
-> 6. Time `SVC` against `LinearSVC` at 1000, 10,000, and 50,000 rows, and
->    estimate the exponent of the growth in `n`.
-> 7. Interview: Your SVM has 4800 support vectors out of 5000 training rows.
->    What does that tell you, and what would you change? (Hint: what value of
->    `C` forces almost every point to sit inside the margin, and what does
->    that imply about how well the current boundary separates anything?)
-
-
-#### Kernel Trick and Kernel Choice
-
-Concentric circles cannot be separated by a straight line. The inner disc is
-one class, the surrounding ring is the other, and no line in the plane divides
-them. A linear SVM scores barely above chance.
-
-But look at what happens if you change coordinates. Map each point `(x1, x2)`
-to `(x1^2, x2^2, sqrt(2)*x1*x2)`. The circle `x1^2 + x2^2 = r^2` becomes the
-plane `u + v = r^2` in the new coordinates, which is *linear*. The data was
-always separable; it just was not separable in the coordinates you were given.
-Fit a linear SVM in the mapped space and accuracy jumps from 57% to 99%.
-
-The obvious objection is cost. Explicit feature maps explode: the number of
-degree-`d` monomials over `p` features is `comb(d+p-1, d)`, which for degree 5
-over 100 features is about 92 million columns, and for degree 10 over 1000
-features exceeds 10^23. You cannot build those matrices.
-
-Here is the trick, and it is genuinely one of the most elegant results in
-machine learning. **The SVM's optimisation never needs the mapped coordinates
--- only the inner products between mapped points.** And for many maps, that
-inner product has a closed form computable in the original space. For the map
-above, `phi(a).phi(b) = (a.b)^2` exactly: two multiplications instead of a
-three-dimensional expansion, and in the degree-5 case, one dot product instead
-of 92 million features. A function `K(a,b)` that equals an inner product in
-some feature space is a **kernel**, and replacing dot products with kernels is
-the **kernel trick**.
-
-It applies to any algorithm expressible purely in terms of inner products,
-which includes SVMs, ridge regression, PCA, and k-means.
-
-The standard kernels and what each assumes:
-
-| Kernel         | Formula                   | Implicit feature space         | Assumes                             |                      |                                  |
-| ---            | ---                       | ---                            | ---                                 |                      |                                  |
-| Linear         | `a.b`                     | The original features          | The boundary is already linear      |                      |                                  |
-| Polynomial     | `(gamma*a.b + coef0)^d`   | All monomials up to degree `d` | Interactions up to order `d`        |                      |                                  |
-| RBF / Gaussian | `exp(-gamma*              | a-b                            | ^2)`                                | Infinite-dimensional | Smooth, locally varying boundary |
-| Sigmoid        | `tanh(gamma*a.b + coef0)` | Not always a valid space       | Historical; rarely the right choice |                      |                                  |
-
-Two parameters deserve specific attention.
-
-**`gamma` in the RBF kernel is the reach of each training point.** The kernel
-is `exp(-gamma * squared distance)`, so large `gamma` makes it decay fast and
-each training point influences only its immediate surroundings. Push it high
-enough and every point explains only itself: training accuracy approaches 1.0
-while test accuracy collapses. That signature -- near-perfect training
-accuracy, many support vectors, falling test accuracy -- is the unmistakable
-mark of `gamma` set too high.
-
-**`coef0` in the polynomial kernel is not cosmetic.** With `coef0 = 0` the
-kernel is *homogeneous*: it contains only pure degree-`d` terms, with no
-linear or constant part. On data that needs a linear component, a degree-2
-homogeneous kernel can perform below chance, as the demonstration shows.
-Setting `coef0 = 1` adds all the lower-degree terms back.
-
-**`C` and `gamma` interact**, so they must be tuned jointly. The region of
-good performance is a diagonal band in the `(C, gamma)` plane -- a larger `C`
-can partly compensate for a smaller `gamma` -- and tuning them one at a time
-will miss it. A log-spaced two-dimensional grid is the standard approach.
-
-Finally, what makes a function a valid kernel: **Mercer's condition**, which
-requires the Gram matrix to be positive semi-definite for every finite sample.
-That is what guarantees an implicit feature space exists and keeps the
-optimisation convex. The sigmoid kernel fails this for many parameter
-settings, which is the concrete reason to avoid it. Valid kernels are also
-closed under addition and multiplication, which is what makes kernel
-composition a practical modelling tool.
-
-```python
-import numpy as np
-import pandas as pd
-from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler, PolynomialFeatures
-from sklearn.pipeline import make_pipeline
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.datasets import make_circles, make_moons
-
-rng = np.random.default_rng(43)
-
-# --- THE PROBLEM: a circular boundary is not linearly separable in (x1, x2). ---
-X, y = make_circles(n_samples=600, noise=0.10, factor=0.45, random_state=0)
-Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3, random_state=0,
-                                      stratify=y)
-lin = make_pipeline(StandardScaler(), SVC(kernel="linear")).fit(Xtr, ytr)
-print(f"linear SVM on concentric circles: test accuracy {lin.score(Xte, yte):.4f}")
-print("A straight line cannot separate an inner disc from an outer ring.")
-
-# --- THE EXPLICIT FIX: map into a space where it IS linear. ---
-def phi(Z):
-    """A hand-built feature map: (x1, x2) -> (x1^2, x2^2, sqrt(2)*x1*x2).
-    This is the degree-2 polynomial map, written out."""
-    return np.column_stack([Z[:, 0] ** 2, Z[:, 1] ** 2,
-                            np.sqrt(2) * Z[:, 0] * Z[:, 1]])
-
-explicit = SVC(kernel="linear").fit(phi(Xtr), ytr)
-print(f"\nafter mapping to (x1^2, x2^2, sqrt2*x1*x2): test accuracy"
-      f" {explicit.score(phi(Xte), yte):.4f}")
-print("The circle x1^2 + x2^2 = r^2 is a straight line in the FIRST TWO of")
-print("those new coordinates. Same model, different space.")
-
-# --- THE TRICK: you never need the map, only the inner products. ---
-# For the map above, phi(a).phi(b) = (a.b)^2 exactly. Verify it.
-a, b = Xtr[0], Xtr[1]
-print(f"\nphi(a) . phi(b) = {phi(a[None]) @ phi(b[None]).T}")
-print(f"(a . b)^2       = {(a @ b) ** 2:.10f}")
-from math import comb
-print("Identical. Now count what the explicit map would cost: the number of")
-print("degree-d monomials over p features is comb(d + p - 1, d).")
-print(f"  {'degree':>6s} {'features':>9s} {'explicit map size':>26s}")
-for d, p_ in [(2, 2), (2, 100), (5, 100), (10, 1000)]:
-    print(f"  {d:6d} {p_:9d} {comb(d + p_ - 1, d):26,d}")
-print("Every row above costs ONE dot product as a kernel. That is the trick.")
-
-# Verify the equivalence across the whole matrix, then confirm the SVM agrees.
-K_explicit = phi(Xtr) @ phi(Xtr).T
-K_kernel = (Xtr @ Xtr.T) ** 2
-print(f"max |K_explicit - K_kernel| = {np.abs(K_explicit - K_kernel).max():.2e}")
-kern = SVC(kernel="poly", degree=2, gamma=1.0, coef0=0.0).fit(Xtr, ytr)
-print(f"SVC(kernel='poly', degree=2) test accuracy {kern.score(Xte, yte):.4f}")
-
-# --- THE COMMON KERNELS, AND WHAT EACH ASSUMES. ---
-Xm, ym = make_moons(n_samples=900, noise=0.22, random_state=1)
-Mtr, Mte, ntr, nte = train_test_split(Xm, ym, test_size=0.3, random_state=0,
-                                      stratify=ym)
-print(f"\n{'kernel':30s} {'test acc':>9s} {'support vecs':>13s}")
-for label, kw in [
-    ("linear  K = a.b", dict(kernel="linear", C=1.0)),
-    ("poly d=2, coef0=0", dict(kernel="poly", degree=2, coef0=0.0, C=1.0)),
-    ("poly d=2, coef0=1", dict(kernel="poly", degree=2, coef0=1.0, C=1.0)),
-    ("poly d=5, coef0=1", dict(kernel="poly", degree=5, coef0=1.0, C=1.0)),
-    ("rbf  K = exp(-g|a-b|^2)", dict(kernel="rbf", C=1.0, gamma="scale")),
-    ("sigmoid  K = tanh(g a.b + c)", dict(kernel="sigmoid", C=1.0)),
-]:
-    m = make_pipeline(StandardScaler(), SVC(**kw)).fit(Mtr, ntr)
-    print(f"  {label:28s} {m.score(Mte, nte):9.4f} {len(m[-1].support_):13d}")
-print("  coef0=0 gives a HOMOGENEOUS kernel: only pure degree-d terms, with no")
-print("  linear or constant part, which is why it collapses here. coef0=1 adds")
-print("  all the lower-degree terms back. It is not a cosmetic default.")
-
-# --- GAMMA IN THE RBF KERNEL IS THE REACH OF EACH TRAINING POINT. ---
-# K(a,b) = exp(-gamma * |a-b|^2). Large gamma -> the kernel decays fast ->
-# each point influences only its immediate surroundings -> overfitting.
-print("\nRBF GAMMA: how far a single training point's influence reaches")
-print(f"  {'gamma':>8s} {'K at d=0.5':>11s} {'K at d=2':>9s} {'train':>7s}"
-      f" {'test':>7s} {'SVs':>5s}")
-for g in [0.01, 0.1, 1.0, 10.0, 100.0]:
-    m = make_pipeline(StandardScaler(), SVC(kernel="rbf", gamma=g, C=1.0)
-                      ).fit(Mtr, ntr)
-    print(f"  {g:8.2f} {np.exp(-g * 0.25):11.4f} {np.exp(-g * 4):9.2e}"
-          f" {m.score(Mtr, ntr):7.4f} {m.score(Mte, nte):7.4f}"
-          f" {len(m[-1].support_):5d}")
-print("  gamma=100: K at distance 2 is 1e-174, so each point only explains")
-print("  itself. Training accuracy near 1.0 and test accuracy collapsing is")
-print("  the unmistakable signature of gamma set too high.")
-
-# --- C AND GAMMA INTERACT, SO TUNE THEM TOGETHER ON A GRID. ---
-grid = GridSearchCV(make_pipeline(StandardScaler(), SVC(kernel="rbf")),
-                    {"svc__C": [0.1, 1, 10, 100],
-                     "svc__gamma": [0.01, 0.1, 1.0, 10.0]},
-                    cv=5, n_jobs=-1).fit(Mtr, ntr)
-res = pd.DataFrame(grid.cv_results_)
-pivot = res.pivot_table(index="param_svc__gamma", columns="param_svc__C",
-                        values="mean_test_score")
-print("\nCROSS-VALIDATED ACCURACY: rows are gamma, columns are C")
-print(pivot.round(4).to_string())
-print(f"best {grid.best_params_}  cv {grid.best_score_:.4f}"
-      f"  test {grid.score(Mte, nte):.4f}")
-print("The good region is a diagonal band, not a point: a larger C can")
-print("compensate for a smaller gamma. Searching one at a time misses it.")
-
-# --- WHAT MAKES A VALID KERNEL. ---
-# Mercer's condition: the Gram matrix must be positive semi-definite for every
-# finite sample, which is what guarantees an implicit feature space exists.
-print("\nMERCER'S CONDITION: the Gram matrix must be positive semi-definite")
-S = Xtr[:200]
-for name, K in [("rbf", np.exp(-1.0 * ((S[:, None] - S[None]) ** 2).sum(-1))),
-                ("linear", S @ S.T),
-                ("poly d=3", (1 + S @ S.T) ** 3),
-                ("sigmoid (NOT always valid)", np.tanh(1.0 * S @ S.T + 1.0))]:
-    ev = np.linalg.eigvalsh((K + K.T) / 2)
-    print(f"  {name:28s} min eigenvalue {ev.min():+.4e}"
-          f"  {'valid' if ev.min() > -1e-8 else 'INVALID here'}")
-print("  The sigmoid kernel has negative eigenvalues, so no feature space")
-print("  corresponds to it and the optimisation is no longer convex. It is")
-print("  kept for historical reasons; there is rarely a reason to choose it.")
-```
-
-```text
-  THE PROBLEM AND THE MAP
-
-    in (x1, x2): no line separates       in (x1^2, x2^2): a line does
-                                          
-         o o o o o                          x2^2 |
-       o    x x    o                             | o o o o  outer ring
-       o   x   x   o                             |
-       o    x x    o                             |  x x     inner disc
-         o o o o o                               +----------- x1^2
-
-    linear SVM on the circles       test accuracy 0.5667
-    linear SVM after the map        test accuracy 0.9889
-
-  THE TRICK: YOU NEVER NEED THE MAP
-
-    phi(a) . phi(b) = 0.0573861946
-    (a . b)^2       = 0.0573861946        identical, to 16 digits
-    max |K_explicit - K_kernel| = 8.88e-16
-
-    degree  features          explicit map size
-         2         2                          3
-         2       100                      5,050
-         5       100                 91,962,520
-        10      1000 288,216,356,245,328,994,082,600
-
-    Every row above costs ONE dot product as a kernel.
-
-  KERNELS ON THE SAME DATA
-
-    kernel                         test acc  support vecs
-    linear  K = a.b                  0.8815           210
-    poly d=2, coef0=0                0.4593           625   <- see below
-    poly d=2, coef0=1                0.8852           211
-    poly d=5, coef0=1                0.9593            95
-    rbf  K = exp(-g|a-b|^2)          0.9556           138
-    sigmoid  K = tanh(g a.b + c)     0.7259           230
-
-    coef0=0 is a HOMOGENEOUS kernel: pure degree-d terms only, with no
-    linear or constant part, which is why it collapses here.
-
-  GAMMA IS THE REACH OF A TRAINING POINT
-
-       gamma  K at d=0.5  K at d=2   train    test   SVs
-        0.01      0.9975  9.61e-01  0.8587  0.8926   288   too smooth
-        0.10      0.9753  6.70e-01  0.8889  0.9037   222
-        1.00      0.7788  1.83e-02  0.9524  0.9519   113   about right
-       10.00      0.0821  4.25e-18  0.9635  0.9444   232
-      100.00      0.0000 1.92e-174  0.9841  0.9333   548   memorising
-
-    K(d)
-      1 |*                       small gamma: a point's influence
-        | \___                   reaches far -> smooth boundary
-        |     \______  small gamma
-      0 |*_____________________  large gamma: influence dies within
-        +-------------------> d  a hair's breadth -> memorisation
-
-  C AND GAMMA INTERACT: TUNE THEM TOGETHER
-  (cross-validated accuracy; rows gamma, columns C)
-
-             C=0.1     C=1    C=10   C=100
-    g=0.01  0.8429  0.8556  0.8651  0.8683
-    g=0.10  0.8603  0.8794  0.9222  0.9429
-    g=1.00  0.9413  0.9476  0.9524  0.9556
-    g=10.0  0.9460  0.9524  0.9444  0.9317
-
-    The good region is a DIAGONAL BAND, not a point: larger C partly
-    compensates for smaller gamma. Tuning one at a time misses it.
-    best C=100, gamma=1.0, cv 0.9556, test 0.9556
-
-  MERCER'S CONDITION: THE GRAM MATRIX MUST BE POSITIVE SEMI-DEFINITE
-
-    rbf                          min eigenvalue -6.05e-15   valid
-    linear                       min eigenvalue -3.22e-14   valid
-    poly d=3                     min eigenvalue -1.08e-13   valid
-    sigmoid                      min eigenvalue -7.77e+00   INVALID
-
-    A negative eigenvalue means no feature space corresponds to the
-    kernel and the optimisation is no longer convex.
-```
-
-> Key Takeaways
-> - Data that is not linearly separable in its given coordinates often is
->   separable after a feature map, so the problem is the coordinates, not the
->   model.
-> - Explicit polynomial maps are combinatorially huge, which makes building
->   them impossible beyond small degrees.
-> - Kernel methods only ever need inner products between mapped points, and
->   many maps have a closed-form inner product in the original space.
-> - Any algorithm expressible in inner products can be kernelised, including
->   ridge regression, PCA, and k-means.
-> - `gamma` in the RBF kernel sets how far a training point's influence
->   reaches, and too-high `gamma` produces perfect training accuracy with
->   collapsing test accuracy.
-> - `coef0 = 0` makes a polynomial kernel homogeneous, dropping all
->   lower-degree terms, which can be catastrophic rather than cosmetic.
-> - `C` and `gamma` interact, so the good region is a diagonal band and they
->   must be tuned on a joint grid.
-> - Mercer's condition requires a positive semi-definite Gram matrix, and the
->   sigmoid kernel violates it for many settings.
-
-> 🧪 Practice
-> 1. Generate concentric circles, confirm a linear SVM fails, then apply the
->    degree-2 map by hand and confirm a linear SVM succeeds.
-> 2. Verify numerically that `phi(a).phi(b)` equals `(a.b)^2` for the map
->    above, across a whole Gram matrix.
-> 3. Count the explicit feature-map size with `comb(d+p-1, d)` for several `d`
->    and `p` and note where it becomes unbuildable.
-> 4. Sweep RBF `gamma` over five orders of magnitude, recording training
->    accuracy, test accuracy, and support vector count, and identify the
->    overfitting signature.
-> 5. Compare a degree-3 polynomial kernel with `coef0=0` against `coef0=1` and
->    explain the difference in terms of which monomials are present.
-> 6. Run a two-dimensional grid search over `C` and `gamma` and describe the
->    shape of the high-scoring region.
-> 7. Compute the minimum eigenvalue of the Gram matrix for RBF, polynomial,
->    and sigmoid kernels and identify which is not a valid kernel on your
->    data.
-> 8. Interview: An RBF SVM has 99% training accuracy, 62% test accuracy, and
->    almost every training row is a support vector. Which hyperparameter do
->    you suspect and which direction do you move it? (Hint: what does it mean
->    for almost every point to be needed to define the boundary?)
+>    gets. Use it as a threshold for your real model.
+> 6. Interview: A stakeholder wants to remove the two least important
+>    features to simplify a pipeline, and those two features are highly
+>    correlated with each other. What do you check first? (Hint: what happens
+>    to each one's score when the other is present?)
 
 
 #### Gaussian Processes
 
-Every model so far returns a number. A Gaussian process returns a number **and
-a statement about how much it knows**, and that second output is the reason to
-care about a method that cannot scale past a few thousand rows.
+Every model so far returns a single number. A Gaussian process (GP) returns a
+number **and how sure it is about it**. That second output is the reason to
+care about a method that cannot handle more than a few thousand rows.
 
-The conceptual shift is the interesting part. A parametric model puts a
-distribution over *parameters* -- ridge regression with a Gaussian prior on
-the coefficients, for instance. A Gaussian process puts a distribution
-directly over *functions*. Before seeing any data you have a prior over every
-possible curve; after seeing data you have a posterior that passes near the
-observations and spreads out where there are none. Predicting means reading
-off that posterior's mean and variance at a new input.
+The key idea is a change in what the uncertainty is about. A parametric model
+puts a probability distribution on its *parameters*; for example, ridge
+regression can be seen as a normal prior on the coefficients. A Gaussian
+process puts a distribution directly on *functions*. Before seeing any data,
+you have a prior over every possible curve. After seeing data, you have a
+posterior: curves that pass close to the observations and spread out where
+there are none. To predict, you read off the mean and variance of that
+posterior at the new input.
 
-What defines the distribution is the **kernel**, which specifies how
-correlated the function's values at two inputs are. If `K(x, x')` is large the
-function must take similar values at `x` and `x'`; if it is near zero they are
-unconstrained relative to each other. So the kernel *is* the prior over
-functions, and its parameters are statements about the shape of plausible
-functions:
+The distribution is defined by a **kernel**. A kernel is a similarity function:
+`K(x, x')` says how strongly the function's values at `x` and `x'` are linked.
+If `K(x, x')` is large, the function must take similar values at the two
+inputs. If it is near zero, the two values are free to differ. So the kernel
+*is* the prior over functions, and its settings describe what likely functions
+look like. (Kernels are also central to SVMs, covered in 10.2.)
 
-- **RBF** with a short length scale: wiggly functions. With a long length scale:
-smooth, slowly varying ones.
-- **Matern** with `nu = 0.5`: rough, non-differentiable paths. With `nu = 2.5`:
-smoother. It is the standard choice when RBF's infinite smoothness is too
-strong an assumption.
-- **ExpSineSquared**: periodic functions, for a known cycle.
-- **DotProduct**: linear trends.
-- **WhiteKernel**: independent observation noise.
+- **RBF** with a short length scale gives wiggly functions; with a long length
+  scale, smooth and slowly changing ones.
+- **Matern** with `nu = 0.5` gives rough, jagged paths; with `nu = 2.5`,
+  smoother ones. It is the usual choice when RBF's perfect smoothness is too
+  strong an assumption.
+- **ExpSineSquared** gives periodic functions, for a known cycle.
+- **DotProduct** gives linear trends.
+- **WhiteKernel** adds independent observation noise.
 
-Because valid kernels are closed under addition and multiplication, you can
-*compose* structural hypotheses. "A repeating annual pattern on top of a
-linear trend, observed with noise" is `ExpSineSquared + DotProduct +
-WhiteKernel` -- a hypothesis stated before fitting, which the **log marginal
-likelihood** then scores. That is a different and more transparent workflow
-than tuning a black box.
+Kernels can be added and multiplied and still be valid kernels, so you can
+*combine* ideas about the data's structure. "A yearly pattern on top of a
+linear trend, measured with noise" becomes `ExpSineSquared + DotProduct +
+WhiteKernel`. You state the idea before fitting, and the **log marginal
+likelihood** then scores how well it fits. That is a clearer workflow than
+tuning a black box.
 
-The uncertainty is the payoff, and it behaves exactly as it should: narrow
-where observations are dense, wider in gaps between them, and wide beyond the
-observed range, where the posterior reverts toward the prior. Compare that
-with a random forest, which returns a confident constant outside its training
-range with no indication that it is extrapolating. This property is what makes
-GPs the standard engine for **Bayesian optimisation**, including
-hyperparameter search: the model's own uncertainty tells you where it is worth
-spending the next expensive evaluation.
+The uncertainty is the real benefit, and it behaves as it should: narrow where
+there is a lot of data, wider in the gaps, and wide outside the observed range,
+where the model falls back to the prior. A random forest, by contrast, returns
+a confident flat value outside its training range with no hint that it is
+guessing. This is why GPs are the standard engine for **Bayesian
+optimisation**, including hyperparameter search: the model's own uncertainty
+tells you where the next expensive test is most worth running.
 
-Two honest caveats. First, the intervals are a modelling output, not a
-guarantee. The kernel hyperparameters -- including the noise level -- are
-fitted by maximising the marginal likelihood, and on small samples that
-estimate can come in low, producing intervals that are too tight. Bounding the
-`WhiteKernel` noise level away from zero is a practical necessity, and
-coverage should be validated, not assumed.
+Two honest warnings. First, the intervals are a model output, not a guarantee.
+The kernel settings, including the noise level, are fitted by maximising the
+marginal likelihood. On small samples the noise estimate can come out too low,
+which makes the intervals too narrow. In practice, set a lower limit on the
+`WhiteKernel` noise level, and check the coverage of the intervals instead of
+assuming it.
 
-Second, the cost. Fitting requires solving a system involving the `n` by `n`
-kernel matrix, which is cubic in time and quadratic in memory. Doubling the
-data multiplies the work by roughly eight. Past a few thousand rows you need
-sparse or inducing-point approximations. This is why GPs live in small-data
-settings: physical experiments, engineering simulation, Bayesian optimisation,
-and anywhere individual observations are expensive to obtain.
+Second, the cost. Fitting means solving a system with the `n` by `n` kernel
+matrix, which takes time proportional to n³ and memory proportional to n².
+Doubling the data makes it about eight times slower. Beyond a few thousand
+rows you need sparse or inducing-point approximations. That is why GPs are used
+in small-data settings: physical experiments, engineering simulations, Bayesian
+optimisation, and anywhere each observation is expensive to get.
 
 ```python
 import numpy as np
@@ -53677,126 +52467,1114 @@ print("  search, and anywhere each observation is expensive to obtain.")
 
 |                                  | Gaussian process             | Random forest       | RBF SVM             |
 | -------------------------------- | ---------------------------- | ------------------- | ------------------- |
-| Native uncertainty               | Yes, per prediction          | No                  | No                  |
-| Behaviour outside training range | Reverts to prior, wide bands | Constant, confident | Constant, confident |
-| Encodes prior structure          | Yes, via the kernel          | No                  | Only smoothness     |
+| Built-in uncertainty             | Yes, for every prediction    | No                  | No                  |
+| Outside the training range       | Falls back to prior, wide bands | Flat, confident  | Flat, confident     |
+| Encodes prior knowledge          | Yes, through the kernel      | No                  | Only smoothness     |
 | Fit cost in `n`                  | Cubic                        | Near-linear         | Quadratic to cubic  |
 | Practical row limit              | A few thousand               | Millions            | ~100,000            |
-| Model selection signal           | Log marginal likelihood      | Held-out score      | Held-out score      |
+| How to compare models            | Log marginal likelihood      | Held-out score      | Held-out score      |
 
 > Key Takeaways
-> - A Gaussian process places a distribution over functions rather than over
->   parameters, and predicting reads the posterior's mean and variance.
-> - The kernel is the prior: its form and length scale state what plausible
->   functions look like before any data is seen.
-> - Kernels add and multiply, so structural hypotheses such as "periodic plus
->   trend" can be written down and then scored by the log marginal likelihood.
-> - Predicted uncertainty is narrow where data is dense, wider in gaps, and
->   wide beyond the observed range, which is what makes GPs suited to Bayesian
->   optimisation.
-> - The intervals are fitted, not guaranteed: bound the noise level away from
->   zero and validate coverage empirically.
-> - Fitting is cubic in the number of rows and quadratic in memory, confining
->   GPs to small-data problems without approximations.
-> - The natural home for GPs is expensive-observation settings: experiments,
->   simulation, and hyperparameter search.
+> - A Gaussian process puts a distribution over functions instead of
+>   parameters. Predicting means reading the posterior's mean and variance.
+> - The kernel is the prior: its form and length scale say what likely
+>   functions look like before you see any data.
+> - Kernels can be added and multiplied, so ideas such as "periodic plus
+>   trend" can be written down and then scored with the log marginal
+>   likelihood.
+> - The predicted uncertainty is narrow where data is dense, wider in gaps
+>   and wide outside the observed range. This makes GPs a good fit for
+>   Bayesian optimisation.
+> - The intervals are estimated, not guaranteed. Keep the noise level above
+>   zero and check coverage on real data.
+> - Fitting time grows with the cube of the number of rows and memory with
+>   the square, so GPs need approximations beyond small datasets.
+> - GPs fit best where observations are expensive: experiments, simulations
+>   and hyperparameter search.
 
 > 🧪 Practice
-> 1. Sample and compare curves from RBF priors with length scales 0.1, 1, and
->    10, quantifying wiggliness with the mean absolute first difference.
-> 2. Fit a GP to ten points with a deliberate gap and report predicted
->    standard deviation inside the data, inside the gap, and beyond the range.
-> 3. Correlate distance-to-nearest-observation against predicted standard
->    deviation across a dense grid.
-> 4. Check interval coverage at the 50%, 80%, and 95% levels on held-out data,
->    and then repeat with the `WhiteKernel` bounds removed.
-> 5. Fit periodic-plus-trend data with four different kernels and rank them by
->    both held-out RMSE and log marginal likelihood. Do the rankings agree?
-> 6. Time GP fitting at 250, 500, 1000, and 2000 rows and estimate the
->    exponent of the growth.
-> 7. Interview: You need to choose the next five experiments to run, each
->    costing a week of lab time, and you have twelve results so far. Why might
->    a Gaussian process beat a gradient-boosted tree here? (Hint: what does
->    the model need to tell you besides its best guess, and how many rows do
->    you have?)
+> 1. Draw sample curves from RBF priors with length scales 0.1, 1 and 10, and
+>    measure how wiggly each is with the average absolute difference between
+>    neighbouring points.
+> 2. Fit a GP to ten points with a deliberate gap. Report the predicted
+>    standard deviation inside the data, inside the gap and beyond the range.
+> 3. Over a dense grid, correlate the distance to the nearest observation with
+>    the predicted standard deviation.
+> 4. Check interval coverage at the 50%, 80% and 95% levels on held-out data.
+>    Repeat with the `WhiteKernel` bounds removed.
+> 5. Fit periodic-plus-trend data with four different kernels. Rank them by
+>    held-out RMSE and by log marginal likelihood. Do the rankings agree?
+> 6. Time GP fitting at 250, 500, 1000 and 2000 rows and estimate how fast the
+>    time grows.
+> 7. Interview: You must choose the next five experiments, each costing a week
+>    of lab time, and you have twelve results so far. Why might a Gaussian
+>    process beat a gradient-boosted tree here? (Hint: what does the model
+>    need to tell you besides its best guess, and how many rows do you have?)
 
 
-<a id="104-probabilistic-and-ensemble-methods"></a>
-### 10.4 Probabilistic and Ensemble Methods
+<a id="102-classification"></a>
+### 10.2 Classification
 
-The first half of this section covers two generative classifiers that model
-how the data was produced and then invert that model to classify, which makes
-them fast, data-efficient, and wrong in specific knowable ways. The second
-half covers combining models, where the entire question is whether your
-members make different mistakes.
+In classification, the target is one label from a fixed set, and labels cannot
+be added, subtracted or averaged. Losing that arithmetic changes how
+everything works. The model really outputs a *score*, not a label. The label
+only appears when you apply a threshold to the score, and the right threshold
+is a business decision, not a model setting. This section covers:
+
+- what makes a problem classification, and how scores, thresholds and costs
+  fit together;
+- what kind of boundary each model family can draw;
+- logistic regression and its multi-class and ordered versions;
+- generative classifiers: Naive Bayes and discriminant analysis;
+- nearest neighbours and how to choose a distance metric;
+- support vector machines and the kernel trick;
+- ensembles that combine different models: voting, stacking, and why
+  diversity matters;
+- how regression and classification share almost all their machinery.
+
+#### What Makes a Problem Classification
+
+A classification target is a set of names. `card`, `wallet` and `transfer`
+might be stored as 0, 1 and 2 because some system needed an integer. But
+wallet is not halfway between card and transfer, and no row can be predicted
+as 1.07. If you number the classes in a different order, any model that treats
+the codes as numbers gives different answers. That alone proves the numbers
+never meant anything.
+
+Classification comes in four types, and people often mix them up:
+
+| Type           | Target                              | Example                                |
+| -------------- | ----------------------------------- | -------------------------------------- |
+| binary         | one of two labels                   | fraud / not fraud                      |
+| multiclass     | exactly one of k labels             | which of six failure modes             |
+| multilabel     | any number of k labels              | tags on a support ticket               |
+| ordinal        | one of k **ordered** labels         | risk rated low / medium / high         |
+
+Multilabel is not the same as multiclass: "exactly one" and "any number" need
+different model outputs and different metrics. Ordinal is the tricky one. Its
+labels have an order, but the gaps between them have no fixed size. A plain
+classifier ignores the order, and a regression on the codes invents gap sizes
+that do not exist.
+
+The most important idea in this topic is: **the model produces a score; a
+threshold turns the score into a decision; the costs of mistakes set the
+threshold.** Calling `.predict()` quietly uses a threshold of 0.5, and 0.5 is
+almost never right. If a false positive costs `C_fp` and a false negative
+costs `C_fn`, the threshold that minimises expected cost on a *calibrated*
+probability is
+
+```
+t* = C_fp / (C_fp + C_fn)
+```
+
+This equals 0.5 only when both mistakes cost the same, which is rare. Chapter
+8.4 covers decision analysis in detail. The point here is that the threshold is
+not a hyperparameter to tune with cross-validation on accuracy. It is a
+business input, and you can change it after the model ships without
+retraining.
+
+Two things follow from this.
+
+**Accuracy must be compared with a do-nothing model.** If 7% of transactions
+are fraud, a model that always says "not fraud" scores 93% accuracy. An
+accuracy number means nothing without the base rate next to it. With strong
+imbalance, a genuinely useful model can even score *lower* than the
+do-nothing one. Chapter 9.3 covers metrics that work with imbalanced classes.
+
+**Ranking well and being correct are different things.** Ranking metrics such
+as AUC, precision@k and lift only look at the *order* of the scores. So a
+model can rank almost perfectly while its probabilities are all too high. That
+is fine if you only use the top 500 cases. It is not fine if you multiply the
+probability by a cost. Log loss and the Brier score do notice wrong
+probabilities, and calibration (chapter 9.3) fixes them.
+
+One more practical point: **you almost never train on the metric you care
+about.** Precision, recall, F1 and accuracy all jump in steps as the score
+crosses the threshold, so their gradient is zero almost everywhere and useless
+for training. Classifiers instead minimise a smooth stand-in loss, such as
+cross-entropy or hinge loss. You then get the metric you care about by choosing
+the threshold afterwards. Class weights and resampling change *which* mistakes
+the stand-in loss cares about, but this two-step process stays the same.
+
+```python
+import numpy as np
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.metrics import (accuracy_score, brier_score_loss, log_loss,
+                             roc_auc_score)
+from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import GaussianNB
+
+rng = np.random.default_rng(11)
+
+# --- 1. THE LABEL HAS NO ARITHMETIC. Three payment methods, encoded 0/1/2
+#        because some pipeline needed a number.
+methods = np.array(["card", "wallet", "transfer"])
+codes = rng.integers(0, 3, 600)
+feat = rng.normal(0, 1, 600)
+lin = LinearRegression().fit(feat.reshape(-1, 1), codes)
+pred_code = lin.predict([[0.4]])[0]
+print("1. A CATEGORY IS NOT A NUMBER")
+print(f"   regressing the code 0/1/2 predicts {pred_code:.2f} for a new row.")
+print(f"   There is no payment method at {pred_code:.2f}, and the model has")
+print("   quietly asserted that wallet sits exactly between card and")
+print("   transfer, and that transfer is twice wallet. Relabel the classes")
+print("   in a different order and every prediction changes.")
+
+# --- 2. IMBALANCE: accuracy is scored against a trivial competitor. ---
+n = 20000
+amount = rng.lognormal(3.2, 1.0, n)
+age_days = rng.uniform(0, 900, n)
+foreign = rng.random(n) < 0.18
+logit = (-3.9 + 0.55 * np.log(amount) - 0.0022 * age_days + 1.1 * foreign)
+p_true = 1 / (1 + np.exp(-logit))
+fraud = (rng.random(n) < p_true).astype(int)
+X = np.column_stack([np.log(amount), age_days, foreign.astype(float)])
+Xtr, Xte, ytr, yte = train_test_split(X, fraud, test_size=0.4, random_state=0,
+                                      stratify=fraud)
+
+clf = LogisticRegression(max_iter=1000).fit(Xtr, ytr)
+proba = clf.predict_proba(Xte)[:, 1]
+base = yte.mean()
+print(f"\n2. BASE RATE {base:.2%} FRAUD")
+print(f"   'never fraud' classifier accuracy : {1 - base:.3%}")
+print(f"   logistic regression accuracy      : "
+      f"{accuracy_score(yte, proba >= 0.5):.3%}")
+print(f"   logistic regression ROC AUC       : {roc_auc_score(yte, proba):.3f}")
+print("   Accuracy makes the two look comparable. AUC shows they are not.")
+
+# --- 3. THE MODEL PRODUCES A SCORE; THE THRESHOLD PRODUCES THE DECISION. ---
+cost_fn, cost_fp = 240.0, 9.0      # a missed fraud vs a review of a good order
+print(f"\n3. ONE SCORE, MANY DECISIONS (miss costs {cost_fn:.0f}, "
+      f"review costs {cost_fp:.0f})")
+print(f"   {'threshold':>9s} {'flagged':>8s} {'caught':>7s} {'missed':>7s}"
+      f" {'false alarms':>13s} {'cost':>10s}")
+best = None
+for t in [0.02, 0.04, 0.05, 0.10, 0.20, 0.35, 0.50]:
+    pred = proba >= t
+    tp = int(((pred == 1) & (yte == 1)).sum())
+    fp = int(((pred == 1) & (yte == 0)).sum())
+    fn = int(((pred == 0) & (yte == 1)).sum())
+    cost = cost_fn * fn + cost_fp * fp
+    if best is None or cost < best[1]:
+        best = (t, cost)
+    print(f"   {t:9.2f} {int(pred.sum()):8d} {tp:7d} {fn:7d} {fp:13d}"
+          f" {cost:10,.0f}")
+print(f"   cheapest threshold on this grid: {best[0]:.2f}, not 0.50.")
+print(f"   the theoretical optimum is cost_fp/(cost_fp+cost_fn) = "
+      f"{cost_fp/(cost_fp+cost_fn):.3f}")
+
+# --- 4. RANKING WELL AND BEING RIGHT ARE DIFFERENT PROPERTIES.
+#        The amount column arrives three times under three names, which is
+#        an ordinary data-plumbing accident.
+dup = [0, 0, 0, 1, 2]
+Xtr_d, Xte_d = Xtr[:, dup], Xte[:, dup]
+p_lr = LogisticRegression(max_iter=1000).fit(Xtr_d, ytr).predict_proba(Xte_d)[:, 1]
+p_nb = GaussianNB().fit(Xtr_d, ytr).predict_proba(Xte_d)[:, 1]
+cal = CalibratedClassifierCV(GaussianNB(), method="isotonic", cv=5)
+p_cal = cal.fit(Xtr_d, ytr).predict_proba(Xte_d)[:, 1]
+print("\n4. A GOOD RANKER CAN STILL BE A BAD PROBABILITY")
+print(f"   {'model':24s} {'AUC':>6s} {'log loss':>9s} {'Brier':>8s}"
+      f" {'mean p':>7s} {'actual':>7s}")
+for name, p in [("logistic regression", p_lr), ("naive Bayes", p_nb),
+                ("naive Bayes, calibrated", p_cal)]:
+    print(f"   {name:24s} {roc_auc_score(yte, p):6.3f} {log_loss(yte, p):9.4f}"
+          f" {brier_score_loss(yte, p):8.5f} {p.mean():7.3f} {base:7.3f}")
+print("   Naive Bayes counts the duplicated evidence three times, so it")
+print("   ORDERS the cases about as well and still reports probabilities")
+print("   that are not probabilities. AUC cannot see the difference; a cost")
+print("   calculation fed by those numbers can.")
+```
+
+```text
+1. A CATEGORY IS NOT A NUMBER
+   regressing the code 0/1/2 predicts 0.98 for a new row.
+   There is no payment method at 0.98, and the model has
+   quietly asserted that wallet sits exactly between card and
+   transfer, and that transfer is twice wallet. Relabel the classes
+   in a different order and every prediction changes.
+
+2. BASE RATE 6.95% FRAUD
+   'never fraud' classifier accuracy : 93.050%
+   logistic regression accuracy      : 93.037%
+   logistic regression ROC AUC       : 0.747
+   Accuracy makes the two look comparable. AUC shows they are not.
+
+3. ONE SCORE, MANY DECISIONS (miss costs 240, review costs 9)
+   threshold  flagged  caught  missed  false alarms       cost
+        0.02     6927     545      11          6382     60,078
+        0.04     4795     488      68          4307     55,083
+        0.05     3988     447     109          3541     58,029
+        0.10     1658     288     268          1370     76,650
+        0.20      346     104     452           242    110,658
+        0.35       36      18     538            18    129,282
+        0.50        1       0     556             1    133,449
+   cheapest threshold on this grid: 0.04, not 0.50.
+   the theoretical optimum is cost_fp/(cost_fp+cost_fn) = 0.036
+
+4. A GOOD RANKER CAN STILL BE A BAD PROBABILITY
+   model                       AUC  log loss    Brier  mean p  actual
+   logistic regression       0.747    0.2249  0.06021   0.069   0.070
+   naive Bayes               0.732    0.2524  0.06887   0.103   0.070
+   naive Bayes, calibrated   0.732    0.2293  0.06105   0.069   0.070
+   Naive Bayes counts the duplicated evidence three times, so it
+   ORDERS the cases about as well and still reports probabilities
+   that are not probabilities. AUC cannot see the difference; a cost
+   calculation fed by those numbers can.
+```
+
+> Key Takeaways
+> - Classification targets are names, not numbers. An integer code is just a
+>   storage format, never a quantity to regress on.
+> - Binary, multiclass, multilabel and ordinal are four different tasks.
+>   Ordinal is the one that both classification and regression handle badly.
+> - The model gives a score, a threshold turns it into a decision, and the
+>   cost of each type of mistake sets the threshold.
+> - For calibrated probabilities, the cost-minimising threshold is
+>   `C_fp / (C_fp + C_fn)`. The 0.5 inside `.predict()` assumes both mistakes
+>   cost the same.
+> - The threshold is a business input that can change after deployment
+>   without retraining, so do not fix it inside the model.
+> - With imbalanced classes, accuracy is compared against a model that does
+>   nothing, so always quote it with the base rate.
+> - Ranking metrics only see the order of the scores, so a model can have a
+>   strong AUC and wrong probabilities.
+> - Thresholded metrics have no useful gradient, so training uses a smooth
+>   stand-in loss and the target metric is reached by choosing the threshold.
+
+> 🧪 Practice
+> 1. Encode a three-class target as 0/1/2, fit a linear regression, and show
+>    that reordering the class labels changes every prediction.
+> 2. On an imbalanced dataset, report the accuracy of a constant classifier
+>    and of your model. How big must the gap be before you would present the
+>    model?
+> 3. Try many thresholds, compute the total expected cost at each, and
+>    compare the best one with `C_fp / (C_fp + C_fn)`.
+> 4. Copy one predictive column three times, refit Naive Bayes, and compare
+>    AUC, log loss and the average predicted probability before and after.
+> 5. Calibrate that model with isotonic regression and show which of the
+>    three numbers change and which do not.
+> 6. Build a multilabel problem, fit it as multiclass, and describe exactly
+>    what information is lost.
+> 7. Interview: A team says their classifier has an AUC of 0.91 and wants to
+>    use its output probability to decide how much money to reserve for each
+>    claim. What do you check before agreeing? (Hint: which property of the
+>    scores does AUC ignore?)
+
+#### Classification Algorithms and Their Decision Boundaries
+
+A classifier divides the feature space into regions, one per label. The model
+family decides what *shape* those regions can have, and that shape is the
+model's assumption. So "which classifier is best?" really means "what shape is
+the boundary?". You can often see the answer by plotting two features.
+
+Model families also differ in a second way.
+
+- **Discriminative** models learn the boundary, or `P(y | x)`, directly:
+  logistic regression, SVMs, trees, boosting, neural networks.
+- **Generative** models learn how the data in each class is distributed,
+  `P(x | y)`, then use Bayes' rule to get `P(y | x)`: Naive Bayes, LDA and
+  QDA, and Gaussian mixtures.
+
+In practice, generative models can work with very little data, because their
+assumptions do much of the work. When those assumptions are wrong, they fail in
+predictable ways: Naive Bayes counts correlated evidence more than once, and
+LDA draws a straight line whatever the data looks like.
+
+| Family                | Boundary it can draw           | Gives probabilities  | Multiclass       | Needs scaling   |
+| --------------------- | ------------------------------ | -------------------- | ---------------- | --------------- |
+| logistic regression   | one flat boundary (hyperplane) | yes                  | softmax or OvR   | for penalties   |
+| LDA                   | one flat boundary (hyperplane) | yes                  | built in         | no              |
+| QDA                   | one curved (quadratic) surface | yes                  | built in         | no              |
+| naive Bayes           | shaped by the assumed density  | yes, often poor      | built in         | no              |
+| decision tree         | axis-aligned boxes             | leaf frequencies     | built in         | no              |
+| random forest         | many boxes, averaged           | averaged leaves      | built in         | no              |
+| gradient boosting     | many boxes, added up           | yes, via summed logits | built in or OvR | no             |
+| k-NN                  | local, follows the data        | neighbour votes      | built in         | **yes**         |
+| SVM with RBF kernel   | smooth, kernel-shaped          | **no**, needs Platt  | OvO              | **yes**         |
+
+Two rows in that table cause real problems in production.
+
+- **An SVM does not give probabilities.** Its output is a signed distance
+  from the boundary. Setting `probability=True` fits a separate calibration
+  model on top. That costs an extra round of cross-validation, and near the
+  boundary its probabilities can disagree with the SVM's own predicted labels.
+- **The multiclass strategy matters.** One-vs-rest (OvR) fits k separate
+  models whose scores were never trained to be compared with each other.
+  One-vs-one (OvO) fits k(k-1)/2 of them. Only softmax and models that are
+  multiclass by design give class probabilities that always sum to one.
+
+You should still fit a linear model first, but not because it will win. It
+tells you whether the boundary is roughly straight, and when it fails, that
+failure is useful information. If logistic regression and LDA both barely beat
+the base rate while k-NN on the same features scores in the nineties, that gap
+*is* the finding: the boundary is curved.
+
+```python
+import numpy as np
+from sklearn.discriminant_analysis import (LinearDiscriminantAnalysis,
+                                           QuadraticDiscriminantAnalysis)
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier
+
+rng = np.random.default_rng(5)
+
+# Two features, one curved boundary: applicants are approved when a smooth
+# combination of income and debt clears a bar, which no straight line matches.
+n = 1500
+x1 = rng.uniform(-3, 3, n)
+x2 = rng.uniform(-3, 3, n)
+margin = 1.6 - (x1 ** 2 + x2 ** 2) / 3.0 + 0.5 * x1
+y = (margin + rng.normal(0, 0.35, n) > 0).astype(int)
+X = np.column_stack([x1, x2])
+Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.4, random_state=0)
+
+models = {
+    "logistic regression": LogisticRegression(),
+    "LDA": LinearDiscriminantAnalysis(),
+    "QDA": QuadraticDiscriminantAnalysis(),
+    "decision tree": DecisionTreeClassifier(min_samples_leaf=20, random_state=0),
+    "k-NN (k=15)": make_pipeline(StandardScaler(), KNeighborsClassifier(15)),
+    "SVM (RBF)": make_pipeline(StandardScaler(), SVC(C=5)),
+    "random forest": RandomForestClassifier(n_estimators=300, random_state=0),
+}
+
+W, H = 33, 15
+gx = np.linspace(-3, 3, W)
+gy = np.linspace(3, -3, H)
+grid = np.array([[a, b] for b in gy for a in gx])
+true_region = ((1.6 - (grid[:, 0] ** 2 + grid[:, 1] ** 2) / 3.0
+                + 0.5 * grid[:, 0]) > 0).astype(int)
+
+
+def render(labels):
+    rows = []
+    for r in range(H):
+        rows.append("".join("#" if v else "." for v in labels[r * W:(r + 1) * W]))
+    return rows
+
+
+panels = {"TRUE BOUNDARY": render(true_region)}
+scores = {}
+for name, m in models.items():
+    m.fit(Xtr, ytr)
+    scores[name] = accuracy_score(yte, m.predict(Xte))
+    panels[name] = render(m.predict(grid))
+
+print("THE SHAPE OF THE BOUNDARY IS THE ALGORITHM'S ASSUMPTION")
+print("('#' = predicted approve, '.' = predicted decline, over the x1/x2 plane)")
+names = list(panels)
+for i in range(0, len(names), 2):
+    pair = names[i:i + 2]
+    print()
+    print("  " + "   ".join(f"{p:{W}s}" for p in pair))
+    for r in range(H):
+        print("  " + "   ".join(f"{panels[p][r]:{W}s}" for p in pair))
+
+print("\nWHAT EACH FAMILY IS ACTUALLY DRAWING")
+shape = {
+    "logistic regression": ("one hyperplane", "yes, native", "softmax or OvR"),
+    "LDA": ("one hyperplane", "yes, native", "native k-class"),
+    "QDA": ("one quadric", "yes, native", "native k-class"),
+    "decision tree": ("axis-parallel boxes", "leaf frequencies", "native k-class"),
+    "k-NN (k=15)": ("local, data-shaped", "neighbour votes", "native k-class"),
+    "SVM (RBF)": ("smooth, kernel-shaped", "no, needs Platt", "OvO"),
+    "random forest": ("many boxes, averaged", "averaged leaves", "native k-class"),
+}
+print(f"  {'family':20s} {'boundary':22s} {'probabilities':17s} "
+      f"{'multiclass':15s} {'acc':>6s}")
+for name in models:
+    b, p, mc = shape[name]
+    print(f"  {name:20s} {b:22s} {p:17s} {mc:15s} {scores[name]:6.3f}")
+```
+
+```text
+THE SHAPE OF THE BOUNDARY IS THE ALGORITHM'S ASSUMPTION
+('#' = predicted approve, '.' = predicted decline, over the x1/x2 plane)
+
+  TRUE BOUNDARY                       logistic regression
+  .................................   ...................##############
+  .................................   ..................###############
+  ................#########........   ..................###############
+  ............#################....   ..................###############
+  ..........#####################..   ..................###############
+  .........#######################.   ..................###############
+  ........#########################   ..................###############
+  ........#########################   ..................###############
+  ........#########################   ..................###############
+  .........#######################.   ..................###############
+  ..........#####################..   ..................###############
+  ............#################....   ..................###############
+  ................#########........   ..................###############
+  .................................   ..................###############
+  .................................   ..................###############
+
+  LDA                                 QDA
+  ..................###############   .................................
+  ..................###############   .................................
+  ..................###############   ....................#########....
+  ..................###############   ................#################
+  ..................###############   ..............###################
+  ..................###############   .............####################
+  ..................###############   ............#####################
+  ..................###############   ............#####################
+  ..................###############   ............#####################
+  ..................###############   .............####################
+  ..................###############   ..............###################
+  ..................###############   ................#################
+  ..................###############   ....................###########..
+  ..................###############   .................................
+  ..................###############   .................................
+
+  decision tree                       k-NN (k=15)
+  .................................   .................................
+  .................................   .................................
+  .................................   ..............############.......
+  ...........###################.##   .............################....
+  ...........###################.##   ...........###################...
+  .......#######################.##   .........########################
+  .......#######################.##   ........#########################
+  .......#######################.##   ........#########################
+  .......#######################.##   ........#########################
+  ...........###################.##   .........########################
+  ...........###################.##   ...........###################...
+  ...........###################.##   ..............###############....
+  .................................   .................########........
+  .................................   .................................
+  .................................   .................................
+
+  SVM (RBF)                           random forest
+  .................................   .................................
+  .................................   .................................
+  ...............##########........   ................#########........
+  ............#################....   ............##################...
+  ...........####################..   .............#################...
+  .........########################   .........########################
+  .........########################   ........#########################
+  ........#########################   .......##########################
+  .........########################   ........#########################
+  ..........#######################   .........########################
+  ...........####################..   ...........###################...
+  .............################....   .............################....
+  ................##########.......   ...............###########.......
+  .................................   .......................#.........
+  .................................   .................................
+
+WHAT EACH FAMILY IS ACTUALLY DRAWING
+  family               boundary               probabilities     multiclass         acc
+  logistic regression  one hyperplane         yes, native       softmax or OvR   0.645
+  LDA                  one hyperplane         yes, native       native k-class   0.645
+  QDA                  one quadric            yes, native       native k-class   0.862
+  decision tree        axis-parallel boxes    leaf frequencies  native k-class   0.893
+  k-NN (k=15)          local, data-shaped     neighbour votes   native k-class   0.933
+  SVM (RBF)            smooth, kernel-shaped  no, needs Platt   OvO              0.940
+  random forest        many boxes, averaged   averaged leaves   native k-class   0.935
+```
+
+> Key Takeaways
+> - A classifier divides the feature space into regions, and the model family
+>   decides what shape those regions can have. That shape is the assumption.
+> - No amount of tuning lets a linear classifier follow a curved boundary.
+>   The gap to a flexible model shows how curved the boundary is.
+> - Discriminative models learn the boundary directly. Generative models learn
+>   each class's distribution and use Bayes' rule; they need less data and
+>   fail in more predictable ways.
+> - Trees and forests draw axis-aligned boxes, so they copy a diagonal
+>   boundary with a staircase instead of learning it.
+> - k-NN and kernel SVMs measure distances, so they need scaled features.
+>   Tree ensembles do not.
+> - SVMs output a signed distance, not a probability. Turning it into a
+>   probability needs a separate calibration step.
+> - One-vs-rest and one-vs-one scores were never trained to be compared
+>   across classes, unlike softmax or a built-in multiclass model.
+
+> 🧪 Practice
+> 1. Generate a circular boundary and plot the predicted regions of logistic
+>    regression, QDA, a tree and an RBF SVM on the same grid.
+> 2. Rotate that dataset by 45 degrees and refit a shallow decision tree.
+>    Explain the change in accuracy in terms of axis-aligned splits.
+> 3. Fit an SVM with and without a calibration wrapper and compare the
+>    predicted labels near the boundary.
+> 4. Fit a 4-class problem with OvR and with softmax. For each, check whether
+>    the class scores sum to one.
+> 5. Train Naive Bayes on features you have made correlated on purpose, and
+>    link the drop in quality to the independence assumption.
+> 6. Take a dataset where logistic regression barely beats the base rate and
+>    work out whether the cause is a curved boundary or useless features.
+> 7. Interview: A colleague finds that a decision tree beats logistic
+>    regression by 25 accuracy points on two features and concludes that trees
+>    are better. What other explanation would you suggest, and what single plot
+>    settles it? (Hint: what does a curved true boundary do to a model that can
+>    only draw straight ones?)
+
+#### Logistic Regression
+
+Now the target is yes or no: did the customer leave, is the transaction fraud,
+did the patient relapse. The obvious idea is to code it as 0 and 1 and run
+least squares. That fails, for a clear reason. A straight line has no limits,
+so it will predict 1.3 and -0.2, which are not probabilities. Clipping them
+does not help either. A clipped line still assumes the same effect for every
+unit of `x`, and that is impossible near the edges: you cannot add 0.1 to a
+probability of 0.98.
+
+What you need is a curve that is roughly straight in the middle and flattens
+out as it approaches 0 and 1. **Logistic regression** gets this by changing
+what is modelled as linear. Instead of the probability itself, it models the
+**log-odds**:
+
+```text
+odds  = p / (1 - p)             ranges over (0, infinity)
+logit = log(p / (1 - p))        ranges over (-infinity, +infinity)
+```
+
+The logit takes a probability, which must lie between 0 and 1, and stretches it
+over the whole number line, where a linear function can move freely. So the
+model is `logit(p) = b0 + b1*x1 + ... + bp*xp`. Undoing the logit gives the
+prediction: `p = 1 / (1 + exp(-z))`, the **sigmoid** function.
+
+This choice has several consequences.
+
+**Coefficients multiply the odds.** A coefficient of 0.56 means one more unit
+multiplies the odds by `exp(0.56) = 1.76`, a 76% increase in the *odds*. It
+does *not* mean a 76% increase in probability, and it is not a fixed number of
+percentage points either. The same coefficient moves the probability by 14
+points when starting from 0.50, and by only 1.5 points when starting from 0.02,
+because the sigmoid is steep in the middle and flat at the ends. People get
+this wrong all the time.
+
+**There is no direct formula.** Least squares has one because its objective is
+quadratic. The logistic objective is not, so it is fitted step by step using
+Newton's method, here called **iteratively reweighted least squares (IRLS)**.
+The good news: the log-likelihood has a single peak (it is concave), so there
+is one best answer and the fit converges reliably.
+
+**The decision boundary is a straight line (or flat plane).** The model is
+linear in the log-odds. The boundary is where `p = 0.5`, which means `z = 0`,
+and that is a hyperplane in feature space. So logistic regression cannot
+separate classes that are not linearly separable with the features you give
+it. If the true boundary is a circle, you need to add `x1^2 + x2^2` as a
+column.
+
+**Perfect separation breaks the fit.** If some feature separates the classes
+with no overlap, the likelihood keeps rising as the coefficient grows: a
+steeper curve is always better, forever. There is no maximum, so the
+unpenalised estimate does not exist. In practice you see huge coefficients and
+a convergence warning. Regularisation fixes this by keeping the objective
+bounded, which is one reason sklearn regularises logistic regression by
+default.
+
+```python
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LinearRegression, LogisticRegression
+
+rng = np.random.default_rng(11)
+
+# --- WHY NOT LINEAR REGRESSION ON A 0/1 TARGET. ---
+x = np.r_[rng.normal(2, 1, 200), rng.normal(6, 1, 200)]
+y = np.r_[np.zeros(200), np.ones(200)].astype(int)
+lin = LinearRegression().fit(x.reshape(-1, 1), y)
+print("LINEAR REGRESSION ON A BINARY TARGET")
+for v in [-2, 0, 4, 8, 12]:
+    print(f"  x={v:3d} -> predicted 'probability' {lin.predict([[v]])[0]:+.3f}")
+print("Values outside [0, 1] are not probabilities, and no amount of clipping")
+print("makes the fitted line a model of a probability.")
+
+# --- THE LOGISTIC MODEL: linear in the LOG-ODDS, not in the probability. ---
+def sigmoid(z):
+    return 1.0 / (1.0 + np.exp(-z))
+
+print("\nTHE LINK  logit(p) = log(p / (1-p)) is linear; p is not")
+print(f"  {'log-odds':>9s} {'odds':>8s} {'p':>7s}")
+for z in [-3, -1, 0, 1, 3]:
+    print(f"  {z:9.1f} {np.exp(z):8.3f} {sigmoid(z):7.3f}")
+
+# --- FITTING BY MAXIMUM LIKELIHOOD: no closed form, so iterate. ---
+# Newton / IRLS by hand, to show there is no mystery inside `.fit()`.
+Xd = np.column_stack([np.ones(len(x)), x])
+beta = np.zeros(2)
+for it in range(8):
+    p = sigmoid(Xd @ beta)
+    W = p * (1 - p)                              # variance of each Bernoulli
+    grad = Xd.T @ (y - p)                        # score
+    H = -(Xd * W[:, None]).T @ Xd                # Hessian, negative definite
+    beta = beta - np.linalg.solve(H, grad)       # Newton step
+    ll = np.sum(y * np.log(p + 1e-12) + (1 - y) * np.log(1 - p + 1e-12))
+    print(f"  iter {it}: beta {np.round(beta, 4)}  log-likelihood {ll:9.4f}")
+
+sk = LogisticRegression(C=np.inf, max_iter=2000).fit(x.reshape(-1, 1), y)
+print(f"\nhand-rolled IRLS : {np.round(beta, 4)}")
+print(f"sklearn          : {np.round(np.r_[sk.intercept_, sk.coef_[0]], 4)}")
+
+# --- INTERPRETATION: exp(coefficient) is an ODDS RATIO, not a probability. ---
+df = pd.DataFrame({
+    "tenure_months": rng.integers(1, 60, 3000),
+    "monthly_spend": rng.gamma(4, 15, 3000),
+    "support_tickets": rng.poisson(1.2, 3000),
+})
+logit = (-1.0 - 0.045 * df["tenure_months"] + 0.010 * df["monthly_spend"]
+         + 0.55 * df["support_tickets"])
+df["churn"] = (rng.random(3000) < sigmoid(logit)).astype(int)
+
+feats = ["tenure_months", "monthly_spend", "support_tickets"]
+m = LogisticRegression(C=np.inf, max_iter=4000).fit(df[feats], df["churn"])
+print(f"\nchurn base rate {df['churn'].mean():.3f}")
+print(f"{'feature':18s} {'coef':>8s} {'odds ratio':>11s}  reading")
+for f, c in zip(feats, m.coef_[0]):
+    direction = "increases" if c > 0 else "decreases"
+    print(f"  {f:16s} {c:+8.4f} {np.exp(c):11.3f}  one more unit {direction}"
+          f" the odds by {abs(np.exp(c) - 1) * 100:.1f}%")
+
+# The same coefficient means different things in probability terms depending on
+# where you start, which is why "marginal effect" is not one number.
+print("\nTHE SAME COEFFICIENT, DIFFERENT PROBABILITY EFFECTS")
+coef = m.coef_[0][2]                             # support_tickets
+for base_p in [0.02, 0.10, 0.50, 0.90]:
+    base_logit = np.log(base_p / (1 - base_p))
+    new_p = sigmoid(base_logit + coef)
+    print(f"  p={base_p:.2f} -> {new_p:.3f}  (+{(new_p-base_p)*100:5.2f} pp)")
+print("Constant on the log-odds scale is NOT constant on the probability")
+print("scale. The effect is largest near p = 0.5 and vanishes at the extremes.")
+
+# --- PERFECT SEPARATION: the likelihood has no maximum. ---
+xs = np.array([1., 2., 3., 4., 6., 7., 8., 9.])
+ys = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+print("\nPERFECT SEPARATION (classes never overlap)")
+for C in [0.1, 1.0, 1e4, 1e6]:
+    ms = LogisticRegression(C=C, max_iter=200000).fit(xs.reshape(-1, 1), ys)
+    print(f"  C={C:<8g} slope {ms.coef_[0][0]:12.4f}"
+          f"  P(y=1 | x=5) {ms.predict_proba([[5.]])[0,1]:.4f}")
+print("With no penalty the slope diverges: pushing it higher always improves")
+print("the likelihood. Regularisation is what makes the estimate exist.")
+```
+
+```text
+  WHY NOT A STRAIGHT LINE ON A 0/1 TARGET
+
+    x=-2 -> "probability" -0.716      Values outside [0,1] are not
+    x= 0 -> "probability" -0.314      probabilities, and clipping them
+    x= 4 -> "probability" +0.491      does not repair the constant-effect
+    x= 8 -> "probability" +1.296      assumption that produced them.
+    x=12 -> "probability" +2.100
+
+  THE SIGMOID: LINEAR IN LOG-ODDS, SATURATING IN PROBABILITY
+
+    p
+  1.0 |                        _____---------
+      |                  ___--
+      |               _--                      flat: a big change in z
+  0.5 +- - - - - - -*- - - - - - - - - - -     barely moves p
+      |          _--   steep: small changes
+      |    ___--       in z move p a lot
+  0.0 |----                                    flat again
+      +----------------------------------> z = b0 + b1*x
+     -6      -3       0       3       6
+
+    log-odds     odds        p
+        -3.0    0.050    0.047
+        -1.0    0.368    0.269
+         0.0    1.000    0.500
+        +1.0    2.718    0.731
+        +3.0   20.086    0.953
+
+  FITTING: NEWTON / IRLS CONVERGES IN A HANDFUL OF STEPS
+
+    iter 0: beta [ -3.25  0.80]  log-likelihood -277.2589
+    iter 3: beta [-10.35  2.61]  log-likelihood  -32.6223
+    iter 6: beta [-14.60  3.73]  log-likelihood  -23.7191
+    iter 7: beta [-14.63  3.73]  log-likelihood  -23.6975
+
+    hand-rolled IRLS [-14.6308  3.7335]
+    sklearn          [-14.6326  3.7339]
+
+  READING THE COEFFICIENTS (churn base rate 0.299)
+
+    feature            coef   odds ratio   reading
+    tenure_months   -0.0405        0.960   4.0% lower odds per month
+    monthly_spend   +0.0078        1.008   0.8% higher odds per dollar
+    support_tickets +0.5645        1.759   75.9% higher odds per ticket
+
+  THE TRAP: CONSTANT ON THE ODDS SCALE IS NOT CONSTANT IN PROBABILITY
+  (one extra support ticket, coefficient +0.5645)
+
+    starting p     new p     change
+        0.02       0.035    + 1.46 pp
+        0.10       0.163    + 6.35 pp
+        0.50       0.637    +13.75 pp     <- largest effect near 0.5
+        0.90       0.941    + 4.06 pp
+
+  PERFECT SEPARATION: THE LIKELIHOOD HAS NO MAXIMUM
+
+    C=0.1      slope   0.4398
+    C=1        slope   1.1364
+    C=1e4      slope   6.9256      weaker penalty -> steeper slope,
+    C=1e6      slope   7.8370      with no limit. the unpenalised
+                                   estimate does not exist.
+```
+
+> Key Takeaways
+> - Linear regression on a 0/1 target predicts impossible values, because a
+>   line with no limits cannot model a probability.
+> - Logistic regression is linear in the log-odds, and the sigmoid simply
+>   undoes the logit.
+> - `exp(coefficient)` is an odds ratio: it multiplies the odds. It is never a
+>   fixed change in probability.
+> - The same coefficient changes the probability most near p = 0.5 and
+>   hardly at all near 0 or 1, so its effect on probability is not one number.
+> - Fitting is iterative because the objective is not quadratic, but it has a
+>   single peak, so the answer is unique.
+> - The decision boundary is a hyperplane, so curved boundaries need extra,
+>   hand-made features.
+> - With perfect separation the unpenalised coefficients grow without limit.
+>   Regularisation makes a finite answer exist.
+
+> 🧪 Practice
+> 1. Fit least squares to a 0/1 target and count how many predictions fall
+>    outside [0, 1].
+> 2. Implement IRLS from the gradient and Hessian and check that your
+>    coefficients match `LogisticRegression` to four decimals.
+> 3. Take a fitted coefficient and compute the change in probability it causes
+>    starting from base rates of 0.01, 0.1, 0.5 and 0.9. Explain the pattern
+>    in one sentence.
+> 4. Build a dataset with a circular true boundary. Show that logistic
+>    regression fails on the raw features, then add squared terms and show it
+>    succeeds.
+> 5. Build perfectly separable data and report the fitted slope at C = 0.01,
+>    1, 100 and 10000.
+> 6. Interview: A model reports an odds ratio of 3.0 for a rare outcome with a
+>    1% base rate, and a product manager says the feature "triples the risk".
+>    Are they right? (Hint: work out the probability after tripling the odds
+>    when p = 0.01, then try p = 0.4.)
+
+
+#### Multinomial and Ordinal Regression
+
+Binary logistic regression handles two outcomes. Real targets often have more:
+which of three plans a visitor picks, how many stars out of five a reviewer
+gives, which of forty products a customer buys. The key question is whether the
+classes have an **order**. Order is information, and ignoring it costs
+accuracy.
+
+**Multinomial (softmax) regression** is for classes with no order. Each class
+gets its own linear score, and the scores are turned into probabilities that
+sum to one:
+
+```text
+P(y = k | x) = exp(z_k) / sum over all j of exp(z_j)     where z_k = b_k . x
+```
+
+Only the *differences* between class scores matter: add the same number to
+every `z_k` and the probabilities do not change. So one class is chosen as the
+**reference**, and every other class is compared against it. For example, a
+coefficient of +0.80 for "referred" in the "pro" row means being referred
+multiplies the odds of choosing pro *rather than free* by `exp(0.80)`. A class
+coefficient on its own, without a reference, does not exist.
+
+The alternative is **one-vs-rest**: train K separate binary models, each
+asking "class k or not?". It is simpler, easy to run in parallel, and works
+well in practice. But its probabilities come from separate models and do not
+sum to one, so they must be rescaled afterwards. Softmax fits all classes
+together and always gives consistent probabilities. Use softmax when you need
+reliable multi-class probabilities. One-vs-rest is fine when you only need a
+ranking or the top label, and for some base models it is the only option.
+
+**Ordinal regression** is for ordered classes, and this is where the
+interesting choice is. With satisfaction ratings from 1 to 5, you have three
+options, and two of them are wrong.
+
+- **Treat the ratings as unordered classes.** This works but wastes
+  information. You estimate four separate sets of coefficients when one would
+  do. Nothing stops the model from saying that higher quality raises
+  P(rating=5) and P(rating=2) while lowering P(rating=4), a pattern that
+  makes no sense for ordered ratings.
+- **Treat the ratings as numbers** and use linear regression. This assumes the
+  step from 1 to 2 is the same size as the step from 4 to 5, and you have no
+  reason to believe that about how people answer. It also predicts values
+  like 4.3 and 5.7, which are not ratings.
+- **Use the proportional odds model (ordered logit).** This is the right one.
+
+The proportional odds model imagines a hidden continuous score
+`z = b.x + error` and a set of cut-off points. You see rating `k` when `z`
+falls between cut-off `k-1` and cut-off `k`. This leads to cumulative logits
+with **one shared slope** and **one intercept per cut-off**:
+
+```text
+logit P(Y <= k | x) = alpha_k - b . x        for k = 1 .. K-1
+```
+
+The shared `b` is what captures the order. A feature that raises the hidden
+score moves probability towards higher ratings at every cut-off at once. The
+name "proportional odds" comes from this sharing: a feature's odds ratio is the
+same at every cut-off. That is a real assumption, and you can check it. Fit the
+K-1 cumulative logits separately and see whether their slopes agree. If they
+differ a lot, use a partial proportional odds model or go back to the
+unordered (nominal) model.
+
+```python
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.multiclass import OneVsRestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, confusion_matrix
+
+rng = np.random.default_rng(5)
+
+# --- THREE UNORDERED CLASSES: which plan does a visitor pick? ---
+n = 3000
+visits = rng.gamma(3, 4, n)
+referred = rng.integers(0, 2, n)
+# Utility of each class; the chosen class is the argmax plus noise (a logit model
+# in disguise -- this is exactly the story softmax regression tells).
+util = np.column_stack([
+    np.zeros(n),                                  # free, the reference class
+    -2.0 + 0.16 * visits + 0.8 * referred,        # pro
+    -4.5 + 0.22 * visits + 0.3 * referred,        # premium
+])
+plan = np.argmax(util + rng.gumbel(0, 1, util.shape), axis=1)  # Gumbel -> softmax
+X = np.column_stack([visits, referred])
+names = ["free", "pro", "premium"]
+print("class counts:", {k: int(v) for k, v in zip(names, np.bincount(plan))})
+
+Xtr, Xte, ytr, yte = train_test_split(X, plan, test_size=0.3, random_state=0,
+                                      stratify=plan)
+
+# --- MULTINOMIAL (softmax) VS ONE-VS-REST. ---
+multi = LogisticRegression(C=np.inf, max_iter=5000).fit(Xtr, ytr)
+ovr = OneVsRestClassifier(LogisticRegression(C=np.inf, max_iter=5000)).fit(Xtr, ytr)
+print(f"\nmultinomial accuracy  {accuracy_score(yte, multi.predict(Xte)):.4f}")
+print(f"one-vs-rest accuracy  {accuracy_score(yte, ovr.predict(Xte)):.4f}")
+
+# The structural difference: softmax probabilities sum to 1 by construction,
+# OvR probabilities do not, so they must be renormalised after the fact.
+raw_ovr = np.column_stack([e.predict_proba(Xte[:3])[:, 1]
+                           for e in ovr.estimators_])
+print("\nprobabilities for three test rows")
+print("  multinomial (sums to 1 by construction)")
+for row in multi.predict_proba(Xte[:3]):
+    print(f"    {np.round(row, 3)}  sum {row.sum():.3f}")
+print("  one-vs-rest (three independent fits, sum is whatever it is)")
+for row in raw_ovr:
+    print(f"    {np.round(row, 3)}  sum {row.sum():.3f}")
+
+# Coefficients in a softmax model are read RELATIVE TO A REFERENCE class.
+# sklearn returns one row per class, which is over-parameterised: only the
+# DIFFERENCES between rows are identified. Subtract the reference row to read.
+coef = multi.coef_ - multi.coef_[0]
+print("\nsoftmax coefficients, expressed against 'free' as the reference")
+print(f"  {'class':10s} {'visits':>9s} {'referred':>10s}")
+for i, nm in enumerate(names):
+    print(f"  {nm:10s} {coef[i][0]:+9.4f} {coef[i][1]:+10.4f}")
+print("  true values: pro +0.160 / +0.800, premium +0.220 / +0.300")
+
+# --- ORDERED CLASSES: satisfaction 1..5. Order is information. ---
+m2 = 4000
+quality = rng.normal(0, 1, m2)
+latent = 1.1 * quality + rng.logistic(0, 1, m2)   # a latent continuous score
+cuts = np.array([-2.0, -0.7, 0.6, 2.1])           # four thresholds -> five levels
+rating = np.searchsorted(cuts, latent)            # 0..4, an ORDERED outcome
+print("\nrating counts:", np.bincount(rating))
+
+# WRONG OPTION 1: treat it as nominal. Throws the ordering away, and pays for it
+# by estimating 4 slopes where the ordinal model estimates 1.
+nominal = LogisticRegression(C=np.inf, max_iter=5000).fit(
+    quality.reshape(-1, 1), rating)
+print("\nnominal multinomial: one slope per class, order ignored")
+print("  slopes:", np.round(nominal.coef_.ravel(), 3),
+      "<- monotone here only by luck, nothing enforces it")
+
+# WRONG OPTION 2: treat it as a number. Assumes the gap 1->2 equals 4->5.
+from sklearn.linear_model import LinearRegression
+lin = LinearRegression().fit(quality.reshape(-1, 1), rating)
+print(f"\nlinear on the codes: slope {lin.coef_[0]:.3f}")
+print(f"  predicts {lin.predict([[3.0]])[0]:.2f} for quality=3.0,"
+      " but the scale stops at 4")
+
+# RIGHT: PROPORTIONAL ODDS. Model P(Y <= k) with a SHARED slope and one
+# intercept per threshold. Fit it as K-1 binary logits, tied by construction.
+print("\nPROPORTIONAL ODDS  fit K-1 cumulative logits, check the shared slope")
+print(f"  {'cut':14s} {'intercept':>10s} {'slope':>8s}")
+slopes = []
+for k in range(4):
+    binary = (rating > k).astype(int)             # P(Y > k)
+    b = LogisticRegression(C=np.inf, max_iter=5000).fit(
+        quality.reshape(-1, 1), binary)
+    slopes.append(b.coef_[0][0])
+    print(f"  P(Y > {k})       {b.intercept_[0]:+10.4f} {b.coef_[0][0]:+8.4f}")
+print(f"  slopes are {np.round(slopes, 3)}: close together, which is the")
+print(f"  proportional-odds assumption HOLDING. Pooled slope {np.mean(slopes):.3f}"
+      f" vs true 1.100")
+print("  If these slopes differed sharply, the assumption would be violated and")
+print("  a partial-proportional-odds or nominal model would be needed.")
+```
+
+```text
+  UNORDERED CLASSES: SOFTMAX VS ONE-VS-REST
+
+    class counts: free 1254, pro 1516, premium 230
+
+    multinomial accuracy  0.6467
+    one-vs-rest accuracy  0.6500      accuracy is essentially tied
+
+    probabilities for three test rows
+      multinomial                       one-vs-rest
+      [0.634 0.317 0.049]  sum 1.000    [0.633 0.324 0.057]  sum 1.013
+      [0.567 0.401 0.033]  sum 1.000    [0.569 0.431 0.035]  sum 1.035
+      [0.100 0.699 0.202]  sum 1.000    [0.102 0.721 0.185]  sum 1.008
+                           ^^^^^^^^^                         ^^^^^^^^^
+                    coherent by construction          needs renormalising
+
+  SOFTMAX COEFFICIENTS ARE ONLY MEANINGFUL AGAINST A REFERENCE
+
+    class       visits   referred
+    free       +0.0000    +0.0000     <- the reference, fixed at zero
+    pro        +0.1559    +0.7965        (true +0.160 / +0.800)
+    premium    +0.1926    +0.2548        (true +0.220 / +0.300)
+
+  ORDERED CLASSES: THE LATENT-SCORE PICTURE
+
+    latent z = b.x + error, cut by thresholds into observed categories
+
+      rating 1  |  rating 2  |  rating 3  |  rating 4  |  rating 5
+    ------------+------------+------------+------------+------------> z
+             a_1          a_2          a_3          a_4
+
+    Raising b.x slides the whole distribution RIGHT, so probability
+    moves toward higher ratings at every cut at once. One slope, four
+    intercepts. That is the entire model.
+
+  THE THREE OPTIONS, ON THE SAME DATA (true slope 1.100)
+
+    nominal multinomial   slopes [-1.064 -0.597 -0.035 +0.618 +1.079]
+                          4 free slope vectors; monotone here by luck only
+
+    linear on the codes   slope 0.674, predicts 4.03 at quality=3.0
+                          but the scale stops at 4, and 1->2 is assumed
+                          to equal 4->5
+
+    proportional odds     cut        intercept    slope
+                          P(Y > 0)     +1.9677   +1.0713
+                          P(Y > 1)     +0.7052   +1.1586
+                          P(Y > 2)     -0.6073   +1.1809
+                          P(Y > 3)     -2.0902   +1.0432
+
+                          slopes agree (1.04 to 1.18) -> the proportional
+                          odds assumption HOLDS. pooled 1.114 vs true 1.100
+```
+
+|                                  | Nominal multinomial         | Proportional odds            | Linear on codes                  |
+| -------------------------------- | --------------------------- | ---------------------------- | -------------------------------- |
+| Uses the order                   | No                          | Yes                          | Yes, and assumes more            |
+| Coefficients per feature         | K-1                         | 1                            | 1                                |
+| Assumes equal steps              | No                          | No                           | Yes                              |
+| Predictions are real categories  | Yes                         | Yes                          | No                               |
+| Extra assumption to check        | None                        | Proportional odds            | Equal steps between levels       |
+| Use when                         | Classes truly have no order | Ordered, with a shared effect | Rarely; only as a rough baseline |
+
+> Key Takeaways
+> - First ask whether the classes are ordered. Getting this wrong either
+>   wastes information or adds a false assumption.
+> - Softmax probabilities always sum to one. One-vs-rest probabilities come
+>   from separate models and must be rescaled.
+> - Only differences between softmax class scores matter, so every
+>   multi-class coefficient is a comparison with a reference class.
+> - Treating ordered ratings as unordered needs K-1 times as many
+>   coefficients and allows patterns that make no sense.
+> - Treating ordered ratings as numbers assumes equal steps between levels and
+>   predicts values that are not categories.
+> - Proportional odds uses one shared slope and one intercept per cut-off,
+>   and that sharing is what captures the order.
+> - You can test the proportional odds assumption by fitting the cumulative
+>   logits separately and comparing their slopes.
+
+> 🧪 Practice
+> 1. Fit softmax and one-vs-rest to the same three-class problem. Report
+>    accuracy and the row sums of the predicted probabilities.
+> 2. Re-express a fitted softmax model's coefficients against a different
+>    reference class and check that the predicted probabilities do not change.
+> 3. Simulate ordinal data from a hidden score with known cut-offs, fit the
+>    K-1 cumulative logits, and check whether the slopes agree.
+> 4. Simulate ordinal data that breaks proportional odds by giving one
+>    cut-off a different slope, and show that your check catches it.
+> 5. Compare a nominal model with a proportional odds model on ordinal data
+>    with only 300 rows. Explain why the gap grows as n shrinks.
+> 6. Interview: A survey team wants to predict Net Promoter Score answers on a
+>    0-10 scale and suggests linear regression because "it is just a number".
+>    What do you propose instead and why? (Hint: does the step from 6 to 7
+>    mean the same as the step from 9 to 10 in how NPS is actually used?)
+
 
 #### Naive Bayes Classifiers
 
 Bayes' rule says `P(y|x)` is proportional to `P(y) * P(x|y)`. The prior `P(y)`
-is just the class frequency and is trivial to estimate. The likelihood
-`P(x|y)` -- the probability of seeing this *entire feature vector* given the
-class -- is the problem. With 30 binary features there are over a billion
-possible vectors, and you cannot estimate a probability for each.
+is just how common each class is, which is easy to estimate. The hard part is
+the likelihood `P(x|y)`: the probability of seeing this *whole combination of
+feature values* in a given class. With 30 binary features there are over a
+billion possible combinations, and you cannot estimate a probability for each.
 
-Naive Bayes makes one assumption to escape this: **the features are
-conditionally independent given the class**. That turns the joint likelihood
-into a product of one-dimensional likelihoods, and each of those can be
-estimated by counting. The parameter count drops from `2^p - 1` to `2p`.
-Thirty features go from a billion parameters to sixty.
+Naive Bayes gets around this with one assumption: **within each class, the
+features are independent of each other**. Then the joint likelihood becomes a
+product of one-feature likelihoods, and each of those can be estimated just by
+counting. The number of parameters drops from `2^p - 1` to `2p`. Thirty
+features go from a billion parameters to sixty.
 
-It is important to see this as a deliberate trade rather than laziness. The
-assumption is essentially always false -- in text, "machine" and "learning"
-plainly co-occur -- but the alternative is a model that cannot be fitted at
-all. And it buys three concrete things.
+This is a deliberate trade, not laziness. The assumption is almost always
+false (in text, "machine" and "learning" clearly appear together), but without
+it the model could not be fitted at all. In return you get three real benefits.
 
-**Fitting is one pass of counting.** No optimisation, no iteration, no
-convergence to worry about. The closed form is exact, and it scales to any
-amount of data trivially.
+**Fitting is a single counting pass.** No optimisation, no iterations, nothing
+to converge. The formula is exact and works on any amount of data.
 
 **It works with very little data.** Because it estimates so few parameters, it
-has very low variance and high bias. A Naive Bayes classifier can be useful
-from a couple of dozen labelled examples, which is why it has been the
-standard baseline for text classification for decades.
+has very low variance (and high bias). Naive Bayes can be useful with only a
+couple of dozen labelled examples, which is why it has been the standard
+baseline for text classification for decades.
 
-**It handles high dimensions gracefully.** Ten thousand features means ten
-thousand independent counts, which is not a problem the way it is for
-distance-based methods.
+**It handles many features well.** Ten thousand features just means ten
+thousand separate counts. That is not a problem for Naive Bayes the way it is
+for distance-based methods.
 
-Two implementation details are not optional.
+Two implementation details are required.
 
-**Work in log space.** Multiplying ten thousand probabilities underflows to
-zero in floating point. Sum the logs instead.
+**Work with logs.** Multiplying ten thousand probabilities gives a number too
+small for the computer to store (it becomes zero). Add the logs instead.
 
 **Smooth the counts.** If a word never appeared with a class in training, its
-estimated probability is zero, and zero times anything is zero -- one unseen
-word vetoes every other piece of evidence in the document, sending the
-log-likelihood to negative infinity. **Laplace (add-alpha) smoothing** adds a
-pseudo-count to every cell, which keeps every probability strictly positive.
+estimated probability is zero. Zero times anything is zero, so one unseen word
+cancels all the other evidence in the document and sends the log-likelihood to
+minus infinity. **Laplace (add-alpha) smoothing** adds a small extra count to
+every cell, so no probability is ever exactly zero.
 
-Now the cost, and it is the thing most people get wrong. **Naive Bayes
-produces badly calibrated probabilities.** When features are correlated, it
-multiplies correlated evidence as though it were independent, so the same
-underlying signal gets counted several times and probabilities are driven
-toward 0 and 1. The demonstration below uses a corpus where words arrive in
-phrases of five near-synonyms: Naive Bayes matches logistic regression on
-accuracy and AUC, and its log loss is double, with two thirds of its
-predictions beyond 0.99 or below 0.01. The reliability table shows it
-predicting 0.018 where the true rate is 0.161.
+Now the cost, which is the thing most people get wrong. **Naive Bayes gives
+badly calibrated probabilities.** When features are correlated, it treats each
+one as separate evidence, so the same signal is counted several times and the
+probabilities are pushed towards 0 and 1. The example below uses a set of
+documents where words come in groups of five near-synonyms. Naive Bayes matches
+logistic regression on accuracy and AUC, but its log loss is twice as high, and
+two thirds of its predictions are above 0.99 or below 0.01. The reliability
+table shows it predicting 0.018 where the true rate is 0.161.
 
-The practical rule follows directly: **Naive Bayes ranks well and calibrates
-badly**. Use it to choose a label or to rank candidates. Do not use its
-probabilities for a cost-sensitive threshold, an expected-value calculation,
-or anything that reads the number itself -- or calibrate it first, with
-isotonic regression or Platt scaling.
+The practical rule: **Naive Bayes ranks well but its probabilities are wrong.**
+Use it to pick a label or rank candidates. Do not use its probabilities for a
+cost-based threshold, an expected-value calculation, or anything else that
+uses the number itself, unless you calibrate it first with isotonic regression
+or Platt scaling.
 
-The variants differ only in the per-feature distribution assumed:
+The variants differ only in what distribution they assume for each feature:
 
-| Variant       | Feature type | Per-feature assumption                             |
+| Variant       | Feature type | Assumption for each feature                        |
 | ------------- | ------------ | -------------------------------------------------- |
-| GaussianNB    | Continuous   | One Gaussian per feature per class                 |
-| MultinomialNB | Counts       | Word counts or frequencies, non-negative           |
-| BernoulliNB   | Binary       | Presence/absence, and penalises absence explicitly |
-| ComplementNB  | Counts       | MultinomialNB corrected for class imbalance        |
+| GaussianNB    | Continuous   | One normal distribution per feature per class      |
+| MultinomialNB | Counts       | Word counts or frequencies, never negative         |
+| BernoulliNB   | Binary       | Present or absent, and counts absence as evidence  |
+| ComplementNB  | Counts       | MultinomialNB adjusted for imbalanced classes      |
 | CategoricalNB | Categorical  | One categorical distribution per feature           |
 
 ```python
@@ -54032,114 +53810,113 @@ print("  so it double-counts that evidence. Accuracy survives; log loss does not
 ```
 
 > Key Takeaways
-> - The conditional independence assumption reduces the parameter count from
+> - The independence assumption cuts the number of parameters from
 >   exponential to linear in the number of features, which is what makes the
->   model fittable at all.
-> - Fitting is a single counting pass with a closed form, so there is no
->   optimiser and no convergence to check.
-> - High bias and very low variance make Naive Bayes useful from a few dozen
->   rows and a strong baseline in high dimensions.
-> - Always compute in log space, because multiplying thousands of
->   probabilities underflows to zero.
-> - Laplace smoothing is mandatory: a single zero count sends the
->   log-likelihood to negative infinity and vetoes all other evidence.
-> - Correlated features make the model count the same evidence repeatedly,
->   which pushes probabilities toward 0 and 1.
-> - Ranking and AUC survive that; calibration does not, so Naive Bayes
->   probabilities must not be used for thresholds or expected values without
->   calibration.
-> - The variants differ only in the per-feature distribution assumed, so
->   choose the one matching your feature type.
+>   model possible to fit.
+> - Fitting is a single counting pass with an exact formula, so there is no
+>   optimiser and nothing to converge.
+> - High bias and very low variance make Naive Bayes useful with a few dozen
+>   rows and a strong baseline with many features.
+> - Always work with logs, because multiplying thousands of probabilities
+>   rounds down to zero.
+> - Laplace smoothing is required: a single zero count sends the
+>   log-likelihood to minus infinity and cancels all other evidence.
+> - Correlated features make the model count the same evidence several
+>   times, which pushes probabilities towards 0 and 1.
+> - Ranking and AUC survive this, but calibration does not. Do not use Naive
+>   Bayes probabilities for thresholds or expected values without
+>   calibrating them.
+> - The variants differ only in the distribution assumed for each feature, so
+>   pick the one that matches your feature type.
 
 > 🧪 Practice
 > 1. Implement Bernoulli Naive Bayes by counting, with Laplace smoothing, and
 >    match `BernoulliNB` on accuracy.
-> 2. Compute the parameter count for the full joint and for the naive
->    factorisation at 5, 20, and 50 binary features.
-> 3. Set alpha to zero on data containing an unseen feature-class combination
->    and show what happens to the predicted log-likelihood.
-> 4. Compare Naive Bayes against logistic regression at 20, 100, 1000, and
->    10,000 training rows, and identify the crossover point.
-> 5. Build a corpus where words appear in correlated groups, then compare
->    accuracy, AUC, and log loss for both models, plus a reliability table.
+> 2. Compute the number of parameters for the full joint distribution and for
+>    Naive Bayes at 5, 20 and 50 binary features.
+> 3. Set alpha to zero on data with a feature-class combination never seen in
+>    training, and show what happens to the predicted log-likelihood.
+> 4. Compare Naive Bayes with logistic regression at 20, 100, 1000 and 10,000
+>    training rows, and find where logistic regression overtakes it.
+> 5. Build a set of documents where words appear in correlated groups. Compare
+>    accuracy, AUC and log loss for both models, plus a reliability table.
 > 6. Calibrate a Naive Bayes model with `CalibratedClassifierCV` using
 >    isotonic regression and report the improvement in log loss and Brier
 >    score.
-> 7. Interview: Your spam filter uses Naive Bayes and you need to set a
->    threshold so that at most 0.1% of legitimate mail is blocked. Why is the
->    raw score a problem, and what do you do? (Hint: what would you need to be
->    true about the number 0.999 for that threshold to mean what you want?)
+> 7. Interview: Your spam filter uses Naive Bayes, and you must set a
+>    threshold so that at most 0.1% of real mail is blocked. Why is the raw
+>    score a problem, and what do you do? (Hint: what would need to be true
+>    about the number 0.999 for that threshold to mean what you want?)
 
 
 #### Discriminant Analysis
 
-Discriminant analysis sits in the same generative family as Naive Bayes, and
-relaxing one assumption is the whole difference. Naive Bayes models each
-feature independently within a class. Discriminant analysis models the class
-as a full multivariate Gaussian, so it can represent correlations between
-features.
+Discriminant analysis is a generative model like Naive Bayes, with one
+assumption relaxed. Naive Bayes treats each feature separately within a class.
+Discriminant analysis models each class as a full multivariate normal
+(Gaussian) distribution, so it can capture correlations between features.
 
-Two variants, distinguished by one decision:
+There are two versions, and they differ in one choice:
 
-**Linear discriminant analysis** assumes every class is Gaussian and all
-classes **share one covariance matrix**. Under that assumption the quadratic
-terms in the Bayes decision rule cancel, and the boundary comes out
-**linear**. That is where the name comes from -- the linearity is a
-consequence of the shared covariance, not a separate design choice.
+**Linear discriminant analysis (LDA)** assumes every class is normal and all
+classes **share the same covariance matrix** (the same spread and
+correlations). With this assumption, the squared terms in the Bayes decision
+rule cancel out, and the boundary is a **straight line** (or flat plane). That
+is where the name comes from: the boundary is linear *because* the covariance
+is shared, not as a separate design choice.
 
-**Quadratic discriminant analysis** gives each class **its own covariance
-matrix**. The quadratic terms no longer cancel, so the boundary is a conic
-section: curved, and able to represent classes of genuinely different shape or
-spread.
+**Quadratic discriminant analysis (QDA)** gives each class **its own covariance
+matrix**. The squared terms no longer cancel, so the boundary is curved. It
+can handle classes with genuinely different shapes or spreads.
 
-The parameter count tells the whole story of the trade-off. With `K` classes
-and `p` features, LDA estimates `K` mean vectors plus one covariance matrix:
-`K*p + p(p+1)/2`. QDA estimates `K` covariance matrices: `K*p + K*p(p+1)/2`.
-At 200 features and 5 classes that is 21,100 versus 100,500. QDA's extra
-freedom is real, and so is its appetite for data. In the demonstration below,
-at 40 features with nine rows per feature QDA reaches 0.97 training accuracy
-and *loses* to LDA on held-out data.
+The number of parameters shows the trade-off clearly. With `K` classes and `p`
+features, LDA estimates `K` mean vectors and one covariance matrix:
+`K*p + p(p+1)/2`. QDA estimates `K` covariance matrices:
+`K*p + K*p(p+1)/2`. With 200 features and 5 classes, that is 21,100 against
+100,500. QDA's extra flexibility is real, and so is its need for data. In the
+example below, with 40 features and nine rows per feature, QDA reaches 0.97
+training accuracy and still *loses* to LDA on held-out data.
 
-Seeing the family as a spectrum of covariance assumptions is the clarifying
-move:
+It helps to see the whole family as a range of covariance assumptions:
 
 | Model                | Covariance assumption          | Boundary shape          |
 | -------------------- | ------------------------------ | ----------------------- |
-| Gaussian Naive Bayes | Diagonal, per class            | Quadratic, axis-aligned |
-| LDA                  | Full, shared across classes    | Linear                  |
-| QDA                  | Full, per class                | Quadratic               |
-| Regularised LDA      | Shared, shrunk toward identity | Linear, stabilised      |
+| Gaussian Naive Bayes | Diagonal, one per class        | Curved, axis-aligned    |
+| LDA                  | Full, shared by all classes    | Straight                |
+| QDA                  | Full, one per class            | Curved                  |
+| Regularised LDA      | Shared, pulled towards identity | Straight, more stable  |
 
-**Shrinkage** is the practical middle ground. It pulls the estimated
-covariance toward a scaled identity matrix, which stabilises the inverse when
-there is not enough data to estimate `p(p+1)/2` entries reliably. Worth being
-precise about when it helps: at 40 features and 360 rows it buys essentially
-nothing, but at 250 features and 180 rows the unshrunk model is at chance and
-shrinkage lifts it to 0.77. Shrinkage is not a free improvement -- it is the
-fix for a near-singular covariance estimate, and it pays exactly when `p`
-approaches `n`.
+**Shrinkage** is the practical middle ground. It pulls the estimated covariance
+towards a simple scaled identity matrix. This keeps the matrix inverse stable
+when there is not enough data to estimate all `p(p+1)/2` entries well. Be
+precise about when it helps: with 40 features and 360 rows it adds almost
+nothing, but with 250 features and 180 rows the unshrunk model is no better
+than guessing and shrinkage raises it to 0.77. Shrinkage is not a free
+improvement. It fixes an unstable covariance estimate, and it pays off when `p`
+gets close to `n`.
 
-The comparison with logistic regression is the conceptually important one, and
-it is the **generative versus discriminative** distinction. LDA models
-`P(x|y)` and `P(y)` and then applies Bayes' rule to get `P(y|x)`. Logistic
-regression models `P(y|x)` directly and never describes how `x` was generated.
-Both produce a linear boundary on the same data, so why choose?
+The comparison with logistic regression is the important one, because it is
+the **generative versus discriminative** distinction in action. LDA models
+`P(x|y)` and `P(y)` and then uses Bayes' rule to get `P(y|x)`. Logistic
+regression models `P(y|x)` directly and never describes how `x` was produced.
+Both draw a straight boundary on the same data, so why choose one over the
+other?
 
-Because the Gaussian assumption is *information*. When it is true, LDA
-converges faster -- it is more data-efficient at small `n`, as the
-demonstration shows. When it is false -- skewed features, heavy tails,
-outliers, categorical predictors -- that information is wrong, and logistic
-regression is safer because it assumes less. At large `n` they converge to
-similar performance, so the choice matters most when data is scarce.
+Because the normal-distribution assumption is extra *information*. When it is
+true, LDA learns faster: it needs less data, as the example shows. When it is
+false (skewed features, heavy tails, outliers, categorical predictors), that
+information is wrong, and logistic regression is safer because it assumes
+less. With lots of data the two perform about the same, so the choice matters
+most when data is scarce.
 
-One capability is unique to LDA: it performs **supervised dimensionality
-reduction**. It finds the directions that maximise between-class separation
-relative to within-class scatter, projecting to at most `K-1` dimensions.
-Contrast PCA, which maximises variance and never sees the labels. In the
-demonstration below, PCA spends all three of its components on high-variance
-noise columns and scores 0.28, while LDA's three components score 0.70 --
-nearly matching all twenty original features. Variance and discriminative
-power are different things.
+LDA can also do something unique: **supervised dimensionality reduction**. It
+finds the directions that best separate the classes compared with the spread
+inside each class, and projects to at most `K-1` dimensions. PCA, by contrast,
+looks for directions with the most variance and never sees the labels. In the
+example below, PCA spends all three of its components on noisy high-variance
+columns and scores 0.28. LDA's three components score 0.70, almost matching
+all twenty original features. High variance and usefulness for separating
+classes are not the same thing.
 
 ```python
 import numpy as np
@@ -54363,100 +54140,1273 @@ print("  discriminative power are different things.")
 ```
 
 > Key Takeaways
-> - LDA and QDA model each class as a full multivariate Gaussian, so unlike
->   Naive Bayes they can represent correlations between features.
-> - LDA's linear boundary is a consequence of assuming a shared covariance
->   matrix, not an independent design choice.
-> - QDA gives each class its own covariance and therefore a curved boundary,
->   at a parameter cost growing as `K*p^2`.
-> - Gaussian Naive Bayes, LDA, and QDA form one family distinguished only by
->   how much covariance structure they estimate.
-> - Shrinkage stabilises a near-singular covariance estimate and pays when `p`
->   approaches `n`, while buying nothing when data is plentiful.
-> - LDA is generative and logistic regression discriminative; the Gaussian
->   assumption makes LDA more data-efficient when true and biased when false.
-> - LDA doubles as supervised dimensionality reduction to at most `K-1`
+> - LDA and QDA model each class as a full multivariate normal distribution,
+>   so unlike Naive Bayes they can capture correlations between features.
+> - LDA's boundary is straight because it assumes one shared covariance
+>   matrix, not because of a separate design choice.
+> - QDA gives each class its own covariance and so a curved boundary, but its
+>   parameter count grows like `K*p^2`.
+> - Gaussian Naive Bayes, LDA and QDA are one family that differs only in how
+>   much covariance structure each one estimates.
+> - Shrinkage stabilises an unreliable covariance estimate. It helps when `p`
+>   gets close to `n` and adds nothing when data is plentiful.
+> - LDA is generative and logistic regression is discriminative. The normal
+>   assumption makes LDA need less data when it is true, and biased when it
+>   is false.
+> - LDA also works as supervised dimensionality reduction to at most `K-1`
 >   dimensions, which PCA cannot do because it never sees the labels.
 
 > 🧪 Practice
 > 1. Generate two classes with a shared covariance and two with different
->    covariances, then compare LDA, QDA, logistic regression, and GaussianNB
->    on both.
-> 2. Tabulate the parameter count for LDA, QDA, and GaussianNB across several
+>    covariances. Compare LDA, QDA, logistic regression and GaussianNB on
+>    both.
+> 2. Tabulate the number of parameters for LDA, QDA and GaussianNB for several
 >    values of `p` and `K`.
-> 3. Hold `n` fixed and increase `p`, recording QDA's training and test
+> 3. Keep `n` fixed and increase `p`, recording QDA's training and test
 >    accuracy until it falls behind LDA.
-> 4. Sweep `shrinkage` from 0 to 1 at `p/n` ratios of 0.1, 0.5, and 0.9 and
->    describe where shrinkage starts to matter.
-> 5. Compare LDA against logistic regression at 10, 30, 100, and 1000 training
->    rows on Gaussian data, then repeat with a heavily skewed feature.
-> 6. Project a multi-class dataset with LDA and with PCA to `K-1` dimensions
->    and compare a downstream classifier's accuracy on each.
-> 7. Interview: You have 90 labelled samples, 400 gene-expression features,
->    and three classes. Which member of this family would you reach for and
->    what would you set? (Hint: count the parameters each option needs against
->    the 90 rows you have.)
+> 4. Vary `shrinkage` from 0 to 1 at `p/n` ratios of 0.1, 0.5 and 0.9, and
+>    describe when shrinkage starts to matter.
+> 5. Compare LDA with logistic regression at 10, 30, 100 and 1000 training
+>    rows on normal data. Repeat with one strongly skewed feature.
+> 6. Project a multi-class dataset to `K-1` dimensions with LDA and with PCA,
+>    and compare a classifier's accuracy on each.
+> 7. Interview: You have 90 labelled samples, 400 gene-expression features
+>    and three classes. Which member of this family would you use, and how
+>    would you set it up? (Hint: count the parameters each option needs and
+>    compare with the 90 rows you have.)
+
+#### k-Nearest Neighbors
+
+Most models learn a set of parameters from the training data and then throw
+the data away. k-nearest neighbours (k-NN) does the opposite. It keeps every
+row. To predict for a new point, it finds the k closest stored rows and lets
+them vote. That is the whole algorithm. There is no training step: "fitting"
+just means storing the data. k-NN works for regression too, as described at the
+end of this topic.
+
+Do not dismiss it as a toy. k-NN is **non-parametric**: it assumes nothing
+about the shape of the relationship. With enough data, it gets close to the
+best possible boundary, whatever shape that boundary has. It handles many
+classes with no changes, and it is easy to explain: "we predicted this
+customer will leave because the fifteen most similar customers left" is a
+better explanation than most models can give.
+
+**k controls the bias-variance trade-off directly.** At k=1, each training point
+is its own nearest neighbour, so training accuracy is always exactly 1.0, and
+the boundary bends around every noisy label: highest variance, lowest bias. As
+k grows, each prediction averages over a wider area and becomes smoother. At
+k=n, every prediction is the overall majority class: highest bias, zero
+variance. One direct consequence: **training accuracy is useless for k-NN**,
+so choose k with cross-validation.
+
+Three practical facts decide whether k-NN will work at all.
+
+**You must scale the features.** Distance is computed in each column's raw
+units. If income ranges over 100,000 and age over 50, income contributes about
+two thousand times more to the squared distance, and age is effectively
+ignored. The example below shows unscaled k-NN scoring *worse than guessing*
+on a problem where the scaled version reaches 98%.
+
+**Too many dimensions ruin it (the curse of dimensionality).** In high
+dimensions, all distances between points become nearly the same. With 500
+features, the farthest of a thousand random points is only about 1.2 times as
+far away as the nearest. When every point is about equally far away,
+"nearest" means almost nothing. Another way to see it: to capture 10% of the
+data in 10 dimensions, you need a box that covers 79% of each axis, which is
+not a "neighbourhood" in any useful sense. Reduce the number of dimensions
+first, or use a model that does not rely on distance.
+
+**The work happens at prediction time.** Fitting just stores the data, but
+every prediction compares the new point with every stored row. Spatial indexes
+such as k-d trees and ball trees help in low dimensions, but become no faster
+than brute force in high dimensions. This is the reverse of parametric models,
+and it makes k-NN awkward in systems that need fast responses. The same
+nearest-neighbour idea, with an approximate index, is what powers modern
+vector search.
+
+Two refinements are worth knowing. **Distance weighting** gives closer
+neighbours a bigger say. This helps most with a large k, where you want
+smoothing without distant points counting as much as close ones. For
+**regression**, the prediction is the average (or weighted average) of the
+neighbours' targets instead of a vote.
+
+```python
+import numpy as np
+import pandas as pd
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.datasets import make_moons
+
+rng = np.random.default_rng(31)
+
+# --- THE ALGORITHM: there is no training. Store the data, and at predict time
+# find the k closest rows and vote.
+X, y = make_moons(n_samples=1200, noise=0.28, random_state=0)
+Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3, random_state=0,
+                                      stratify=y)
+
+def knn_predict(Xq, Xtr, ytr, k):
+    """k-NN from scratch, to show there is nothing hidden in the library."""
+    d = np.sqrt(((Xq[:, None, :] - Xtr[None, :, :]) ** 2).sum(-1))  # all pairs
+    idx = np.argsort(d, axis=1)[:, :k]                              # k closest
+    return (ytr[idx].mean(axis=1) > 0.5).astype(int)                # majority
+
+hand = knn_predict(Xte, Xtr, ytr, 15)
+lib = KNeighborsClassifier(n_neighbors=15).fit(Xtr, ytr).predict(Xte)
+print(f"hand-rolled agrees with sklearn on {np.mean(hand == lib):.1%} of rows")
+print(f"test accuracy {np.mean(hand == yte):.4f}")
+
+# --- K IS THE SMOOTHNESS DIAL: it IS the bias-variance trade-off, visibly. ---
+print(f"\n{'k':>5s} {'train':>7s} {'test':>7s} {'5-fold cv':>10s}  behaviour")
+notes = {1: "memorises every point, incl. noise", 5: "still jagged",
+         15: "about right here", 51: "smooth", 201: "over-smoothed",
+         len(Xtr): "predicts the global majority, always"}
+for k in [1, 5, 15, 51, 201, len(Xtr)]:
+    m = KNeighborsClassifier(n_neighbors=k).fit(Xtr, ytr)
+    # k larger than a CV fold's training size cannot be cross-validated at all,
+    # which is itself a hint that k=n is a degenerate setting.
+    cv = (cross_val_score(KNeighborsClassifier(n_neighbors=k), Xtr, ytr,
+                          cv=5).mean() if k <= 4 * len(Xtr) // 5 else float("nan"))
+    cv_s = f"{cv:10.4f}" if cv == cv else f"{'n/a':>10s}"
+    print(f"{k:5d} {m.score(Xtr, ytr):7.4f} {m.score(Xte, yte):7.4f}"
+          f" {cv_s}  {notes[k]}")
+print("k=1 has training accuracy 1.0 BY CONSTRUCTION: every point is its own")
+print("nearest neighbour. Training accuracy is meaningless for k-NN.")
+
+# --- SCALING IS NOT OPTIONAL: distance is in the units of the columns. ---
+df = pd.DataFrame({
+    "age": rng.integers(20, 70, 2000).astype(float),        # range ~50
+    "income": rng.normal(60_000, 20_000, 2000),             # range ~100,000
+})
+target = ((df["age"] > 45) ^ (df["income"] > 60_000)).astype(int)
+Atr, Ate, btr, bte = train_test_split(df, target, test_size=0.3, random_state=0)
+raw = KNeighborsClassifier(15).fit(Atr, btr)
+scaled = make_pipeline(StandardScaler(), KNeighborsClassifier(15)).fit(Atr, btr)
+print(f"\nSCALING  age spans ~50 units, income spans ~100,000")
+print(f"  unscaled k-NN test accuracy {raw.score(Ate, bte):.4f}")
+print(f"  scaled   k-NN test accuracy {scaled.score(Ate, bte):.4f}")
+print("  Unscaled, a 1-year age difference contributes 1 to squared distance")
+print("  while a $1 income difference contributes 1 as well -- so income, with")
+print("  its far larger numeric range, dominates and age is invisible.")
+
+# --- THE CURSE OF DIMENSIONALITY: 'nearest' stops meaning anything. ---
+print("\nTHE CURSE OF DIMENSIONALITY")
+print(f"  {'dims':>5s} {'min dist':>9s} {'max dist':>9s} {'ratio':>7s}"
+      f" {'mean dist':>13s}")
+for d in [1, 2, 5, 10, 50, 500]:
+    P = rng.normal(0, 1, (1000, d))
+    q = rng.normal(0, 1, (1, d))
+    dist = np.sqrt(((P - q) ** 2).sum(1))
+    # the contrast between nearest and farthest is what k-NN relies on
+    print(f"  {d:5d} {dist.min():9.3f} {dist.max():9.3f}"
+          f" {dist.max()/dist.min():7.2f} {dist.mean():13.3f}")
+print("  In 500 dimensions the farthest point is barely 1.5x the distance of")
+print("  the nearest. When all distances are nearly equal, 'nearest neighbour'")
+print("  carries almost no information, and every distance-based method suffers.")
+
+# How many points you need to keep a neighbourhood locally dense:
+print("\n  to capture 10% of the data range in each dimension you need a cube")
+print("  of side 0.1^(1/d) in a unit hypercube:")
+for d in [1, 2, 10, 100]:
+    print(f"    d={d:4d}: side length {0.1 ** (1/d):.4f}"
+          f"  ({'a true neighbourhood' if d < 5 else 'nearly the whole range'})")
+
+# --- REGRESSION AND THE WEIGHTING CHOICE. ---
+xr = rng.uniform(0, 10, 800).reshape(-1, 1)
+yr = np.sin(xr[:, 0]) + rng.normal(0, 0.3, 800)
+# A RANDOM split, not a positional one: xr sorted plus a positional split would
+# put the whole test set outside the training range, which k-NN cannot do.
+Rtr, Rte, str_, ste = train_test_split(xr, yr, test_size=0.3, random_state=0)
+print(f"\n{'k':>4s} {'uniform RMSE':>13s} {'distance RMSE':>14s}")
+for k in [1, 5, 20, 60, 200]:
+    a = KNeighborsRegressor(k, weights="uniform").fit(Rtr, str_)
+    b = KNeighborsRegressor(k, weights="distance").fit(Rtr, str_)
+    ra = np.sqrt(np.mean((ste - a.predict(Rte)) ** 2))
+    rb = np.sqrt(np.mean((ste - b.predict(Rte)) ** 2))
+    print(f"{k:4d} {ra:13.4f} {rb:14.4f}")
+print("Distance weighting matters most at large k, where it lets you smooth")
+print("without letting far-away points vote as loudly as close ones.")
+
+# --- THE REAL COST IS AT PREDICT TIME, NOT FIT TIME. ---
+import time
+for n in [2000, 20_000, 100_000]:
+    Z = rng.normal(0, 1, (n, 20))
+    t = (rng.random(n) < 0.5).astype(int)
+    m = KNeighborsClassifier(15)
+    t0 = time.perf_counter(); m.fit(Z, t); fit = time.perf_counter() - t0
+    q = rng.normal(0, 1, (500, 20))
+    t0 = time.perf_counter(); m.predict(q); pred = time.perf_counter() - t0
+    print(f"  n={n:7,d}: fit {fit*1000:7.2f} ms   predict 500 rows"
+          f" {pred*1000:8.2f} ms")
+print("  Fitting is just storing the data. The cost moved to inference, which")
+print("  is the opposite of every model that trains parameters.")
+```
+
+```text
+  THE ALGORITHM
+
+    new point ?           find the k=5 nearest stored rows and vote
+                          
+        o   o   x         neighbours: o o x o o  ->  predict o
+          o ? x
+        o   x   x         no parameters were fitted. the data IS the model.
+
+  k IS THE BIAS-VARIANCE DIAL, WITH NOTHING HIDDEN
+
+      k   train    test  5-fold cv  behaviour
+      1  1.0000  0.9250     0.9024  memorises every point, incl. noise
+      5  0.9524  0.9333     0.9250  still jagged
+     15  0.9405  0.9361     0.9345  about right here
+     51  0.9369  0.9417     0.9381  smooth
+    201  0.9274  0.9194     0.9071  over-smoothed
+    840  0.5000  0.5000        n/a  predicts the global majority, always
+
+    k=1 train accuracy is 1.0 BY CONSTRUCTION -- every point is its own
+    nearest neighbour. Training accuracy tells you nothing here.
+
+    k=1 boundary            k=51 boundary
+      _/\_/\__/\_             ___________
+     /          \            /           \
+    |  jagged    |          |   smooth    |
+     \_/\__/\_/\_/           \___________/
+
+  SCALING IS NOT OPTIONAL
+  (age spans ~50 units, income spans ~100,000)
+
+    unscaled k-NN test accuracy 0.4867   <- WORSE THAN CHANCE
+    scaled   k-NN test accuracy 0.9783
+
+    Unscaled, one dollar of income counts the same as one year of age,
+    so income's larger numeric range swamps the distance entirely.
+
+  THE CURSE OF DIMENSIONALITY
+
+     dims  min dist  max dist   ratio     mean dist
+        1     0.001     4.447 5347.14         0.986
+        2     0.029     4.584  158.55         1.664
+        5     0.399     6.712   16.82         2.683
+       10     1.503     6.274    4.18         3.776
+       50     6.861    11.708    1.71         9.213
+      500    29.464    34.540    1.17        32.086
+                                 ^^^^
+                    farthest point is 1.17x the nearest.
+                    "nearest neighbour" has stopped meaning anything.
+
+    side of a cube capturing 10% of the range per dimension:
+      d=1    0.1000   a true neighbourhood
+      d=2    0.3162   a true neighbourhood
+      d=10   0.7943   nearly the whole range
+      d=100  0.9772   nearly the whole range
+
+  DISTANCE WEIGHTING MATTERS AT LARGE k
+
+      k  uniform RMSE  distance RMSE
+      1        0.4308         0.4308
+      5        0.3491         0.3638
+     20        0.3212         0.3462
+     60        0.3262         0.3390
+    200        0.4728         0.3455   <- weighting rescues heavy smoothing
+
+  THE COST IS AT INFERENCE, NOT TRAINING
+
+    n=  2,000: fit  0.81 ms   predict 500 rows    8.29 ms
+    n= 20,000: fit  3.40 ms   predict 500 rows   33.63 ms
+    n=100,000: fit  6.01 ms   predict 500 rows  113.64 ms
+```
+
+> Key Takeaways
+> - k-NN has no training step. Fitting stores the data and all the work
+>   happens at prediction time, the reverse of parametric models.
+> - It is truly non-parametric: with enough data it gets close to the best
+>   boundary of any shape, and its predictions are easy to explain.
+> - k directly controls the bias-variance trade-off. Training accuracy is
+>   always 1.0 at k=1, so it cannot be used to choose k.
+> - Features must be scaled, because distance uses raw column units and a
+>   column with a large range dominates.
+> - In high dimensions all distances become similar, so "nearest" loses its
+>   meaning and k-NN performs badly. Reduce dimensions first.
+> - Distance weighting lets you use a large k for smoothness without giving
+>   distant points an equal vote.
+> - Prediction cost grows with the size of the training set, which makes plain
+>   k-NN awkward in fast systems and is why approximate indexes exist.
+
+> 🧪 Practice
+> 1. Implement k-NN classification from scratch with a full distance matrix
+>    and check that it matches `KNeighborsClassifier` exactly.
+> 2. Vary k from 1 to n and plot training, test and cross-validated accuracy
+>    on one chart. Explain why one of the three lines is flat.
+> 3. Build a dataset with two features on very different scales and report
+>    k-NN accuracy with and without standardisation.
+> 4. For 1, 5, 20, 100 and 500 dimensions, sample 1000 points and report the
+>    ratio of the farthest to the nearest distance from a query point.
+> 5. Compare `weights="uniform"` and `weights="distance"` for k from 1 to 200
+>    on a regression problem.
+> 6. Time prediction for 1000 query rows against training sets of 1000, 10,000
+>    and 100,000 rows, and fit a curve to the growth.
+> 7. Interview: A team wants to use k-NN on 300-dimensional text embeddings
+>    and asks whether to standardise the features first. What do you tell
+>    them, and what else worries you? (Hint: what does a single embedding
+>    dimension mean on its own, and which distance metric were the embeddings
+>    trained for?)
+
+
+#### Distance Metric Selection
+
+Nearest-neighbour methods, kernel methods and clustering algorithms all depend
+on a definition of "close". That definition is a modelling assumption, just as
+important as choosing the shape of a model, yet it is almost always left at the
+default. This topic explains what the common metrics assume and when they are
+wrong.
+
+**Euclidean distance** (L2) is the straight-line distance:
+`sqrt(sum((a-b)^2))`. Because differences are squared, one large difference on
+a single axis outweighs many small ones. It is the right default for truly
+geometric data, where all dimensions are measured in comparable units.
+
+**Manhattan distance** (L1) is `sum(|a-b|)`: the distance you walk along the
+axes, like city blocks. It spreads the blame evenly across dimensions, so it is
+more robust when one feature has an outlier. It also holds up better in high
+dimensions.
+
+**Chebyshev distance** (L-infinity) is `max(|a-b|)`: only the single biggest
+difference counts. Use it when a large difference on any one dimension rules a
+match out, no matter what the others say.
+
+These three are all special cases of the **Minkowski distance**, with `p = 1`,
+`2` and infinity. You can set `p` anywhere in between. A small `p` spreads the
+blame across axes; a large `p` focuses on the worst axis. Choosing `p` says
+which kind of difference you think matters more.
+
+**Cosine distance** is `1 - (a.b)/(|a||b|)`: it measures the angle between two
+vectors and ignores their lengths completely. Use it whenever the size of a
+vector is noise rather than signal. A long document and a short one on the
+same topic point in a similar direction but have very different lengths.
+Euclidean distance says the long one is *farther* from the short one than an
+unrelated document is, while cosine distance says they are almost the same.
+Text, TF-IDF vectors and embeddings are the standard cases. A useful fact: if
+you first scale every row to length 1 (L2 normalisation), Euclidean distance
+gives the same ranking as cosine distance. So normalising the rows and keeping
+the default metric expresses the same idea more clearly.
+
+**Mahalanobis distance** takes correlation between features into account.
+Euclidean distance treats every axis as independent, so when two features are
+highly correlated, it counts their shared direction twice. Mahalanobis
+distance divides out the covariance matrix. This is the same as "whitening"
+the data (removing the correlations) and then using Euclidean distance. The
+effect is concrete: in a tightly correlated cloud of points, two points at the
+same Euclidean distance from the centre can be very differently unusual,
+depending on whether they lie along the correlation or across it.
+
+**Mixed data types** need a metric that can handle them. You cannot subtract
+"Germany" from "Brazil". One-hot encoding plus Euclidean distance quietly says
+that every category mismatch costs `sqrt(2)`, a number nobody chose and one
+that changes as you add levels. **Gower distance** scales each numeric column
+by its range, scores each categorical column as 0 (same) or 1 (different), and
+averages them, so every column gets equal weight by design.
+
+The rule behind all of this: the metric states what you believe "similar"
+means. Treat it as a hyperparameter to cross-validate, not a default to
+accept.
+
+```python
+import numpy as np
+import pandas as pd
+from scipy.spatial.distance import cdist
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+
+rng = np.random.default_rng(37)
+
+# --- THE SAME TWO POINTS, FIVE METRICS, FIVE DIFFERENT ANSWERS. ---
+a = np.array([1.0, 2.0, 3.0, 0.0])
+b = np.array([4.0, 0.0, 3.0, 1.0])
+print("a =", a, "\nb =", b)
+print(f"  euclidean (L2) {np.sqrt(((a-b)**2).sum()):.4f}"
+      "   straight line; dominated by the largest gap")
+print(f"  manhattan (L1) {np.abs(a-b).sum():.4f}"
+      "   sum of per-axis gaps; robust to one big one")
+print(f"  chebyshev (Linf) {np.abs(a-b).max():.4f}"
+      " the single worst axis")
+cos = 1 - a @ b / (np.linalg.norm(a) * np.linalg.norm(b))
+print(f"  cosine distance {cos:.4f}"
+      "  angle only; magnitude is discarded entirely")
+
+# --- WHY COSINE DOMINATES TEXT AND EMBEDDINGS: length should not matter. ---
+short_doc = np.array([2.0, 1.0, 0.0, 3.0])          # same topic mix...
+long_doc = short_doc * 10                            # ...ten times as long
+other = np.array([0.0, 3.0, 4.0, 0.0])
+print("\nA SHORT AND A LONG DOCUMENT ON THE SAME TOPIC")
+for name, v in [("long version of the same doc", long_doc),
+                ("a genuinely different doc", other)]:
+    e = np.sqrt(((short_doc - v) ** 2).sum())
+    c = 1 - short_doc @ v / (np.linalg.norm(short_doc) * np.linalg.norm(v))
+    print(f"  {name:30s} euclidean {e:7.3f}   cosine {c:.4f}")
+print("  Euclidean calls the long version FARTHER than an unrelated document.")
+print("  Cosine calls it identical, which is the right answer for topic.")
+
+# --- MINKOWSKI p INTERPOLATES, AND p CHANGES WHICH ERRORS DOMINATE. ---
+print("\nMINKOWSKI DISTANCE AS p VARIES  (one big gap vs many small ones)")
+spread = np.array([1.0, 1.0, 1.0, 1.0, 1.0])         # five small differences
+spike = np.array([2.3, 0.0, 0.0, 0.0, 0.0])          # one large difference
+print(f"  {'p':>5s} {'five gaps of 1':>15s} {'one gap of 2.3':>16s}  verdict")
+for p in [1, 2, 3, 10, np.inf]:
+    ds = np.linalg.norm(spread, p)
+    dk = np.linalg.norm(spike, p)
+    v = "spread is farther" if ds > dk else "spike is farther"
+    plabel = "inf" if p == np.inf else str(p)
+    print(f"  {plabel:>5s} {ds:15.4f} {dk:16.4f}  {v}")
+print("  Small p spreads blame across axes; large p is dominated by the worst")
+print("  axis. Your choice of p encodes which kind of difference you consider")
+print("  more significant, which is a modelling decision, not a default.")
+
+# --- MAHALANOBIS: the metric that accounts for CORRELATION. ---
+# When features are correlated, Euclidean distance double-counts the shared
+# direction. Mahalanobis divides out the covariance first.
+cov = np.array([[1.0, 0.92], [0.92, 1.0]])
+L = np.linalg.cholesky(cov)
+pts = rng.normal(0, 1, (800, 2)) @ L.T                # a tight diagonal cloud
+centre = np.zeros(2)
+inv = np.linalg.inv(np.cov(pts.T))
+cand = np.array([[2.0, 2.0],        # ALONG the correlation -> ordinary
+                 [2.0, -2.0]])      # ACROSS it -> genuinely unusual
+print("\nMAHALANOBIS  a 0.92-correlated cloud, two equally-Euclidean points")
+for pt in cand:
+    e = np.sqrt((pt ** 2).sum())
+    mh = float(np.sqrt(pt @ inv @ pt))
+    # empirical check: how many cloud points are at least this extreme?
+    md_all = np.sqrt(np.einsum("ij,jk,ik->i", pts, inv, pts))
+    print(f"  point {str(pt):12s} euclidean {e:.4f}  mahalanobis {mh:6.3f}"
+          f"  more extreme than {np.mean(md_all < mh):6.1%} of the cloud")
+print("  Identical Euclidean distance, very different meaning. Mahalanobis is")
+print("  Euclidean distance after whitening, which is also exactly what")
+print("  standardising does when the features are uncorrelated.")
+
+# --- MIXED TYPES: you cannot average a metre and a category. ---
+df = pd.DataFrame({
+    "age": [25, 40, 41, 62],
+    "plan": ["free", "pro", "pro", "free"],
+    "region": ["eu", "us", "eu", "us"],
+})
+def gower(frame):
+    """Gower distance: per-column normalised distance, then averaged.
+    Numeric columns use |a-b| / range; categorical columns use 0 or 1."""
+    n = len(frame)
+    D = np.zeros((n, n))
+    for col in frame.columns:
+        v = frame[col]
+        if pd.api.types.is_numeric_dtype(v):
+            rng_ = v.max() - v.min()
+            d = np.abs(v.to_numpy()[:, None] - v.to_numpy()[None, :]) / rng_
+        else:
+            d = (v.to_numpy()[:, None] != v.to_numpy()[None, :]).astype(float)
+        D += d
+    return D / len(frame.columns)
+
+print("\nGOWER DISTANCE ON MIXED TYPES")
+print(df.to_string(index=False))
+print("\n", pd.DataFrame(np.round(gower(df), 3)).to_string())
+print("Rows 1 and 2 (ages 40 and 41, both pro, different region) are closest.")
+print("One-hot encoding plus Euclidean distance would instead make the region")
+print("mismatch cost sqrt(2), an arbitrary number nobody chose deliberately.")
+
+# --- CHOOSING A METRIC IS A TUNING DECISION, WITH CONSEQUENCES. ---
+n = 2500
+# Sparse, high-dimensional, count-like data whose MAGNITUDE varies a lot:
+# the shape of text retrieval, where document length is a nuisance.
+V = rng.poisson(0.5, (n, 60)).astype(float)
+topic = rng.integers(0, 3, n)
+for t in range(3):
+    V[topic == t, t * 20:(t + 1) * 20] += rng.poisson(0.3,
+                                                     ((topic == t).sum(), 20))
+length = rng.gamma(1.0, 8.0, n)[:, None]              # documents vary in length
+V = V * length                                        # magnitude now dominates
+Vtr, Vte, ttr, tte = train_test_split(V, topic, test_size=0.3, random_state=0,
+                                      stratify=topic)
+print("\nSPARSE COUNT DATA WITH VARYING MAGNITUDE: the metric decides")
+for metric in ["euclidean", "manhattan", "chebyshev", "cosine"]:
+    m = KNeighborsClassifier(15, metric=metric).fit(Vtr, ttr)
+    print(f"  {metric:12s} test accuracy {m.score(Vte, tte):.4f}")
+
+# L2-normalising the rows makes Euclidean distance a monotone function of
+# cosine distance, so the two become the same ranking.
+Vn = V / np.linalg.norm(V, axis=1, keepdims=True)
+Ntr, Nte, ntr, nte = train_test_split(Vn, topic, test_size=0.3, random_state=0,
+                                      stratify=topic)
+m = KNeighborsClassifier(15).fit(Ntr, ntr)
+print(f"  {'euclidean':12s} after L2-normalising rows: {m.score(Nte, nte):.4f}")
+print("  Cosine wins because it discards the length nuisance. Normalising the")
+print("  rows first gets you the same thing with the default metric, which is")
+print("  usually the cleaner way to express the intent in a pipeline.")
+```
+
+```text
+  THE SAME TWO POINTS, FOUR METRICS
+  a = [1, 2, 3, 0]   b = [4, 0, 3, 1]
+
+    euclidean  (L2)     3.7417   straight line
+    manhattan  (L1)     6.0000   sum of per-axis gaps
+    chebyshev  (Linf)   3.0000   the single worst axis
+    cosine              0.3186   angle only, magnitude discarded
+
+    L1 vs L2 vs Linf, as unit balls:
+
+      L1: a diamond      L2: a circle       Linf: a square
+          /\                 ___                +----+
+         /  \               /   \               |    |
+         \  /               \___/               +----+
+          \/
+
+  WHY COSINE DOMINATES TEXT AND EMBEDDINGS
+
+    short_doc = [2, 1, 0, 3]
+    long_doc  = short_doc * 10      same topic mix, ten times as long
+    other     = [0, 3, 4, 0]        a genuinely different document
+
+                                     euclidean   cosine
+    long version of the same doc        33.675   0.0000
+    a genuinely different doc            5.745   0.8396
+                                        ^^^^^^
+    Euclidean calls the long version FARTHER than an unrelated document.
+
+  MINKOWSKI p DECIDES WHICH DIFFERENCES MATTER
+
+        p  five gaps of 1   one gap of 2.3  verdict
+        1          5.0000           2.3000  spread is farther
+        2          2.2361           2.3000  spike is farther
+        3          1.7100           2.3000  spike is farther
+       10          1.1746           2.3000  spike is farther
+      inf          1.0000           2.3000  spike is farther
+
+  MAHALANOBIS: DISTANCE THAT KNOWS ABOUT CORRELATION
+  (a 0.92-correlated cloud; both points are 2.83 away in Euclidean terms)
+
+    point [ 2,  2]  mahalanobis 2.025  more extreme than  87.0% of cloud
+    point [ 2, -2]  mahalanobis 9.903  more extreme than 100.0% of cloud
+
+       x2 |        . ::.                 [2,2] lies ALONG the cloud:
+          |     .:::::.                  ordinary.
+          |   .::::.        * [2,2]
+        --+--:::.--------------- x1      [2,-2] lies ACROSS it:
+          | ::.                          genuinely unusual, though
+          |                 * [2,-2]     equally far in Euclidean terms.
+
+  GOWER DISTANCE ON MIXED TYPES
+
+     age plan region
+      25 free     eu
+      40  pro     us
+      41  pro     eu
+      62 free     us
+
+           0      1      2      3
+    0  0.000  0.802  0.477  0.667
+    1  0.802  0.000  0.342  0.532     rows 1 and 2 are closest:
+    2  0.477  0.342  0.000  0.856     ages 40 and 41, both pro
+    3  0.667  0.532  0.856  0.000
+
+    Each column contributes at most 1, by construction. One-hot plus
+    Euclidean would instead price a region mismatch at sqrt(2).
+
+  THE METRIC CHANGES THE ANSWER
+  (sparse count data whose magnitude varies a lot)
+
+    euclidean                        0.6987
+    manhattan                        0.6187
+    chebyshev                        0.5693
+    cosine                           0.7387   <- length is a nuisance here
+    euclidean after L2-normalising   0.7400   <- the same idea, stated better
+```
+
+| Metric      | Formula                          | Ignores size      | Handles correlation | Typical use                          |
+| ----------- | -------------------------------- | ----------------- | ------------------- | ------------------------------------ |
+| Euclidean   | `sqrt(sum((a-b)^2))`             | No                | No                  | Geometric data, comparable units     |
+| Manhattan   | `sum(abs(a-b))`                  | No                | No                  | Outliers, many dimensions            |
+| Chebyshev   | `max(abs(a-b))`                  | No                | No                  | Any one large difference rules out a match |
+| Cosine      | `1 - a.b/(norm a * norm b)`      | Yes               | No                  | Text, TF-IDF, embeddings             |
+| Mahalanobis | `sqrt(d' S^-1 d)`                | No                | Yes                 | Correlated features, outlier scoring |
+| Gower       | Per column, scaled, averaged     | Per column        | No                  | Mixed numeric and categorical        |
+
+> Key Takeaways
+> - The distance metric is an assumption about what "similar" means, not a
+>   default to accept.
+> - Euclidean distance is dominated by the largest single difference.
+>   Manhattan spreads blame evenly. Chebyshev looks only at the worst axis.
+> - Minkowski `p` moves between them, and choosing it says which kind of
+>   difference matters more.
+> - Cosine distance ignores vector length, which is right whenever length is
+>   noise, as with documents and embeddings.
+> - After scaling rows to length 1, Euclidean distance ranks points the same
+>   way as cosine distance, so normalising is often the clearer approach.
+> - Mahalanobis distance removes correlation first, so it correctly treats a
+>   point across a correlated cloud as more unusual than one along it.
+> - One-hot encoding plus Euclidean distance quietly prices every category
+>   mismatch at `sqrt(2)`. Gower distance gives each column equal weight on
+>   purpose.
+
+> 🧪 Practice
+> 1. Compute Euclidean, Manhattan, Chebyshev and cosine distance for the same
+>    pair of vectors, and explain why the rankings differ.
+> 2. Multiply one vector by ten and report which metrics change.
+> 3. Vary Minkowski `p` from 1 to 20 for a pair that differs a lot on one axis
+>    and a pair that differs a little on many axes. Find the `p` where their
+>    order flips.
+> 4. Generate a strongly correlated two-dimensional cloud. Compare Euclidean
+>    and Mahalanobis distance for a point along the correlation and a point
+>    across it.
+> 5. Implement Gower distance for a table with numeric and categorical
+>    columns, and compare its nearest-neighbour rankings with one-hot plus
+>    Euclidean.
+> 6. Cross-validate `metric` as a k-NN hyperparameter on sparse count data and
+>    report how much accuracy the choice is worth.
+> 7. Interview: Your recommender uses Euclidean distance on user-item
+>    interaction counts, and heavy users always come back as everyone's
+>    nearest neighbour. What is happening and what would you change? (Hint:
+>    how does a heavy user's vector compare with others in length versus
+>    direction?)
+
+
+#### Support Vector Machines
+
+Take two classes that a straight line can separate perfectly. There are
+infinitely many such lines. Logistic regression picks one based on its
+likelihood, with no special preference for a line that sits comfortably
+between the classes over one that just grazes a point. A support vector
+machine (SVM) does have a preference: it picks the line with the **widest
+margin**, meaning the biggest possible gap between the line and the nearest
+point of either class.
+
+Why is that a good idea? Robustness. A boundary that only just clears a
+training point will put a similar future point on the wrong side. A boundary in
+the middle of the gap leaves the most room for error on both sides. There is
+also a formal theory of why the margin helps, but the geometric picture is the
+useful one.
+
+This leads to the method's defining feature: only the points *on* the margin
+decide the answer. These are the **support vectors**. You could delete every
+other point and the fitted model would not change at all. In the example below,
+4 rows out of 200 define the whole model.
+
+Why does this happen? Because of the loss function. An SVM minimises **hinge
+loss**, `max(0, 1 - y*f(x))`, which is exactly zero for any point correctly
+classified and outside the margin. A point with zero loss has zero gradient,
+so it has no influence. Compare log loss, which gets small but never reaches
+zero, so logistic regression always uses every row. The trade is direct: hinge
+loss gives you a sparse model, but you lose calibrated probabilities, because
+no likelihood is being maximised. `predict_proba` on an SVM comes from a
+separate logistic fit on the SVM's outputs (Platt scaling), not from the SVM
+itself.
+
+Real data is rarely perfectly separable, so the **soft margin** allows some
+points on the wrong side, at a price. `C` is that price:
+
+- **Small `C`**: mistakes are cheap, so the model prefers a wide margin and
+  accepts some misclassified points. Strong regularisation, many support
+  vectors.
+- **Large `C`**: mistakes are expensive, so the margin narrows and bends to fit
+  outliers. Weak regularisation, few support vectors.
+
+Note the direction: **`C` is the inverse of regularisation strength**. That is
+the opposite of `alpha` in ridge and lasso, and a frequent source of confusion.
+
+Two practical points. **You must scale the features**, for the same reason as
+k-NN: the margin and the RBF kernel both depend on distance, so an unscaled
+column dominates them. And **kernel SVMs do not scale to large data**: fitting
+time grows between n² and n³ with the number of rows, because the algorithm
+works with a matrix of all pairs of rows. Beyond about a hundred thousand rows,
+a kernel SVM is impractical. That is the main reason gradient-boosted trees
+replaced SVMs as the default for tabular data. `LinearSVC` handles the linear
+case directly and scales to millions of rows.
+
+SVMs are still a strong choice in one situation: a moderate number of rows and
+many features. There the margin's robustness pays off and the cost is still
+affordable. Text classification, with tens of thousands of features and a few
+thousand documents, is the classic example.
+
+```python
+import numpy as np
+import pandas as pd
+from sklearn.svm import SVC, LinearSVC, SVR
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.model_selection import train_test_split
+from sklearn.datasets import make_blobs, make_classification
+
+rng = np.random.default_rng(41)
+
+# --- THE IDEA: of all separating lines, prefer the one with the widest MARGIN.
+X, y = make_blobs(n_samples=200, centers=2, cluster_std=1.1, random_state=6)
+svm = make_pipeline(StandardScaler(), SVC(kernel="linear", C=1e6)).fit(X, y)
+sv = svm[-1].support_vectors_
+w = svm[-1].coef_[0]
+margin = 2.0 / np.linalg.norm(w)
+print("MAXIMUM MARGIN ON SEPARABLE DATA")
+print(f"  training rows        {len(X)}")
+print(f"  support vectors      {len(sv)}  ({len(sv)/len(X):.1%} of the data)")
+print(f"  margin width         {margin:.4f} (= 2 / ||w||)")
+print("  Only the support vectors matter: delete every other row and refit.")
+mask = np.zeros(len(X), bool)
+mask[svm[-1].support_] = True
+svm2 = make_pipeline(StandardScaler(),
+                     SVC(kernel="linear", C=1e6)).fit(X[mask], y[mask])
+print(f"  refit on support vectors ONLY: predictions identical on"
+      f" {np.mean(svm.predict(X) == svm2.predict(X)):.1%} of rows")
+
+# --- C IS THE SOFT-MARGIN DIAL: how much violation you will tolerate. ---
+Xo, yo = make_classification(n_samples=600, n_features=2, n_redundant=0,
+                             n_informative=2, n_clusters_per_class=1,
+                             class_sep=0.9, flip_y=0.08, random_state=3)
+Atr, Ate, btr, bte = train_test_split(Xo, yo, test_size=0.3, random_state=0,
+                                      stratify=yo)
+print(f"\n{'C':>8s} {'support vecs':>13s} {'margin':>8s} {'train':>7s} {'test':>7s}")
+for C in [0.01, 0.1, 1.0, 10.0, 1000.0]:
+    m = make_pipeline(StandardScaler(), SVC(kernel="linear", C=C)).fit(Atr, btr)
+    wv = m[-1].coef_[0]
+    print(f"{C:8.2f} {len(m[-1].support_):13d} {2/np.linalg.norm(wv):8.4f}"
+          f" {m.score(Atr, btr):7.4f} {m.score(Ate, bte):7.4f}")
+print("Small C: a wide margin, many violations tolerated, many support vectors.")
+print("Large C: a narrow margin that bends to fit outliers. C is INVERSE")
+print("regularisation strength -- large C means LESS regularisation.")
+
+# --- HINGE LOSS IS WHAT MAKES AN SVM AN SVM. ---
+# It is exactly zero for points correctly classified beyond the margin, which is
+# why most rows have no influence at all on the solution.
+print("\nHINGE LOSS  max(0, 1 - y*f(x))  vs LOG LOSS")
+print(f"  {'y*f(x)':>8s} {'hinge':>7s} {'log loss':>9s}  reading")
+for margin_val in [-2.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0]:
+    hinge = max(0.0, 1 - margin_val)
+    ll = np.log1p(np.exp(-margin_val))
+    note = ("inside the margin or wrong" if margin_val < 1
+            else "outside the margin: ZERO influence")
+    print(f"  {margin_val:8.1f} {hinge:7.3f} {ll:9.3f}  {note}")
+print("  Log loss is never exactly zero, so logistic regression uses EVERY row.")
+print("  Hinge loss is, so an SVM's solution depends only on the support vectors.")
+print("  That also means an SVM gives you no calibrated probability: there is no")
+print("  likelihood being maximised.")
+
+# --- SVM VS LOGISTIC REGRESSION, ON THE SAME DATA. ---
+print(f"\n{'model':34s} {'test acc':>9s} {'probabilities':>14s}")
+for label, est in [
+    ("logistic regression", LogisticRegression(max_iter=2000)),
+    ("linear SVM (hinge loss)", SVC(kernel="linear", C=1.0)),
+    ("RBF SVM", SVC(kernel="rbf", C=1.0, gamma="scale")),
+]:
+    m = make_pipeline(StandardScaler(), est).fit(Atr, btr)
+    has_proba = hasattr(est, "predict_proba") and not isinstance(est, SVC)
+    print(f"  {label:32s} {m.score(Ate, bte):9.4f}"
+          f" {'yes, calibrated' if has_proba else 'no, needs Platt':>14s}")
+
+# --- SCALING IS MANDATORY, FOR THE SAME REASON AS k-NN. ---
+df = pd.DataFrame({"a": rng.normal(0, 1, 800),
+                   "b": rng.normal(0, 1, 800) * 1000})
+lbl = ((df["a"] + df["b"] / 1000) > 0).astype(int)
+Ctr, Cte, dtr, dte = train_test_split(df, lbl, test_size=0.3, random_state=0)
+raw = SVC(kernel="rbf").fit(Ctr, dtr)
+sc = make_pipeline(StandardScaler(), SVC(kernel="rbf")).fit(Ctr, dtr)
+print(f"\nSCALING  column b is 1000x the scale of column a")
+print(f"  unscaled RBF SVM test accuracy {raw.score(Cte, dte):.4f}"
+      f"  ({len(raw.support_)} support vectors)")
+print(f"  scaled   RBF SVM test accuracy {sc.score(Cte, dte):.4f}"
+      f"  ({len(sc[-1].support_)} support vectors)")
+print("  The RBF kernel is a function of squared distance, so an unscaled column")
+print("  swamps it exactly as it swamps k-NN.")
+
+# --- THE COST: SVMs DO NOT SCALE TO LARGE n. ---
+import time
+print("\nFIT TIME GROWS SUPERLINEARLY IN n (kernel SVMs are O(n^2) to O(n^3))")
+for n in [1000, 4000, 16_000]:
+    Zn = rng.normal(0, 1, (n, 20))
+    tn = (Zn[:, 0] + Zn[:, 1] ** 2 + rng.normal(0, 0.5, n) > 1).astype(int)
+    t0 = time.perf_counter(); SVC(kernel="rbf").fit(Zn, tn)
+    kt = time.perf_counter() - t0
+    t0 = time.perf_counter(); LinearSVC(max_iter=5000, dual="auto").fit(Zn, tn)
+    lt = time.perf_counter() - t0
+    print(f"  n={n:6,d}: kernel SVM {kt:7.3f}s   LinearSVC {lt:7.3f}s"
+          f"   ratio {kt/lt:6.1f}x")
+print("  Past roughly 100,000 rows a kernel SVM becomes impractical, which is")
+print("  the main reason boosted trees displaced it for tabular problems.")
+```
+
+```text
+  THE MAXIMUM MARGIN
+
+    class A  o  o                     both lines separate perfectly,
+          o    o     \  |             but only one is centred in the gap
+             o    o   \ |
+    ------------------  |  <- SVM: the widest margin
+             x     x   \|
+          x    x     x  \
+    class B  x    x      \  <- a line that barely clears a point
+
+    training rows        200
+    support vectors        4  (2.0% of the data)
+    margin width      0.5418  (= 2 / ||w||)
+    refit on the 4 support vectors ONLY: identical on 100.0% of rows
+
+  C IS THE SOFT-MARGIN PRICE (and INVERSE regularisation strength)
+
+           C  support vecs   margin   train    test
+        0.01           276   1.9872  0.8881  0.8556
+        0.10           172   1.2534  0.8786  0.8722
+        1.00           147   1.0224  0.8786  0.8722
+       10.00           144   0.9977  0.8810  0.8722
+     1000.00           143   0.9899  0.8810  0.8722
+
+    small C -> wide margin, violations tolerated, MANY support vectors
+    large C -> narrow margin that bends to outliers, FEW support vectors
+
+  HINGE LOSS IS WHY ONLY SOME POINTS MATTER
+
+     y*f(x)   hinge  log loss  reading
+       -2.0   3.000     2.127  wrong side, heavily penalised
+        0.0   1.000     0.693  on the boundary
+        0.5   0.500     0.474  inside the margin
+        1.0   0.000     0.313  ON the margin
+        2.0   0.000     0.127  outside: ZERO influence
+        5.0   0.000     0.007  outside: still zero, log loss still isn't
+
+    loss
+      |\  hinge                        log loss never reaches zero, so
+      | \                              logistic regression uses EVERY
+      |  \                             row. hinge loss does, so an SVM
+      |   \____________ 0              depends only on support vectors.
+      +----+-----------------> y*f(x)
+           1
+
+  SVM VS LOGISTIC REGRESSION
+
+    model                        test acc   probabilities
+    logistic regression            0.8667   yes, calibrated
+    linear SVM (hinge loss)        0.8722   no, needs Platt scaling
+    RBF SVM                        0.8722   no, needs Platt scaling
+
+  SCALING IS MANDATORY (column b is 1000x the scale of column a)
+
+    unscaled RBF SVM  0.7375   (330 support vectors)
+    scaled   RBF SVM  0.9875   ( 97 support vectors)
+
+  KERNEL SVMs DO NOT SCALE
+
+    n= 1,000: kernel SVM 0.031s   LinearSVC 0.003s   ratio   10.6x
+    n= 4,000: kernel SVM 0.404s   LinearSVC 0.007s   ratio   59.5x
+    n=16,000: kernel SVM 5.899s   LinearSVC 0.026s   ratio  226.1x
+
+    4x the rows -> roughly 13x the time. This is the reason boosted
+    trees replaced SVMs as the tabular default.
+```
+
+> Key Takeaways
+> - An SVM picks the separating boundary with the widest margin, which leaves
+>   the most room for error on both sides.
+> - Only the support vectors decide the answer. Every other training row could
+>   be deleted without changing the model.
+> - This comes from hinge loss being exactly zero outside the margin. Log loss
+>   is never zero, so logistic regression uses every row.
+> - The same property means no calibrated probabilities: no likelihood is
+>   maximised, and `predict_proba` is a separate Platt fit.
+> - `C` is the price of margin violations and the inverse of regularisation
+>   strength, the opposite of ridge's `alpha`.
+> - Features must be scaled, because both the margin and the RBF kernel
+>   depend on distance.
+> - Kernel SVM fitting time grows between n² and n³, which rules them out
+>   beyond about a hundred thousand rows. `LinearSVC` scales much further.
+> - SVMs still shine with a moderate number of rows and many features, such
+>   as in text classification.
+
+> 🧪 Practice
+> 1. Fit a linear SVM on separable data, refit using only the support
+>    vectors, and check that the predictions are identical.
+> 2. Vary `C` over six orders of magnitude and tabulate the margin width, the
+>    number of support vectors, and training and test accuracy.
+> 3. Plot hinge loss and log loss against the margin `y*f(x)` and mark where
+>    hinge loss reaches zero.
+> 4. Compare an SVM's `predict_proba` (with `probability=True`) with logistic
+>    regression's on a reliability curve. Which one is calibrated?
+> 5. Fit an RBF SVM with and without standardisation on data with one column
+>    multiplied by 1000. Report accuracy and the number of support vectors.
+> 6. Time `SVC` against `LinearSVC` at 1000, 10,000 and 50,000 rows and
+>    estimate how fast the time grows with `n`.
+> 7. Interview: Your SVM has 4800 support vectors out of 5000 training rows.
+>    What does that tell you, and what would you change? (Hint: what value of
+>    `C` pushes almost every point inside the margin, and what does that say
+>    about how well the current boundary separates anything?)
+
+
+#### Kernel Trick and Kernel Choice
+
+Two circles, one inside the other, cannot be separated by a straight line. The
+inner disc is one class, the ring around it is the other, and no line can
+divide them. A linear SVM scores barely better than guessing.
+
+Now change the coordinates. Map each point `(x1, x2)` to
+`(x1^2, x2^2, sqrt(2)*x1*x2)`. The circle `x1^2 + x2^2 = r^2` becomes the plane
+`u + v = r^2` in the new coordinates, and a plane is *linear*. The data could
+always be separated; just not in the coordinates you started with. Fit a linear
+SVM in the new space and accuracy jumps from 57% to 99%.
+
+The obvious problem is cost. Explicit feature maps get huge. The number of
+degree-`d` terms built from `p` features is `comb(d+p-1, d)`. For degree 5 and
+100 features that is about 92 million columns; for degree 10 and 1000 features
+it is more than 10^23. You cannot build such matrices.
+
+Here is the trick, one of the most elegant ideas in machine learning. **The SVM
+never needs the new coordinates themselves, only the dot products between
+mapped points.** For many maps, that dot product can be computed directly from
+the original points. For the map above, `phi(a).phi(b) = (a.b)^2` exactly: two
+multiplications instead of building three new coordinates. In the degree-5
+case, it is one dot product instead of 92 million features. A function
+`K(a,b)` that equals a dot product in some feature space is called a
+**kernel**, and replacing dot products with a kernel is the **kernel trick**.
+
+It works for any algorithm that can be written using only dot products between
+rows. That includes SVMs, ridge regression, PCA and k-means.
+
+The standard kernels and what each one assumes:
+
+| Kernel         | Formula                   | Hidden feature space           | Assumes                             |
+| -------------- | ------------------------- | ------------------------------ | ----------------------------------- |
+| Linear         | `a.b`                     | The original features          | The boundary is already linear      |
+| Polynomial     | `(gamma*a.b + coef0)^d`   | All products up to degree `d`  | Interactions up to order `d`        |
+| RBF / Gaussian | `exp(-gamma*‖a-b‖^2)`     | Infinite-dimensional           | A smooth boundary that varies locally |
+| Sigmoid        | `tanh(gamma*a.b + coef0)` | Not always a valid space       | Mostly historical; rarely a good choice |
+
+Some parameters need special attention.
+
+**`gamma` in the RBF kernel sets how far each training point reaches.** The
+kernel is `exp(-gamma * squared distance)`. A large `gamma` makes it fall off
+quickly, so each training point only affects its immediate surroundings. Set it
+high enough and every point only explains itself: training accuracy gets close
+to 1.0 while test accuracy collapses. Near-perfect training accuracy, many
+support vectors and falling test accuracy together are the clear sign that
+`gamma` is too high.
+
+**`coef0` in the polynomial kernel matters.** With `coef0 = 0`, the kernel only
+contains terms of exactly degree `d`, with no linear or constant part. On data
+that needs a linear part, a degree-2 kernel like this can score worse than
+guessing, as the example shows. Setting `coef0 = 1` adds all the lower-degree
+terms back.
+
+**`C` and `gamma` affect each other**, so tune them together. The good settings
+form a diagonal band in the `(C, gamma)` plane (a bigger `C` can partly make up
+for a smaller `gamma`), and tuning one at a time will miss it. Use a
+two-dimensional grid with log-spaced values.
+
+Finally, what makes a function a valid kernel? **Mercer's condition**: the
+matrix of kernel values for any set of points (the Gram matrix) must be
+positive semi-definite. This guarantees that a hidden feature space really
+exists and that the optimisation has one best answer (it stays convex). The
+sigmoid kernel breaks this condition for many settings, which is the concrete
+reason to avoid it. Valid kernels can also be added and multiplied to make new
+valid kernels, so you can combine them to build models.
+
+```python
+import numpy as np
+import pandas as pd
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.pipeline import make_pipeline
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.datasets import make_circles, make_moons
+
+rng = np.random.default_rng(43)
+
+# --- THE PROBLEM: a circular boundary is not linearly separable in (x1, x2). ---
+X, y = make_circles(n_samples=600, noise=0.10, factor=0.45, random_state=0)
+Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3, random_state=0,
+                                      stratify=y)
+lin = make_pipeline(StandardScaler(), SVC(kernel="linear")).fit(Xtr, ytr)
+print(f"linear SVM on concentric circles: test accuracy {lin.score(Xte, yte):.4f}")
+print("A straight line cannot separate an inner disc from an outer ring.")
+
+# --- THE EXPLICIT FIX: map into a space where it IS linear. ---
+def phi(Z):
+    """A hand-built feature map: (x1, x2) -> (x1^2, x2^2, sqrt(2)*x1*x2).
+    This is the degree-2 polynomial map, written out."""
+    return np.column_stack([Z[:, 0] ** 2, Z[:, 1] ** 2,
+                            np.sqrt(2) * Z[:, 0] * Z[:, 1]])
+
+explicit = SVC(kernel="linear").fit(phi(Xtr), ytr)
+print(f"\nafter mapping to (x1^2, x2^2, sqrt2*x1*x2): test accuracy"
+      f" {explicit.score(phi(Xte), yte):.4f}")
+print("The circle x1^2 + x2^2 = r^2 is a straight line in the FIRST TWO of")
+print("those new coordinates. Same model, different space.")
+
+# --- THE TRICK: you never need the map, only the inner products. ---
+# For the map above, phi(a).phi(b) = (a.b)^2 exactly. Verify it.
+a, b = Xtr[0], Xtr[1]
+print(f"\nphi(a) . phi(b) = {phi(a[None]) @ phi(b[None]).T}")
+print(f"(a . b)^2       = {(a @ b) ** 2:.10f}")
+from math import comb
+print("Identical. Now count what the explicit map would cost: the number of")
+print("degree-d monomials over p features is comb(d + p - 1, d).")
+print(f"  {'degree':>6s} {'features':>9s} {'explicit map size':>26s}")
+for d, p_ in [(2, 2), (2, 100), (5, 100), (10, 1000)]:
+    print(f"  {d:6d} {p_:9d} {comb(d + p_ - 1, d):26,d}")
+print("Every row above costs ONE dot product as a kernel. That is the trick.")
+
+# Verify the equivalence across the whole matrix, then confirm the SVM agrees.
+K_explicit = phi(Xtr) @ phi(Xtr).T
+K_kernel = (Xtr @ Xtr.T) ** 2
+print(f"max |K_explicit - K_kernel| = {np.abs(K_explicit - K_kernel).max():.2e}")
+kern = SVC(kernel="poly", degree=2, gamma=1.0, coef0=0.0).fit(Xtr, ytr)
+print(f"SVC(kernel='poly', degree=2) test accuracy {kern.score(Xte, yte):.4f}")
+
+# --- THE COMMON KERNELS, AND WHAT EACH ASSUMES. ---
+Xm, ym = make_moons(n_samples=900, noise=0.22, random_state=1)
+Mtr, Mte, ntr, nte = train_test_split(Xm, ym, test_size=0.3, random_state=0,
+                                      stratify=ym)
+print(f"\n{'kernel':30s} {'test acc':>9s} {'support vecs':>13s}")
+for label, kw in [
+    ("linear  K = a.b", dict(kernel="linear", C=1.0)),
+    ("poly d=2, coef0=0", dict(kernel="poly", degree=2, coef0=0.0, C=1.0)),
+    ("poly d=2, coef0=1", dict(kernel="poly", degree=2, coef0=1.0, C=1.0)),
+    ("poly d=5, coef0=1", dict(kernel="poly", degree=5, coef0=1.0, C=1.0)),
+    ("rbf  K = exp(-g|a-b|^2)", dict(kernel="rbf", C=1.0, gamma="scale")),
+    ("sigmoid  K = tanh(g a.b + c)", dict(kernel="sigmoid", C=1.0)),
+]:
+    m = make_pipeline(StandardScaler(), SVC(**kw)).fit(Mtr, ntr)
+    print(f"  {label:28s} {m.score(Mte, nte):9.4f} {len(m[-1].support_):13d}")
+print("  coef0=0 gives a HOMOGENEOUS kernel: only pure degree-d terms, with no")
+print("  linear or constant part, which is why it collapses here. coef0=1 adds")
+print("  all the lower-degree terms back. It is not a cosmetic default.")
+
+# --- GAMMA IN THE RBF KERNEL IS THE REACH OF EACH TRAINING POINT. ---
+# K(a,b) = exp(-gamma * |a-b|^2). Large gamma -> the kernel decays fast ->
+# each point influences only its immediate surroundings -> overfitting.
+print("\nRBF GAMMA: how far a single training point's influence reaches")
+print(f"  {'gamma':>8s} {'K at d=0.5':>11s} {'K at d=2':>9s} {'train':>7s}"
+      f" {'test':>7s} {'SVs':>5s}")
+for g in [0.01, 0.1, 1.0, 10.0, 100.0]:
+    m = make_pipeline(StandardScaler(), SVC(kernel="rbf", gamma=g, C=1.0)
+                      ).fit(Mtr, ntr)
+    print(f"  {g:8.2f} {np.exp(-g * 0.25):11.4f} {np.exp(-g * 4):9.2e}"
+          f" {m.score(Mtr, ntr):7.4f} {m.score(Mte, nte):7.4f}"
+          f" {len(m[-1].support_):5d}")
+print("  gamma=100: K at distance 2 is 1e-174, so each point only explains")
+print("  itself. Training accuracy near 1.0 and test accuracy collapsing is")
+print("  the unmistakable signature of gamma set too high.")
+
+# --- C AND GAMMA INTERACT, SO TUNE THEM TOGETHER ON A GRID. ---
+grid = GridSearchCV(make_pipeline(StandardScaler(), SVC(kernel="rbf")),
+                    {"svc__C": [0.1, 1, 10, 100],
+                     "svc__gamma": [0.01, 0.1, 1.0, 10.0]},
+                    cv=5, n_jobs=-1).fit(Mtr, ntr)
+res = pd.DataFrame(grid.cv_results_)
+pivot = res.pivot_table(index="param_svc__gamma", columns="param_svc__C",
+                        values="mean_test_score")
+print("\nCROSS-VALIDATED ACCURACY: rows are gamma, columns are C")
+print(pivot.round(4).to_string())
+print(f"best {grid.best_params_}  cv {grid.best_score_:.4f}"
+      f"  test {grid.score(Mte, nte):.4f}")
+print("The good region is a diagonal band, not a point: a larger C can")
+print("compensate for a smaller gamma. Searching one at a time misses it.")
+
+# --- WHAT MAKES A VALID KERNEL. ---
+# Mercer's condition: the Gram matrix must be positive semi-definite for every
+# finite sample, which is what guarantees an implicit feature space exists.
+print("\nMERCER'S CONDITION: the Gram matrix must be positive semi-definite")
+S = Xtr[:200]
+for name, K in [("rbf", np.exp(-1.0 * ((S[:, None] - S[None]) ** 2).sum(-1))),
+                ("linear", S @ S.T),
+                ("poly d=3", (1 + S @ S.T) ** 3),
+                ("sigmoid (NOT always valid)", np.tanh(1.0 * S @ S.T + 1.0))]:
+    ev = np.linalg.eigvalsh((K + K.T) / 2)
+    print(f"  {name:28s} min eigenvalue {ev.min():+.4e}"
+          f"  {'valid' if ev.min() > -1e-8 else 'INVALID here'}")
+print("  The sigmoid kernel has negative eigenvalues, so no feature space")
+print("  corresponds to it and the optimisation is no longer convex. It is")
+print("  kept for historical reasons; there is rarely a reason to choose it.")
+```
+
+```text
+  THE PROBLEM AND THE MAP
+
+    in (x1, x2): no line separates       in (x1^2, x2^2): a line does
+                                          
+         o o o o o                          x2^2 |
+       o    x x    o                             | o o o o  outer ring
+       o   x   x   o                             |
+       o    x x    o                             |  x x     inner disc
+         o o o o o                               +----------- x1^2
+
+    linear SVM on the circles       test accuracy 0.5667
+    linear SVM after the map        test accuracy 0.9889
+
+  THE TRICK: YOU NEVER NEED THE MAP
+
+    phi(a) . phi(b) = 0.0573861946
+    (a . b)^2       = 0.0573861946        identical, to 16 digits
+    max |K_explicit - K_kernel| = 8.88e-16
+
+    degree  features          explicit map size
+         2         2                          3
+         2       100                      5,050
+         5       100                 91,962,520
+        10      1000 288,216,356,245,328,994,082,600
+
+    Every row above costs ONE dot product as a kernel.
+
+  KERNELS ON THE SAME DATA
+
+    kernel                         test acc  support vecs
+    linear  K = a.b                  0.8815           210
+    poly d=2, coef0=0                0.4593           625   <- see below
+    poly d=2, coef0=1                0.8852           211
+    poly d=5, coef0=1                0.9593            95
+    rbf  K = exp(-g|a-b|^2)          0.9556           138
+    sigmoid  K = tanh(g a.b + c)     0.7259           230
+
+    coef0=0 is a HOMOGENEOUS kernel: pure degree-d terms only, with no
+    linear or constant part, which is why it collapses here.
+
+  GAMMA IS THE REACH OF A TRAINING POINT
+
+       gamma  K at d=0.5  K at d=2   train    test   SVs
+        0.01      0.9975  9.61e-01  0.8587  0.8926   288   too smooth
+        0.10      0.9753  6.70e-01  0.8889  0.9037   222
+        1.00      0.7788  1.83e-02  0.9524  0.9519   113   about right
+       10.00      0.0821  4.25e-18  0.9635  0.9444   232
+      100.00      0.0000 1.92e-174  0.9841  0.9333   548   memorising
+
+    K(d)
+      1 |*                       small gamma: a point's influence
+        | \___                   reaches far -> smooth boundary
+        |     \______  small gamma
+      0 |*_____________________  large gamma: influence dies within
+        +-------------------> d  a hair's breadth -> memorisation
+
+  C AND GAMMA INTERACT: TUNE THEM TOGETHER
+  (cross-validated accuracy; rows gamma, columns C)
+
+             C=0.1     C=1    C=10   C=100
+    g=0.01  0.8429  0.8556  0.8651  0.8683
+    g=0.10  0.8603  0.8794  0.9222  0.9429
+    g=1.00  0.9413  0.9476  0.9524  0.9556
+    g=10.0  0.9460  0.9524  0.9444  0.9317
+
+    The good region is a DIAGONAL BAND, not a point: larger C partly
+    compensates for smaller gamma. Tuning one at a time misses it.
+    best C=100, gamma=1.0, cv 0.9556, test 0.9556
+
+  MERCER'S CONDITION: THE GRAM MATRIX MUST BE POSITIVE SEMI-DEFINITE
+
+    rbf                          min eigenvalue -6.05e-15   valid
+    linear                       min eigenvalue -3.22e-14   valid
+    poly d=3                     min eigenvalue -1.08e-13   valid
+    sigmoid                      min eigenvalue -7.77e+00   INVALID
+
+    A negative eigenvalue means no feature space corresponds to the
+    kernel and the optimisation is no longer convex.
+```
+
+> Key Takeaways
+> - Data that a straight line cannot separate in its original coordinates can
+>   often be separated after a feature map. The problem is the coordinates,
+>   not the model.
+> - Explicit polynomial feature maps grow so fast that they cannot be built
+>   beyond small degrees.
+> - Kernel methods only need dot products between mapped points, and for
+>   many maps these can be computed directly from the original points.
+> - Any algorithm that uses only dot products can use kernels, including
+>   ridge regression, PCA and k-means.
+> - `gamma` in the RBF kernel sets how far each training point's influence
+>   reaches. Too high a `gamma` gives perfect training accuracy and
+>   collapsing test accuracy.
+> - With `coef0 = 0`, a polynomial kernel drops all lower-degree terms, which
+>   can be disastrous.
+> - `C` and `gamma` affect each other, so the good region is a diagonal band
+>   and they must be tuned on a joint grid.
+> - Mercer's condition requires a positive semi-definite Gram matrix. The
+>   sigmoid kernel breaks it for many settings.
+
+> 🧪 Practice
+> 1. Generate two circles, one inside the other. Confirm that a linear SVM
+>    fails, then apply the degree-2 map by hand and confirm that a linear SVM
+>    succeeds.
+> 2. Check numerically that `phi(a).phi(b)` equals `(a.b)^2` for the map
+>    above, across a whole Gram matrix.
+> 3. Count the size of the explicit feature map with `comb(d+p-1, d)` for
+>    several `d` and `p`, and note where it becomes impossible to build.
+> 4. Vary RBF `gamma` over five orders of magnitude. Record training accuracy,
+>    test accuracy and the number of support vectors, and spot the
+>    overfitting pattern.
+> 5. Compare a degree-3 polynomial kernel with `coef0=0` and `coef0=1`, and
+>    explain the difference in terms of which terms are present.
+> 6. Run a two-dimensional grid search over `C` and `gamma` and describe the
+>    shape of the high-scoring region.
+> 7. Compute the smallest eigenvalue of the Gram matrix for the RBF,
+>    polynomial and sigmoid kernels, and find which one is not a valid kernel
+>    on your data.
+> 8. Interview: An RBF SVM has 99% training accuracy, 62% test accuracy, and
+>    almost every training row is a support vector. Which hyperparameter do
+>    you suspect, and which way do you move it? (Hint: what does it mean that
+>    almost every point is needed to define the boundary?)
 
 
 #### Voting and Averaging Ensembles
 
-Random forests and boosting both build ensembles from *one* kind of model.
-Voting and averaging ensembles do the simpler and more general thing: take
-several models you already have, from whatever families, and combine their
-outputs.
+Random forests and boosting build ensembles from *one* kind of model. Voting
+and averaging ensembles do something simpler and more general: take several
+models you already have, from any families, and combine their outputs. The
+examples here are mostly classification, but the same ideas apply to averaging
+regression models.
 
-Why should that help? The classical argument is Condorcet's jury theorem. If
-`k` voters each decide correctly with probability `q` and their errors are
-independent, the majority is correct with probability that rises toward 1 as
-`k` grows -- provided `q > 0.5`. With `q = 0.55`, eleven voters reach 0.63 and
-201 reach 0.92.
+Why would that help? The classic argument is Condorcet's jury theorem. Suppose
+`k` voters are each right with probability `q`, and their mistakes are
+independent. Then the chance that the majority is right rises towards 1 as `k`
+grows, *as long as* `q > 0.5`. With `q = 0.55`, eleven voters are right 63% of
+the time and 201 voters 92% of the time.
 
-Read the condition carefully, because both halves of it bite. If `q < 0.5`,
-voting makes things **worse** and converges toward certainty of being wrong:
-at `q = 0.45`, 201 voters get 0.077. And "independent errors" is the hard part
--- five models trained on the same data are never independent, and how far
-from independent they are decides how much voting buys.
+Both parts of that condition matter. If `q < 0.5`, voting makes things
+**worse** and moves towards being certainly wrong: at `q = 0.45`, 201 voters
+are right only 7.7% of the time. And "independent mistakes" is the hard part.
+Five models trained on the same data are never independent, and how far they
+are from independent decides how much voting helps.
 
-**Hard voting** takes the majority predicted label. **Soft voting** averages
-the predicted probabilities and then takes the argmax. Prefer soft voting
-whenever the members produce usable probabilities, because hard voting
-discards every member's confidence: a model that is 51% sure counts exactly as
-much as one that is 99% sure. Soft voting also gives you an ensemble
-probability, which hard voting cannot.
+**Hard voting** takes the most common predicted label. **Soft voting** averages
+the predicted probabilities and then picks the most likely class. Prefer soft
+voting whenever the models give usable probabilities. Hard voting ignores how
+confident each model is: a model that is 51% sure counts the same as one that
+is 99% sure. Soft voting also gives the ensemble a probability, which hard
+voting cannot.
 
-For regression the equivalent is just averaging the predictions, and there the
-mathematics is exact and worth knowing. The **ambiguity decomposition**
-states:
+For regression, the equivalent is simply averaging the predictions. Here the
+maths is exact and worth knowing. The **ambiguity decomposition** says:
 
 ```text
 ensemble error = average member error - diversity
 ```
 
-where diversity is the average squared deviation of members from the
-ensemble's prediction. Both terms are non-negative, so **the ensemble is
-always at least as good as the average member**, and the gap is exactly how
-much the members disagree. That is a theorem, not a heuristic.
+"Diversity" is how far, on average, the members' predictions are from the
+ensemble's prediction (measured as squared difference). Both terms are zero or
+positive, so **the ensemble is always at least as good as the average member**,
+and the difference is exactly how much the members disagree. This is a
+theorem, not a rule of thumb.
 
-But note precisely what it says. The comparison is against the *average*
-member, not the *best* one. In the demonstration below, a simple average of
-ridge, tree, and forest scores 2.49 while the forest alone scores 2.08.
-Averaging a strong model with two weak ones drags it down. The theorem is not
-a promise that ensembling helps.
+But read it carefully. It compares the ensemble with the *average* member, not
+the *best* one. In the example below, a simple average of ridge, a tree and a
+forest scores 2.49, while the forest alone scores 2.08. Averaging a strong
+model with two weak ones drags it down. The theorem does not promise that
+ensembling helps.
 
-**Weights** are the obvious next move, and the obvious next mistake. Weights
-are additional parameters fitted on the same data, and with a handful of
-members it is easy to overfit them. Equal weights are a genuinely strong
-default; if you do tune weights, tune them by cross-validation, and expect the
-gain to be small. The demonstration shows four weighting schemes spanning a
-cross-validated AUC range of 0.004, which is inside the noise.
+**Weights** are the obvious next step, and the obvious next mistake. Weights
+are extra parameters fitted on the same data, and with only a few models it is
+easy to overfit them. Equal weights are a strong default. If you do tune
+weights, use cross-validation and expect only a small gain. The example shows
+four weighting schemes whose cross-validated AUCs differ by only 0.004, which
+is within the noise.
 
-The practical requirement is diversity. Five near-identical random forests
-average to almost exactly one random forest -- 0.984 mean pairwise
-correlation, and a gain of 0.002 AUC. Five *different* model families gain
-0.021, ten times as much, from worse individual members. Combine different
-**inductive biases**: a linear model, a distance-based model, a tree ensemble,
-a kernel method. Combining five variants of the same idea is mostly a way to
-spend compute.
+What you really need is diversity. Five nearly identical random forests average
+to almost exactly one random forest: their average correlation is 0.984, and
+the gain is 0.002 AUC. Five *different* model families gain 0.021, ten times as
+much, even though each of them is weaker on its own. Combine models with
+different **inductive biases** (different built-in assumptions): a linear
+model, a distance-based model, a tree ensemble, a kernel method. Combining five
+versions of the same idea mostly just costs compute.
 
 ```python
 import numpy as np
@@ -54670,108 +55620,112 @@ print("  best one, so an ensemble can still lose to its strongest member.")
 | ---------------------- | -------------------- | ----------------------- | ----------------------- |
 | What is combined       | Predicted labels     | Predicted probabilities | Weighted probabilities  |
 | Needs `predict_proba`  | No                   | Yes                     | Yes                     |
-| Uses member confidence | No                   | Yes                     | Yes                     |
+| Uses model confidence  | No                   | Yes                     | Yes                     |
 | Outputs a probability  | No                   | Yes                     | Yes                     |
-| Extra parameters       | None                 | None                    | One per member          |
-| Risk                   | Discards information | None notable            | Overfitting the weights |
+| Extra parameters       | None                 | None                    | One per model           |
+| Risk                   | Throws away information | None to speak of     | Overfitting the weights |
 
 > Key Takeaways
-> - Majority voting converges toward certainty only when members are better
->   than chance; below 0.5 it amplifies the error instead.
-> - Independence of errors is the assumption that actually limits voting, and
->   models trained on the same data are never independent.
-> - Soft voting averages probabilities and preserves member confidence, which
->   hard voting throws away.
-> - For squared error the ambiguity decomposition is exact: ensemble error
+> - Majority voting moves towards certainty only when each model is better
+>   than chance. Below 0.5 it makes the error worse.
+> - Independent mistakes are what really limit voting, and models trained on
+>   the same data are never independent.
+> - Soft voting averages probabilities and keeps each model's confidence,
+>   which hard voting throws away.
+> - For squared error, the ambiguity decomposition is exact: ensemble error
 >   equals average member error minus diversity.
-> - That guarantees only that the ensemble beats the *average* member, so an
->   ensemble can still lose to its strongest member.
-> - Weights are extra parameters fitted on the same data, so equal weights are
->   a strong default and tuned weights usually gain little.
-> - Diversity of inductive bias is what pays: five different families beat
->   five variants of one family even when the individual members are weaker.
+> - That only guarantees beating the *average* member, so an ensemble can
+>   still lose to its best member.
+> - Weights are extra parameters fitted on the same data, so equal weights
+>   are a strong default and tuned weights usually gain little.
+> - Different built-in assumptions are what pay off: five different families
+>   beat five versions of one family, even when each one is weaker.
 
 > 🧪 Practice
 > 1. Implement Condorcet's formula and tabulate majority accuracy for `q` of
->    0.45, 0.52, and 0.7 across 1 to 501 voters.
-> 2. Build a five-member soft-voting ensemble from five different families and
->    compare it with hard voting on accuracy, AUC, and log loss.
-> 3. Construct a case where hard and soft voting disagree, and explain which
->    is right and why.
-> 4. Verify the ambiguity decomposition numerically on a regression ensemble,
+>    0.45, 0.52 and 0.7 with 1 to 501 voters.
+> 2. Build a soft-voting ensemble from five different model families and
+>    compare it with hard voting on accuracy, AUC and log loss.
+> 3. Build a case where hard and soft voting disagree. Explain which one is
+>    right and why.
+> 4. Check the ambiguity decomposition numerically on a regression ensemble,
 >    and find a case where the ensemble loses to its best member.
 > 5. Cross-validate four weighting schemes and report whether any beats equal
 >    weights by more than the fold-to-fold standard error.
-> 6. Compare an ensemble of five identically-configured forests with different
->    seeds against an ensemble of five different families, reporting mean
+> 6. Compare an ensemble of five identical forests with different seeds
+>    against an ensemble of five different families. Report the average
 >    pairwise correlation for both.
 > 7. Interview: You average five models and the ensemble is worse than your
->    best single model. Your colleague says ensembling is overrated. What is
->    the actual explanation? (Hint: what exactly does the averaging guarantee
->    compare against?)
+>    best single model. A colleague says ensembling is overrated. What is the
+>    real explanation? (Hint: what exactly does averaging guarantee to beat?)
 
 
 #### Stacking and Blending
 
-Voting treats every member identically, or weights them by a number you
-guessed. **Stacking** replaces the guess with a fitted model: train a
-second-level model -- a **meta-model** -- whose input features are the base
-models' predictions and whose target is the actual label. The meta-model
-learns how to combine them, including learning that one base model is
-trustworthy in some region and another elsewhere, which no fixed weighting can
-express.
+Voting treats every model the same, or weights them by numbers you picked.
+**Stacking** replaces the guessing with a fitted model. You train a
+second-level model, a **meta-model**, whose inputs are the base models'
+predictions and whose target is the real label. The meta-model learns how to
+combine them. It can even learn that one model is reliable in some region and
+another model elsewhere, which no fixed weighting can do.
 
-The entire difficulty is one question: **what data do you fit the meta-model
-on?**
+The whole difficulty comes down to one question: **what data do you train the
+meta-model on?**
 
-The obvious approach is fatally broken. Fit the base models on the training
-set, ask them to predict on that same training set, and give those predictions
-to the meta-model. But base models are overconfident on rows they have
-effectively memorised. A random forest grown to purity predicts its own
-training rows nearly perfectly. The meta-model sees that and concludes the
-forest is almost infallible, so it assigns it an enormous weight -- a weight
-that describes memorisation, not skill. In the demonstration below the leaky
-meta-model reaches training AUC of exactly 1.0000 and gives the forest a
-coefficient of 10.45, against 0.47 when done correctly.
+The obvious approach is badly broken. Fit the base models on the training set,
+have them predict that same training set, and give those predictions to the
+meta-model. The problem is that base models are overconfident on rows they
+have effectively memorised. A random forest grown to full depth predicts its
+own training rows almost perfectly. The meta-model sees this, decides the
+forest is almost never wrong, and gives it a huge weight. That weight reflects
+memorisation, not skill. In the example below, this leaky meta-model reaches a
+training AUC of exactly 1.0000 and gives the forest a coefficient of 10.45,
+compared with 0.47 when done correctly.
 
-The fix is **out-of-fold predictions**. Split the training data into `k`
-folds. For each fold, train the base models on the other `k-1` folds and
-predict on the held- out fold. Assemble those predictions into a meta-feature
-matrix in which every row's features came from models that never saw that row.
-Then fit the meta-model on it, and separately refit each base model on all the
-training data for use at prediction time. `cross_val_predict` does the first
-part, and `StackingClassifier` does all of it.
+The fix is **out-of-fold predictions**:
 
-Three practical rules.
+1. Split the training data into `k` folds.
+2. For each fold, train the base models on the other `k-1` folds and predict
+   the held-out fold.
+3. Put those predictions together into the meta-model's input table. Every
+   row's inputs now come from models that never saw that row.
+4. Fit the meta-model on this table.
+5. Separately, refit each base model on all the training data, for use at
+   prediction time.
+
+`cross_val_predict` does steps 1 to 3, and `StackingClassifier` does all of
+them.
+
+Three practical rules:
 
 **Keep the meta-model simple.** With five inputs you do not need a forest.
 Regularised logistic or linear regression is the standard choice, and the
-demonstration shows why: a random-forest meta-model reaches training AUC of
-1.0 and loses 0.02 of test AUC, a generalisation gap of 0.19 against 0.014 for
-logistic regression. The meta-model's job is to weight, not to discover new
-structure.
+example shows why. A random-forest meta-model reaches a training AUC of 1.0
+and loses 0.02 of test AUC: a gap of 0.19 between training and test, against
+0.014 for logistic regression. The meta-model's job is to weight the base
+models, not to find new patterns.
 
-**Base model diversity still matters more than base model strength.** The same
-principle as voting.
+**Diversity of the base models still matters more than their individual
+strength**, just as with voting.
 
-**`passthrough` lets the meta-model see the original features** alongside the
-base predictions, which can help when one model is reliable only in an
-identifiable region. It also gives the meta-model far more room to overfit, so
-it needs validation rather than assumption -- in the demonstration it changed
-nothing.
+**`passthrough` lets the meta-model see the original features** as well as the
+base predictions. This can help when one model is reliable only in a region
+you can identify from the features. It also gives the meta-model much more room
+to overfit, so test it rather than assuming it helps. In the example, it
+changed nothing.
 
-**Blending** is stacking with a single holdout instead of `k` folds: split off
-20-30% of the training data, fit base models on the rest, predict on the
-holdout, and fit the meta-model there. It costs one fit per base model instead
-of `k+1`, which matters when base models are expensive. The cost is that both
-stages see less data and the meta-features are noisier, so it usually performs
-slightly worse -- 0.8203 against 0.8283 below.
+**Blending** is stacking with one holdout set instead of `k` folds. Set aside
+20-30% of the training data, fit the base models on the rest, predict the
+holdout, and fit the meta-model there. It needs one fit per base model instead
+of `k+1`, which matters when base models are expensive. The downside is that
+both levels see less data and the meta-model's inputs are noisier, so it
+usually does slightly worse: 0.8203 against 0.8283 below.
 
-A realistic expectation: stacking beat the best single base model by 0.006 AUC
-here. That is typical. Stacking is how competitions are won, where the fourth
-decimal matters, and it is often not worth the operational complexity of
-maintaining five models in production for a 0.6% relative gain. Decide which
-situation you are in before you build it.
+Be realistic about the gain. Here, stacking beat the best single model by
+0.006 AUC, which is typical. Stacking wins competitions, where the fourth
+decimal place matters. In production, maintaining five models for a 0.6%
+relative gain is often not worth it. Decide which situation you are in before
+you build one.
 
 ```python
 import numpy as np
@@ -54978,117 +55932,121 @@ print("expensive; use stacking when you can afford the folds.")
 
 |                                 | Voting / averaging | Stacking                            | Blending                       |
 | ------------------------------- | ------------------ | ----------------------------------- | ------------------------------ |
-| How members are combined        | Fixed weights      | A fitted meta-model                 | A fitted meta-model            |
-| Meta-features from              | Not applicable     | k-fold out-of-fold predictions      | A single holdout               |
-| Base model fits                 | 1 each             | k+1 each                            | 1 each                         |
-| Can learn region-specific trust | No                 | Yes                                 | Yes                            |
-| Leakage risk                    | None               | High if in-sample features are used | Lower, but the holdout shrinks |
-| Typical gain over best member   | 0 to small         | Small but real                      | Slightly less than stacking    |
+| How models are combined         | Fixed weights      | A fitted meta-model                 | A fitted meta-model            |
+| Meta-model inputs come from     | Not applicable     | k-fold out-of-fold predictions      | A single holdout               |
+| Fits per base model             | 1                  | k+1                                 | 1                              |
+| Can trust models by region      | No                 | Yes                                 | Yes                            |
+| Leakage risk                    | None               | High if in-sample predictions are used | Lower, but the holdout is smaller |
+| Typical gain over best model    | None to small      | Small but real                      | Slightly less than stacking    |
 
 > Key Takeaways
-> - Stacking replaces guessed weights with a fitted meta-model whose inputs
->   are the base models' predictions.
-> - Meta-features must be out-of-fold predictions; in-sample predictions leak
->   and teach the meta-model to trust whichever model memorises hardest.
-> - The leakage signature is a meta-model with near-perfect training score and
->   wildly distorted coefficients.
-> - `StackingClassifier` handles the out-of-fold construction internally, so
->   prefer it to hand-rolled versions.
-> - Keep the meta-model simple and regularised; a flexible meta-model overfits
->   the base models' quirks rather than weighting them.
-> - `passthrough` gives the meta-model the original features too, which adds
->   both capability and overfitting risk and must be validated.
-> - Blending replaces k folds with one holdout: cheaper, noisier, and usually
->   slightly worse.
+> - Stacking replaces hand-picked weights with a fitted meta-model whose
+>   inputs are the base models' predictions.
+> - The meta-model's inputs must be out-of-fold predictions. In-sample
+>   predictions leak and teach the meta-model to trust whichever model
+>   memorises most.
+> - The sign of leakage is a meta-model with a near-perfect training score
+>   and strangely distorted coefficients.
+> - `StackingClassifier` builds the out-of-fold inputs for you, so prefer it
+>   to a hand-written version.
+> - Keep the meta-model simple and regularised. A flexible meta-model overfits
+>   the base models' quirks instead of weighting them.
+> - `passthrough` also gives the meta-model the original features. This adds
+>   both power and overfitting risk, so test it.
+> - Blending uses one holdout instead of k folds: cheaper, noisier and usually
+>   a little worse.
 > - Realistic gains over the best single model are fractions of a percent, so
->   weigh them against the cost of maintaining several models in production.
+>   weigh them against the cost of running several models in production.
 
 > 🧪 Practice
-> 1. Build a stacking ensemble by hand with `cross_val_predict` and confirm it
->    matches `StackingClassifier` closely.
-> 2. Deliberately build the leaky version with in-sample meta-features and
->    report both the meta-model's training score and its coefficients.
-> 3. Compare meta-model coefficients from leaky and out-of-fold features, and
->    identify which base model is most distorted.
-> 4. Try logistic regression, a shallow tree, and a random forest as
->    meta-models, reporting the training-to-test gap for each.
-> 5. Enable `passthrough` and measure the change, then explain in one sentence
->    why it might help or hurt on your data.
-> 6. Implement blending with a 25% holdout and compare both accuracy and total
->    fit time against 5-fold stacking.
-> 7. Add a deliberately terrible base model to a working stack and report what
->    coefficient the meta-model assigns it.
-> 8. Interview: Your stacked ensemble scores 0.94 on the data you used to
->    build the meta-model and 0.86 on a fresh test set, while your best base
->    model scores 0.88 on both. What went wrong? (Hint: ask where the
->    meta-model's training features came from.)
+> 1. Build a stacking ensemble by hand with `cross_val_predict` and check that
+>    it closely matches `StackingClassifier`.
+> 2. Build the leaky version on purpose with in-sample predictions, and report
+>    the meta-model's training score and coefficients.
+> 3. Compare the meta-model's coefficients from leaky and out-of-fold inputs,
+>    and find which base model is distorted most.
+> 4. Try logistic regression, a shallow tree and a random forest as
+>    meta-models, and report the training-to-test gap for each.
+> 5. Turn on `passthrough` and measure the change. Explain in one sentence why
+>    it might help or hurt on your data.
+> 6. Implement blending with a 25% holdout and compare accuracy and total fit
+>    time with 5-fold stacking.
+> 7. Add a deliberately terrible base model to a working stack and report the
+>    coefficient the meta-model gives it.
+> 8. Interview: Your stacked ensemble scores 0.94 on the data used to build
+>    the meta-model and 0.86 on a fresh test set, while your best base model
+>    scores 0.88 on both. What went wrong? (Hint: where did the meta-model's
+>    training inputs come from?)
 
 
 #### Ensemble Diversity
 
-Every ensemble method in this chapter rests on the same requirement: the
-members must make **different mistakes**. Averaging a model with itself
-accomplishes nothing, however good that model is. This topic makes "different
-mistakes" measurable and shows why you cannot simply maximise it.
+Every ensemble method in this chapter depends on the same thing: the members
+must make **different mistakes**. Averaging a model with itself achieves
+nothing, however good the model is. This topic shows how to measure "different
+mistakes", and why you cannot simply push diversity as high as possible.
 
-Three statistics are standard, and they answer slightly different questions.
+There are three standard measures, each answering a slightly different
+question.
 
-**Disagreement** is the fraction of rows on which two classifiers give
-different labels. Simple and directly interpretable, but it counts
-disagreements where both are wrong as usefully as ones where exactly one is
-right.
+**Disagreement** is the share of rows where two classifiers predict different
+labels. It is simple and easy to read, but it counts cases where both models
+are wrong the same as cases where exactly one is right.
 
-**Yule's Q statistic** is computed on the both-right / both-wrong / one-right
-contingency table. It ranges from -1 to +1, where +1 means the two models fail
-on exactly the same rows and 0 means their errors are independent. Q is the
-most informative of the three for ensembling, because it measures correlation
-of *errors* rather than of outputs.
+**Yule's Q** is computed from a table of both-right, both-wrong and
+one-right cases. It runs from -1 to +1. +1 means the two models fail on exactly
+the same rows; 0 means their mistakes are independent. Q is the most useful of
+the three for ensembles, because it measures how correlated the *mistakes*
+are, not just the outputs.
 
-**Cohen's kappa** measures agreement beyond what chance would produce. Near 1
-means near-identical outputs; near 0 means agreement no better than chance.
-The kappa-error diagram, plotting pairwise kappa against mean pairwise error,
-is the standard way to visualise a pool of candidate members.
+**Cohen's kappa** measures how much two models agree beyond what chance would
+produce. Close to 1 means almost identical outputs; close to 0 means agreement
+no better than chance. The kappa-error diagram plots pairwise kappa against
+average pairwise error, and is the standard way to look at a pool of
+candidate models.
 
-Note what the demonstration shows: five genuinely different model families
-still have Q statistics between 0.87 and 0.97. Even wildly different
-algorithms fail on substantially the same rows, because some rows are
-*inherently* hard -- the label noise and class overlap in the data are shared
-by every model. This is the ceiling on what diversity can buy.
+Notice what the example shows: five genuinely different model families still
+have Q values between 0.87 and 0.97. Even very different algorithms fail on
+mostly the same rows, because some rows are *inherently* hard. Label noise and
+overlapping classes affect every model in the same way. This sets a limit on
+what diversity can achieve.
 
-The **oracle analysis** quantifies that ceiling directly. Compute the fraction
-of rows where *at least one* member is correct: that is what a perfect
-combiner could achieve. Below, the best single model scores 0.745, all five
-agree correctly on 0.552, and at least one is correct on 0.852. So there is
-0.107 of headroom. A majority vote captures none of it and scores 0.739,
-*below* the best member, because a majority vote needs most members right, not
-just one. This is precisely the gap stacking tries to close by learning which
-member to trust where -- and it is why oracle analysis is worth computing
-before investing in a complex ensemble. If the oracle is barely above your
-best model, no combiner will help.
+The **oracle analysis** measures that limit directly. Compute the share of rows
+where *at least one* model is right. That is what a perfect way of combining
+the models could reach. Below, the best single model scores 0.745, all five
+models are right together on 0.552 of the rows, and at least one is right on
+0.852. So there is 0.107 of room for improvement. A majority vote captures none
+of it and scores 0.739, *below* the best single model, because a majority vote
+needs most models to be right, not just one. Stacking tries to close this gap
+by learning which model to trust where. This is why oracle analysis is worth
+doing before you build a complex ensemble: if the oracle is barely above your
+best model, no way of combining them will help.
 
-There are three ways to manufacture diversity, and they compose:
+There are three ways to create diversity, and you can use them together:
 
 1. **Vary the data**: bootstrap the rows (bagging), reweight them (boosting),
-or subsample them. 2. **Vary the features**: random subsets per split (random
-forests) or per model (random subspaces). 3. **Vary the algorithm**: different
-families, different hyperparameters, or injected randomness such as Extra
-Trees' random thresholds.
+   or take subsamples.
+2. **Vary the features**: random feature subsets per split (random forests)
+   or per model (random subspaces).
+3. **Vary the algorithm**: different model families, different
+   hyperparameters, or added randomness such as Extra Trees' random
+   thresholds.
 
-The third is by far the most effective per unit of effort, because it changes
-the **inductive bias** rather than just the sample. A linear model and a tree
-are wrong about different things in a structural way that two bootstrapped
-trees never are.
+The third is by far the most effective for the effort, because it changes the
+**inductive bias** (the model's built-in assumptions), not just the sample. A
+linear model and a tree are wrong about different things in a structural way,
+which two bootstrapped trees never are.
 
-Now the critical caveat, which is where the topic earns its place. **Diversity
-is a means, not an objective.** The members must be individually accurate
-*and* diverse, and the two pull against each other: every technique that
-decorrelates members also weakens them. In the demonstration, feature-only
-subsetting produces the lowest kappa of any configuration (0.082) and is *not*
-the most accurate ensemble, because its members are the weakest. Likewise, as
-random forest `max_features` falls from 14 to 1, mean pairwise kappa falls
-monotonically from 0.276 to 0.091 while ensemble accuracy peaks in the middle.
-Maximising diversity is not the goal; finding the best point on the trade-off
-is.
+Now the key warning, which is the real point of this topic. **Diversity is a
+means, not a goal.** The members must be accurate on their own *and* diverse,
+and these two pull against each other: every method that makes members less
+alike also makes them weaker. In the example, using only feature subsets gives
+the lowest kappa of any setup (0.082), but *not* the most accurate ensemble,
+because its members are the weakest. Similarly, as random forest
+`max_features` drops from 14 to 1, the average pairwise kappa falls steadily
+from 0.276 to 0.091, while ensemble accuracy peaks somewhere in the middle.
+The goal is not maximum diversity but the best balance between diversity and
+accuracy.
 
 ```python
 import numpy as np
@@ -55330,51 +56288,309 @@ print("  best setting is interior. Diversity is a means, never the objective.")
 
 | Measure         | Range    | What +1 / high means        | Best use                     |
 | --------------- | -------- | --------------------------- | ---------------------------- |
-| Disagreement    | 0 to 1   | Outputs differ often        | Quick, interpretable check   |
-| Yule's Q        | -1 to +1 | Identical errors            | Judging ensembling potential |
+| Disagreement    | 0 to 1   | Outputs often differ        | Quick, easy-to-read check    |
+| Yule's Q        | -1 to +1 | Identical mistakes          | Judging ensemble potential   |
 | Cohen's kappa   | -1 to +1 | Identical outputs           | Kappa-error diagrams         |
-| Oracle accuracy | 0 to 1   | Some member is always right | Bounding achievable gain     |
+| Oracle accuracy | 0 to 1   | Some model is always right  | Upper limit on possible gain |
 
 > Key Takeaways
-> - Every ensemble method depends on members making different mistakes;
->   identical members produce an ensemble identical to one member.
-> - Yule's Q measures correlation of errors rather than of outputs, which
->   makes it the most informative diversity statistic for ensembling.
-> - Even entirely different algorithms fail on largely the same rows, because
->   some rows are inherently hard, and that sets a ceiling on achievable gain.
-> - Oracle analysis -- the fraction of rows where any member is right --
->   bounds what any combiner could achieve and is worth computing before
->   building one.
-> - A majority vote needs most members right rather than one, so it captures
->   only part of the oracle headroom and can score below the best member.
-> - Diversity comes from varying the data, the features, or the algorithm, and
->   varying the algorithm changes the inductive bias, which pays most.
-> - Every technique that decorrelates members also weakens them, so the most
->   diverse configuration is frequently not the most accurate.
-> - Diversity is a means; the objective is ensemble accuracy, and the best
->   setting is interior.
+> - Every ensemble method depends on members making different mistakes.
+>   Identical members give an ensemble identical to one member.
+> - Yule's Q measures how correlated the mistakes are, not just the outputs,
+>   which makes it the most useful diversity measure for ensembles.
+> - Even completely different algorithms fail on mostly the same rows,
+>   because some rows are inherently hard. That limits the possible gain.
+> - Oracle analysis (the share of rows where any model is right) sets an
+>   upper limit for any way of combining models. Compute it before building a
+>   complex ensemble.
+> - A majority vote needs most models to be right, not just one, so it
+>   captures only part of the oracle's room and can score below the best
+>   model.
+> - Diversity comes from varying the data, the features or the algorithm.
+>   Varying the algorithm changes the built-in assumptions and pays off most.
+> - Every method that makes members less alike also makes them weaker, so the
+>   most diverse setup is often not the most accurate.
+> - Diversity is a means; the goal is ensemble accuracy, and the best setting
+>   is in the middle.
 
 > 🧪 Practice
-> 1. Implement disagreement, Yule's Q, and Cohen's kappa, then compute all
+> 1. Implement disagreement, Yule's Q and Cohen's kappa, and compute all
 >    pairwise values for five different classifiers.
-> 2. Compute the oracle accuracy for your pool and compare it against the best
->    single member and the majority vote.
-> 3. Construct a three-member example where the oracle is right on a row and
->    the majority vote is wrong, and explain the mechanism.
-> 4. Compare an ensemble of five identically-seeded models against five
->    differently seeded ones and report the kappa of each pool.
-> 5. Isolate each source of diversity -- rows only, features only, both --
->    with `BaggingClassifier` and report member accuracy, ensemble accuracy,
->    and mean kappa for each.
-> 6. Sweep `max_features` in a random forest from 1 to `p`, recording all
->    three quantities, and identify where the ensemble peaks.
-> 7. Draw a kappa-error diagram for ten candidate members and use it to pick a
->    subset of five.
+> 2. Compute the oracle accuracy for your pool and compare it with the best
+>    single model and the majority vote.
+> 3. Build a three-model example where the oracle is right on a row and the
+>    majority vote is wrong, and explain why.
+> 4. Compare an ensemble of five models with the same seed against five with
+>    different seeds, and report the kappa of each pool.
+> 5. Isolate each source of diversity (rows only, features only, both) with
+>    `BaggingClassifier`. Report member accuracy, ensemble accuracy and average
+>    kappa for each.
+> 6. Vary `max_features` in a random forest from 1 to `p`, record all three
+>    numbers, and find where the ensemble is best.
+> 7. Draw a kappa-error diagram for ten candidate models and use it to pick
+>    five.
 > 8. Interview: Your oracle analysis says at least one of your six models is
->    correct on 96% of rows, but your best single model gets 81% and your
->    stacked ensemble gets 82%. What does that gap tell you, and what would
->    you try? (Hint: the information exists in the pool -- what is the
->    combiner failing to learn about *when* to trust each member?)
+>    right on 96% of rows, but your best single model gets 81% and your stacked
+>    ensemble 82%. What does that gap tell you, and what would you try? (Hint:
+>    the information is in the pool. What is the combiner failing to learn
+>    about *when* to trust each model?)
+
+
+#### One Algorithm, Two Tasks
+
+Most model families in this chapter appear twice in a library: once with a
+`Regressor` suffix and once with a `Classifier` suffix. The difference is much
+smaller than the names suggest. Grow a decision tree on a 0/1 column with the
+regression criterion, and grow another with the classification criterion, and
+you get the same thing: a set of regions with a number in each leaf. The
+average of a 0/1 column in a leaf *is* the share of class 1 in that leaf. Only
+three things really differ between the two versions: the splitting criterion,
+how the output is transformed, and the loss. Everything else is shared.
+
+| Family              | As regression                | As classification                     | What changes            |
+| ------------------- | ---------------------------- | ------------------------------------- | ----------------------- |
+| linear model        | identity link, squared error | logit link, cross-entropy             | link + loss             |
+| decision tree       | leaf mean, variance splits   | leaf class shares, Gini or entropy    | criterion + aggregation |
+| random forest       | average the leaf means       | average the leaf class shares         | aggregation             |
+| gradient boosting   | fit residuals of squared loss | fit gradients of log loss, add up in logit space | loss + output transform |
+| k-NN                | mean of the k neighbours     | vote of the k neighbours              | aggregation             |
+| SVM                 | epsilon-insensitive loss     | hinge loss                            | loss                    |
+| neural network      | linear output, MSE           | softmax output, cross-entropy         | output layer + loss     |
+
+A few methods really belong to only one side. Logistic regression, LDA, QDA and
+Naive Bayes are classification-only, because each one is built around a model
+of class membership. Quantile and isotonic regression are regression-only. But
+the model *type* (trees, ensembles, kernels, neighbours, networks) is almost
+always shared. That is why "which task, and which loss?" matters far more than
+"which algorithm?".
+
+This leads to a question that comes up all the time: should you convert one
+task into the other? It comes up because the business often wants a decision
+while the data records a quantity.
+
+**The more common mistake is turning a number into categories to build a
+classifier.** Say you record repair costs, and the business asks whether a
+claim will exceed a limit of 500. So you create the label `cost > 500` and
+train a classifier. It works. The problem is what you lost. A claim of 505 and
+a claim of 2,400 now look exactly the same to the model, which no longer knows
+that one of them is only just over the line. With plenty of data around that
+exact threshold, this costs almost nothing, which is why people keep doing it.
+It costs you in two specific cases:
+
+- **When labels are scarce.** The distance from the threshold that you threw
+  away was the cheapest extra information you had.
+- **When the threshold changes**, as limits, budgets and SLAs always do. A
+  regression model answers the new question for free. The classifier learned
+  one cut-off and must be retrained.
+
+So the rule is: **if the numeric value is recorded, model it and apply the
+threshold afterwards.** Classify the binned label only when the underlying
+quantity is truly not observed (you know the customer left, but not how close
+they were to leaving), when the cut-off is a fixed physical or legal boundary,
+or when behaviour really changes at the cut-off instead of passing smoothly
+through it.
+
+**The opposite mistake is regressing on ordered class codes**, and it has the
+same shape. Encoding low/medium/high as 0/1/2 and using squared loss assumes
+the step from low to medium equals the step from medium to high. Sometimes this
+approximation is harmless, and keeping the order helps the model. The proper
+options for ordered targets are ordinal regression, or, if you have the
+underlying quantity, regressing on it and grouping the predictions into bands
+afterwards. That keeps the order without inventing exact distances.
+
+```python
+import numpy as np
+from sklearn.ensemble import (HistGradientBoostingClassifier,
+                              HistGradientBoostingRegressor)
+from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+rng = np.random.default_rng(13)
+
+# --- 1. THE SAME MACHINE, RETARGETED. A tree grown on a 0/1 column with the
+#        regression criterion and a tree grown with the classification
+#        criterion produce the same object: a leaf, and the frequency in it.
+n = 2000
+f1 = rng.normal(0, 1, n)
+f2 = rng.normal(0, 1, n)
+p = 1 / (1 + np.exp(-(0.8 * f1 - 1.2 * f2 + 0.4)))
+lab = (rng.random(n) < p).astype(int)
+Xa = np.column_stack([f1, f2])
+probe = Xa[:6]
+
+reg = DecisionTreeRegressor(min_samples_leaf=40, random_state=0).fit(Xa, lab)
+cls = DecisionTreeClassifier(min_samples_leaf=40, random_state=0).fit(Xa, lab)
+kr = KNeighborsRegressor(25).fit(Xa, lab)
+kc = KNeighborsClassifier(25).fit(Xa, lab)
+
+print("1. REGRESSION AND CLASSIFICATION SHARE THE MACHINERY")
+print(f"   {'row':>4s} {'tree regressor':>15s} {'tree classifier P(1)':>21s}"
+      f" {'kNN reg':>9s} {'kNN clf P(1)':>13s}")
+for i in range(6):
+    print(f"   {i:4d} {reg.predict(probe[i:i+1])[0]:15.4f}"
+          f" {cls.predict_proba(probe[i:i+1])[0, 1]:21.4f}"
+          f" {kr.predict(probe[i:i+1])[0]:9.4f}"
+          f" {kc.predict_proba(probe[i:i+1])[0, 1]:13.4f}")
+print("   The leaf mean of a 0/1 column IS the class frequency in that leaf.")
+print("   What changes between the two APIs is the split criterion, the")
+print("   output transform, and the loss -- not the model class.")
+
+# --- 2. THE BINNING TRAP. A repair-cost model where the business question is
+#        'will this claim exceed the 500 fast-track limit?'
+m = 12000
+age = rng.uniform(0, 15, m)
+mileage = rng.uniform(0, 200, m)
+severity = rng.uniform(0, 1, m)
+cost = (80 + 22 * age + 1.4 * mileage + 900 * severity ** 2
+        + rng.normal(0, 220, m)).clip(10, None)
+Xb = np.column_stack([age, mileage, severity])
+Xtr, Xte, ctr, cte = train_test_split(Xb, cost, test_size=0.4, random_state=0)
+
+LIMIT = 500.0
+ytr, yte = (ctr > LIMIT).astype(int), (cte > LIMIT).astype(int)
+
+reg_m = HistGradientBoostingRegressor(random_state=0).fit(Xtr, ctr)
+clf_m = HistGradientBoostingClassifier(random_state=0).fit(Xtr, ytr)
+reg_pred = reg_m.predict(Xte)
+print(f"\n2. THE SAME DECISION, TWO FRAMINGS (limit = {LIMIT:.0f})")
+print(f"   {'framing':38s} {'accuracy':>9s} {'AUC':>7s}")
+print(f"   {'classify the binned label directly':38s} "
+      f"{accuracy_score(yte, clf_m.predict(Xte)):9.3f}"
+      f" {roc_auc_score(yte, clf_m.predict_proba(Xte)[:, 1]):7.3f}")
+print(f"   {'regress the cost, then threshold it':38s} "
+      f"{accuracy_score(yte, reg_pred > LIMIT):9.3f}"
+      f" {roc_auc_score(yte, reg_pred):7.3f}")
+print("   At the threshold it was trained on, with plenty of data, the")
+print("   classifier gives up almost nothing. The cost of binning shows up")
+print("   in two other places.")
+
+# --- (a) When labels are scarce, the discarded information is missed. ---
+print("\n   (a) SMALL SAMPLES, where the discarded distance would have helped:")
+print(f"   {'training rows':>14s} {'classifier AUC':>15s} {'regressor AUC':>14s}")
+for k in [150, 400, 1500, 7200]:
+    r = HistGradientBoostingRegressor(random_state=0).fit(Xtr[:k], ctr[:k])
+    c = HistGradientBoostingClassifier(random_state=0).fit(Xtr[:k], ytr[:k])
+    print(f"   {k:14d} {roc_auc_score(yte, c.predict_proba(Xte)[:, 1]):15.3f}"
+          f" {roc_auc_score(yte, r.predict(Xte)):14.3f}")
+
+# --- The regression model answers questions nobody asked it at fit time. ---
+print("\n   (b) AND THE LIMIT MOVES. Finance revises the fast-track cap:")
+print(f"   {'new limit':>10s} {'regressor accuracy':>19s} {'classifier':>12s}")
+for new in [300.0, 500.0, 800.0, 1200.0]:
+    yt = (cte > new).astype(int)
+    a_r = accuracy_score(yt, reg_pred > new)
+    a_c = accuracy_score(yt, clf_m.predict(Xte))
+    note = "" if new == LIMIT else "   <- classifier must be refit"
+    print(f"   {new:10.0f} {a_r:19.3f} {a_c:12.3f}{note}")
+
+# --- 3. GOING THE OTHER WAY: ordinal labels handed to a plain classifier. ---
+edges = [0, 300, 700, np.inf]
+band_tr = np.digitize(ctr, edges[1:-1])
+band_te = np.digitize(cte, edges[1:-1])
+multi = HistGradientBoostingClassifier(random_state=0).fit(Xtr, band_tr)
+pred_band = multi.predict(Xte)
+reg_band = np.digitize(reg_pred, edges[1:-1])
+print("\n3. THREE ORDERED BANDS: low / mid / high")
+print(f"   {'approach':34s} {'exact':>7s} {'off by 1':>9s} {'off by 2':>9s}")
+for name, pb in [("multiclass classifier", pred_band),
+                 ("regress, then band the prediction", reg_band)]:
+    d = np.abs(pb - band_te)
+    print(f"   {name:34s} {(d == 0).mean():7.3f} {int((d == 1).sum()):9d}"
+          f" {int((d == 2).sum()):9d}")
+print("   A plain multiclass loss scores low-called-high exactly as badly as")
+print("   low-called-mid, because to cross-entropy the labels are unordered.")
+print("   The regression framing cannot make that mistake as easily: to call")
+print("   a low claim 'high' it has to be wrong by the whole mid band.")
+```
+
+```text
+1. REGRESSION AND CLASSIFICATION SHARE THE MACHINERY
+    row  tree regressor  tree classifier P(1)   kNN reg  kNN clf P(1)
+      0          0.7750                0.7750    0.5600        0.5600
+      1          0.5918                0.5918    0.5200        0.5200
+      2          0.4222                0.4222    0.4000        0.4000
+      3          0.5000                0.5000    0.3200        0.3200
+      4          0.8889                0.8889    0.9600        0.9600
+      5          0.9750                0.9750    0.9200        0.9200
+   The leaf mean of a 0/1 column IS the class frequency in that leaf.
+   What changes between the two APIs is the split criterion, the
+   output transform, and the loss -- not the model class.
+
+2. THE SAME DECISION, TWO FRAMINGS (limit = 500)
+   framing                                 accuracy     AUC
+   classify the binned label directly         0.791   0.870
+   regress the cost, then threshold it        0.793   0.875
+   At the threshold it was trained on, with plenty of data, the
+   classifier gives up almost nothing. The cost of binning shows up
+   in two other places.
+
+   (a) SMALL SAMPLES, where the discarded distance would have helped:
+    training rows  classifier AUC  regressor AUC
+              150           0.848          0.861
+              400           0.832          0.850
+             1500           0.851          0.855
+             7200           0.870          0.875
+
+   (b) AND THE LIMIT MOVES. Finance revises the fast-track cap:
+    new limit  regressor accuracy   classifier
+          300               0.856        0.744   <- classifier must be refit
+          500               0.793        0.791
+          800               0.839        0.675   <- classifier must be refit
+         1200               0.927        0.443   <- classifier must be refit
+
+3. THREE ORDERED BANDS: low / mid / high
+   approach                             exact  off by 1  off by 2
+   multiclass classifier                0.659      1588        49
+   regress, then band the prediction    0.683      1493        27
+   A plain multiclass loss scores low-called-high exactly as badly as
+   low-called-mid, because to cross-entropy the labels are unordered.
+   The regression framing cannot make that mistake as easily: to call
+   a low claim 'high' it has to be wrong by the whole mid band.
+```
+
+> Key Takeaways
+> - Regression and classification share almost all their machinery. What
+>   differs is the splitting criterion, the output transform and the loss.
+> - A regression tree's leaf mean on a 0/1 column equals a classification
+>   tree's predicted probability in that leaf, and the same holds for k-NN.
+> - Only a few methods truly belong to one side: logistic regression, LDA,
+>   QDA and Naive Bayes only classify; quantile and isotonic regression only
+>   predict numbers.
+> - Turning a recorded number into categories throws away the distance to the
+>   cut-off. That costs little at the trained threshold when data is
+>   plentiful.
+> - The cost shows up when labels are scarce, and most of all when the
+>   threshold moves: a regression model answers at any cut-off, but a
+>   classifier must be retrained.
+> - Whenever the numeric value is actually recorded, model it and apply the
+>   threshold afterwards.
+> - Classify the binned label when the quantity is truly unobserved, when the
+>   cut-off is fixed by law or physics, or when behaviour changes at the
+>   cut-off.
+> - For ordered targets, regressing the codes invents distances and plain
+>   multiclass ignores the order. Prefer ordinal regression, or regress the
+>   underlying quantity and group it into bands.
+
+> 🧪 Practice
+> 1. Fit a tree regressor and a tree classifier on the same 0/1 target with
+>    the same settings, and check that the predictions match exactly.
+> 2. Repeat with k-NN, then explain in one sentence why they are equal.
+> 3. Take a numeric target, train a classifier on a binned version and a
+>    regressor on the raw values, and compare AUC at the training threshold
+>    for sample sizes from 100 to 10,000.
+> 4. Move the threshold after training and re-score both models. Estimate
+>    what retraining would cost in your own workflow.
+> 5. Group an ordered target into three levels, fit a multiclass classifier,
+>    and count the errors that are off by two levels, compared with a
+>    regress-then-band approach.
+> 6. Find a case in your own work where a binary label was built from a
+>    numeric field, and check whether the raw value is still available.
+> 7. Interview: A churn model is trained on the label "cancelled within 30
+>    days". Product now wants to know who will cancel within 90 days. What can
+>    you reuse, and what would you have built differently? (Hint: what was
+>    thrown away when the time until cancelling became a yes/no label?)
 
 ---
 
@@ -56476,7 +57692,7 @@ Two more practical notes. **Components can degenerate**: one can collapse onto
 a handful of near-identical points, driving its covariance determinant toward
 zero and the likelihood toward infinity without describing anything.
 `reg_covar` adds a ridge to every covariance, the same fix as LDA's shrinkage
-in chapter 10.4. And a **Bayesian (variational) GMM** with a sparse Dirichlet
+in chapter 10.2. And a **Bayesian (variational) GMM** with a sparse Dirichlet
 prior can switch off components it does not need: asked for 10 on data with 4,
 it puts weight above 0.02 on exactly 4.
 
@@ -56657,7 +57873,7 @@ for reg in [1e-6, 1e-3, 1e-1]:
 print("  With a small reg_covar one component wraps the four duplicated points")
 print("  and its determinant collapses, inflating the likelihood without")
 print("  describing any structure. reg_covar adds a ridge to every covariance,")
-print("  which is the same fix as LDA's shrinkage in chapter 10.4.")
+print("  which is the same fix as LDA's shrinkage in chapter 10.2.")
 
 # --- A VARIATIONAL GMM CAN SWITCH OFF UNNEEDED COMPONENTS. ---
 print("\nBAYESIAN GMM: ask for 10 components on data that has 4")
@@ -57521,7 +58737,7 @@ where exactly one separates the classes and five are inflated pure noise. All
 twenty raw features give 0.85 test accuracy; the first principal component
 gives 0.62, and the most class-relevant component is number 3, not number 1.
 PCA never saw the labels, so it ranked the noise above the signal. When you
-have labels, LDA (chapter 10.4) targets separation directly; otherwise select
+have labels, LDA (chapter 10.2) targets separation directly; otherwise select
 components by downstream performance rather than by retained variance.
 
 ```python
@@ -57664,7 +58880,7 @@ print(f"  the most class-relevant component is number {int(np.argmax(corr)) + 1}
 print("  PCA never saw the labels, so it ranked the five inflated noise columns")
 print("  above the one column that matters. Keeping 'enough variance' can")
 print("  discard exactly the signal you need -- use a supervised method (LDA,")
-print("  chapter 10.4) or select components by downstream performance.")
+print("  chapter 10.2) or select components by downstream performance.")
 ```
 
 ```text
@@ -57748,7 +58964,7 @@ print("  chapter 10.4) or select components by downstream performance.")
                           ^ the most useful component is the THIRD
 ```
 
-|                      | PCA                        | LDA (chapter 10.4)       |
+|                      | PCA                        | LDA (chapter 10.2)       |
 | -------------------- | -------------------------- | ------------------------ |
 | Uses labels          | No                         | Yes                      |
 | Maximises            | Variance                   | Between-class separation |
@@ -61968,7 +63184,7 @@ A one-class SVM is built for the second. You fit it on data you trust, then
 call `predict` on new data -- which is exactly the workflow Isolation Forest's
 API discourages and this one encourages.
 
-Mechanically it is the SVM of chapter 10.3 with one class. The kernel does the
+Mechanically it is the SVM of chapter 10.2 with one class. The kernel does the
 same job: a **linear** kernel can only draw a half-space, while an **RBF**
 kernel wraps an arbitrary region. The demonstration trains on two crescents
 and scores 300 new points: RBF reaches PR-AUC 0.964, linear manages 0.638. No
@@ -61983,7 +63199,7 @@ a question you can actually reason about -- "what fraction of my clean data am
 I willing to call abnormal".
 
 **`gamma` controls how tightly the boundary wraps**, exactly as in chapter
-10.3, and the demonstration contains a trap worth studying. The PR-AUC column
+10.2, and the demonstration contains a trap worth studying. The PR-AUC column
 *rises* monotonically with `gamma`, reaching 1.000 at `gamma = 100`. Do not
 read that as "use a large gamma". Look at the training rejection column
 instead: at `gamma = 100` the model rejects **30% of its own clean training
@@ -61998,7 +63214,7 @@ genuine hazard whenever you lack true labels, and the defence is to check
 something independent: **the training rejection rate against `nu`** is exactly
 such a check.
 
-Two further practical points, both inherited from chapter 10.3. **Scaling is
+Two further practical points, both inherited from chapter 10.2. **Scaling is
 mandatory**: with one column at 1000 times the spread of another, PR-AUC is
 0.358 unscaled and 1.000 after `StandardScaler`. And **the kernel version does
 not scale**, being quadratic to cubic in `n`; `Nystroem` plus `SGDOneClassSVM`
@@ -62064,7 +63280,7 @@ for label, est in [
           f" {roc_auc_score(y_novel, sc):8.3f} {len(est.support_):6d}")
 print("  The linear kernel can only draw a half-space, so it cannot wrap two")
 print("  crescents. The RBF kernel wraps an arbitrary region -- the same kernel")
-print("  argument as in chapter 10.3, applied to a boundary with no second class.")
+print("  argument as in chapter 10.2, applied to a boundary with no second class.")
 
 # --- nu AND gamma: WHAT EACH ONE CONTROLS. ---
 # nu is an upper bound on the fraction of training points allowed OUTSIDE the
@@ -62147,7 +63363,7 @@ for n in [1000, 4000, 12000]:
 print("  Past a few tens of thousands of rows the kernel version is impractical.")
 print("  Nystroem approximates the kernel map explicitly and SGDOneClassSVM then")
 print("  solves a linear problem, which is linear in n -- the same trade as")
-print("  LinearSVC against SVC in chapter 10.3.")
+print("  LinearSVC against SVC in chapter 10.2.")
 
 # --- SCALING IS MANDATORY, FOR THE SAME REASON AS EVERY KERNEL METHOD. ---
 raw = np.column_stack([rng.normal(0, 1, 800), rng.normal(0, 1000, 800)])
