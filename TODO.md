@@ -5,10 +5,7 @@
 ### ANALYSIS
 - split large documents into smaller documents chapter by chapter
 
-
 ### IN PROGRESS
-- Rust
-- Cyber Security
 - Web Technologies
 - Database Management Systems
 - Calculus
@@ -16,6 +13,7 @@
 - Probability & Statistics
 - Discrete Mathematics
 - Operative Research
+- Rust
 
 ### IN REVIEW
 - System Design
@@ -26,5 +24,6 @@
 - Kubernetes
 - Java
 - Data Science
+- Cyber Security
 
 ### DONE
