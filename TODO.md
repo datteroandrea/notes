@@ -6,7 +6,6 @@
 - split large documents into smaller documents chapter by chapter
 
 ### IN PROGRESS
-- Web Technologies
 - Database Management Systems
 - Calculus
 - Linear Algebra
@@ -25,5 +24,6 @@
 - Java
 - Data Science
 - Cyber Security
+- Web Technologies
 
 ### DONE
