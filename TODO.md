@@ -6,13 +6,15 @@
 - split large documents into smaller documents chapter by chapter
 
 ### IN PROGRESS
-- Database Management Systems
 - Calculus
 - Linear Algebra
 - Probability & Statistics
 - Discrete Mathematics
 - Operative Research
 - Rust
+- Docker
+- Gitlab CI/CD
+- Azure
 
 ### IN REVIEW
 - System Design
@@ -25,5 +27,6 @@
 - Data Science
 - Cyber Security
 - Web Technologies
+- Database Management Systems
 
 ### DONE
