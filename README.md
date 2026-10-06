@@ -74,9 +74,9 @@ Generate the full content in Markdown for this chapter of the study document fol
 ---
 
 STRUCTURE RULES:
-- Start with a chapter title (# heading) and a 2–3 sentence overview of what the chapter covers and why it matters
-- For each subchapter, use a (## heading) with a brief intro sentence
-- For each topic inside a subchapter, use a (### heading)
+- Start with a chapter title (## heading) and a 2–3 sentence overview of what the chapter covers and why it matters
+- For each subchapter, use a (### heading) with a brief intro sentence
+- For each topic inside a subchapter, use a (#### heading)
 
 ---
 
