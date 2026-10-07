@@ -6,7 +6,6 @@
 - split large documents into smaller documents chapter by chapter
 
 ### IN PROGRESS
-- Calculus
 - Linear Algebra
 - Probability & Statistics
 - Discrete Mathematics
@@ -28,5 +27,6 @@
 - Cyber Security
 - Web Technologies
 - Database Management Systems
+- Calculus
 
 ### DONE
