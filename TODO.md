@@ -6,11 +6,6 @@
 - split large documents into smaller documents chapter by chapter
 
 ### IN PROGRESS
-- <a href="./math/discrete-mathematics.md">Discrete Mathematics</a>
-- <a href="./math/operative-research.md">Operative Research</a>
-- <a href="./computer-science/rust.md">Rust</a>
-- <a href="./computer-science/docker.md">Docker</a>
-- <a href="./computer-science/gitlab.md">Gitlab CI/CD</a>
 - <a href="./computer-science/azure.md">Azure</a>
 
 ### IN REVIEW
@@ -25,8 +20,14 @@
 - <a href="./computer-science/cyber-security.md">Cyber Security</a>
 - <a href="./computer-science/web-technologies.md">Web Technologies</a>
 - <a href="./computer-science/dbms.md">Database Management Systems</a>
+- <a href="./computer-science/rust.md">Rust</a>
+- <a href="./computer-science/docker.md">Docker</a>
+- <a href="./computer-science/gitlab.md">Gitlab CI/CD</a>
 - <a href="./math/calculus.md">Calculus</a>
 - <a href="./math/linear-algebra.md">Linear Algebra</a>
 - <a href="./math/probability-and-statistics.md">Probability & Statistics</a>
+- <a href="./math/discrete-mathematics.md">Discrete Mathematics</a>
+- <a href="./math/operative-research.md">Operative Research</a>
+- <a href="./finance/banking.md">Banking</a>
 
 ### DONE
