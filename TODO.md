@@ -6,7 +6,6 @@
 - split large documents into smaller documents chapter by chapter
 
 ### IN PROGRESS
-- <a href="./finance/banking.md">Banking</a>
 - <a href="./computer-science/azure.md">Azure</a>
 
 ### IN REVIEW
@@ -29,5 +28,6 @@
 - <a href="./math/probability-and-statistics.md">Probability & Statistics</a>
 - <a href="./math/discrete-mathematics.md">Discrete Mathematics</a>
 - <a href="./math/operative-research.md">Operative Research</a>
+- <a href="./finance/banking.md">Banking</a>
 
 ### DONE
