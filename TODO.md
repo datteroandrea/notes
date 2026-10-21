@@ -6,7 +6,8 @@
 - split large documents into smaller documents chapter by chapter
 
 ### IN PROGRESS
-- <a href="./computer-science/azure.md">Azure</a>
+- <a href="./computer-science/algorithms-and-data-structures.md">Algorithms & Data Structures</a>
+- <a href="./computer-science/react.md">React</a>
 
 ### IN REVIEW
 - <a href="./computer-science/system-design.md">System Design</a>
@@ -23,6 +24,7 @@
 - <a href="./computer-science/rust.md">Rust</a>
 - <a href="./computer-science/docker.md">Docker</a>
 - <a href="./computer-science/gitlab.md">Gitlab CI/CD</a>
+- <a href="./computer-science/azure.md">Azure</a>
 - <a href="./math/calculus.md">Calculus</a>
 - <a href="./math/linear-algebra.md">Linear Algebra</a>
 - <a href="./math/probability-and-statistics.md">Probability & Statistics</a>
