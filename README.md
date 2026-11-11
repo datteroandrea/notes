@@ -140,3 +140,13 @@ OUTPUT:
 - Write the content directly in the study guide document mentioned before
 - Do not include any summary section at the end of chapter
 ```
+
+## Give me PDF pls
+
+If you don't like markdown files and prefer PDFs you can use the bash script to convert markdowns to PDF files:
+
+`./md2pdf.sh ./path/to/file.md ./path/to/output.pdf`
+
+Example:
+
+`./md2pdf.sh ./finance/banking.md ./banking.pdf`
